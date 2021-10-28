@@ -1,7 +1,14 @@
 **/*.o
+**/*.a
 **/.dirstamp
 **/.deps
 **/*_gen.h
 **/*_gen.cpp
 **/Makefile.in
 **/Makefile
+config/
+config.*
+configure
+tmpcfg.txt
+aclocal.m4
+autom4ate.cache/
