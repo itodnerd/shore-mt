@@ -1,0 +1,7 @@
+**/*.o
+**/.dirstamp
+**/.deps
+**/*_gen.h
+**/*_gen.cpp
+**/Makefile.in
+**/Makefile
