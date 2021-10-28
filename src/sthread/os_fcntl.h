@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='OS_FCNTL_H'>
 
- $Id: os_fcntl.h,v 1.7.2.2 2009/06/23 01:01:47 nhall Exp $
+ $Id: os_fcntl.h,v 1.8 2010/05/26 01:21:27 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

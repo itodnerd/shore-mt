@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: sm_sizeof.cpp,v 1.10.2.6 2010/03/19 22:20:31 nhall Exp $
+ $Id: sm_sizeof.cpp,v 1.15 2010/12/08 17:37:45 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -36,18 +36,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 #include "page_s.h"
 #include "lock_x.h"
-#if 0
-#define SM_SOURCE
-#include "sm_int_2.h"
-#include "logrec.h"
-#include "logdef_gen.cpp"
-#endif
-#if 0
-/* XXX should break btree overhead out into its own _s include file */
-#include "page.h"
-#include "btree_p.h"
-#endif
-
 
 #define    TYPE_INFO(type)    { #type , sizeof(type) }
 #define    SIZE_INFO(size) { #size, size }
@@ -118,7 +106,7 @@ static const smsh_type_info_t    smsh_type_info[] = {
 //    TYPE_INFO(histoid_update_t),
 //    TYPE_INFO(lg_tag_chunks_h),
 //    TYPE_INFO(lid_entry_t),
-#if !defined(FORCE_EGCS) && !defined(GCC_BROKEN_WARNINGS) && !defined(GCC_VER_3_WARNINGS)
+#if !defined(GCC_BROKEN_WARNINGS) && !defined(GCC_VER_3_WARNINGS)
     /* XXX this works on sun solaris with gcc-2.7.2.3 and gcc-2.95.3,
        but not on other platforms and or ocmpilers. */
     // something goes weird and types aren't declared w/ those compilers?
@@ -144,12 +132,11 @@ static const smsh_type_info_t    smsh_type_info[] = {
     TYPE_INFO(append_file_i),
     TYPE_INFO(scan_rt_i)
 //    TYPE_INFO(xct_t),
-//    TYPE_INFO(xct_impl)
-#ifdef USE_2PC
-    ,TYPE_INFO(sm2pc_stats_t)
-    ,TYPE_INFO(DeadlockMsg)
-#endif
     ,TYPE_INFO(off_t)
+    ,TYPE_INFO(ptrdiff_t)
+    ,TYPE_INFO(char *)
+    ,TYPE_INFO(int)
+    ,TYPE_INFO(smsize_t)
 };
 
 #ifndef numberof

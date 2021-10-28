@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: rtree.cpp,v 1.147 2010/06/08 22:28:55 nhall Exp $
+ $Id: rtree.cpp,v 1.152 2010/12/09 15:20:14 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -112,9 +112,8 @@ ftstk_t::ftstk_t() {
 }
 
 ftstk_t::~ftstk_t() {
-    shpid_t MAYBE_UNUSED tmp;
     while (_top>0) {
-        tmp = pop();
+        (void) pop();
         // xd->lock()
     }
 }
@@ -444,22 +443,24 @@ rtree_p::calc_bound(nbox_t& nb)
 // print out all entries in the current rtree page
 //
 void 
-rtree_p::print()
+rtree_p::print(ostream &out)
 {
     int i, j;
     nbox_t key;
 
     for (i=0; i<nrecs(); i++)  {
-            key.bytes2box(rec(i).key(), rec(i).klen());
-        key.print(cout, level() );
+        key.bytes2box(rec(i).key(), rec(i).klen());
+        key.print(out, level() );
 
         for (j=0; j<5-level(); j++) cout << "\t";
         if ( is_node() )  
-            cout << ":- pid = " << rec(i).child() << endl;
+            out << ":- pid = " << rec(i).child() << endl;
         else 
-            cout << "elem=(" << rec(i).elem() << ")" << endl;
+            out << "elem=(" << rec(i).elem() << ")" 
+                << "  box.string=(" << key.operator char*() << ")" 
+                << endl;
     }
-    cout << endl;
+    out << endl;
 }
 
 //
@@ -1379,7 +1380,7 @@ rtree_m::_split_page(
 
     wrk_branch_t* work = new wrk_branch_t[count+1];
     if (!work) return RC(eOUTOFMEMORY);
-#if ZERO_INIT
+#ifdef ZERO_INIT
     memset(work, '\0', sizeof(wrk_branch_t) * (count +1) );
 #endif
     w_auto_delete_array_t<wrk_branch_t> auto_del_work(work);
@@ -1452,7 +1453,7 @@ rtree_m::_split_page(
         // split root
         // create a duplicate for root
         lpid_t duplicate;
-            W_DO( _alloc_page(root, page.level(), page, page.dim(), duplicate) );
+        W_DO( _alloc_page(root, page.level(), page, page.dim(), duplicate) );
             // W_DO(lm->lock(duplicate, EX, t_long, WAIT_FOREVER));
             rtree_p duplicate_p;
         W_DO( duplicate_p.fix(duplicate, LATCH_EX) );
@@ -1517,7 +1518,8 @@ rtree_m::_new_node(
 {
     rtree_p page(pl.top().page);
     vec_t el((const void*) &subtree.pid().page, 0);
-    bool MAYBE_UNUSED split = false;
+    W_IFDEBUG1( bool split = false; );
+
 
     rc_t rc = page.insert(key, el, subtree.pid().page);
     if (rc.is_error()) {
@@ -1528,7 +1530,7 @@ rtree_m::_new_node(
             W_DO ( _ov_treat(root, pl, key, page, lvl_split) );
         } else {
                 W_DO( _split_page(root, pl, key, page, lvl_split) );
-            split = true;
+            W_IFDEBUG1(split = true;)
         }
 
             // insert the new tuple to parent 
@@ -1536,9 +1538,9 @@ rtree_m::_new_node(
             if (rc.is_error()) {
             if (rc.err_num() != eRECWONTFIT)  return RC_AUGMENT(rc);
             w_assert1(! split);        
-                W_DO( _split_page(root, pl, key, page, lvl_split) );
+            W_DO( _split_page(root, pl, key, page, lvl_split) );
             W_DO( page.insert(key, el, subtree.pid().page) );
-            split = true;
+            W_IFDEBUG1(split = true;)
         }
     }
 
@@ -1610,7 +1612,7 @@ rtree_m::_propagate_insert(
         anchor = xd->anchor();
         X_DO(__propagate_insert(xd, pl), anchor);
         SSMTEST("rtree.1");
-        xd->compensate(anchor,false/*not undoable*/ LOG_COMMENT_USE("rtree.1"));
+        xd->compensate(anchor,false/*not undoable*/ X_LOG_COMMENT_USE("rtree.1"));
     } else {
         W_DO(__propagate_insert(xd, pl));
     }
@@ -1663,7 +1665,7 @@ rtree_m::_propagate_remove(
         anchor = xd->anchor();
         X_DO(__propagate_remove(xd,pl), anchor);
         SSMTEST("rtree.2");
-        xd->compensate(anchor,false/*not undoable*/ LOG_COMMENT_USE("rtree.2"));
+        xd->compensate(anchor,false/*not undoable*/ X_LOG_COMMENT_USE("rtree.2"));
     } else {
         W_DO(__propagate_remove(xd,pl));
     }
@@ -1757,7 +1759,7 @@ rtree_m::create(
     X_DO( page.set_hdr(hdr), anchor );
 
     SSMTEST("rtree.3");
-    xd->compensate(anchor,false/*not undoable*/ LOG_COMMENT_USE("rtree.3"));
+    xd->compensate(anchor,false/*not undoable*/ X_LOG_COMMENT_USE("rtree.3"));
 
     return RCOK;
 }
@@ -1871,14 +1873,14 @@ rtree_m::insert(
                 rc = leaf.insert(key, elem);
                 if ( rc.is_error() ) {
                     w_assert1(rc.err_num() != eRECWONTFIT);
-                    xd->release_anchor(true LOG_COMMENT_USE("rtree1"));
+                    xd->release_anchor(true X_LOG_COMMENT_USE("rtree1"));
                     return RC_AUGMENT(rc);
                 }
             }
         }
         if (xd) {
             SSMTEST("rtree.4");
-            xd->compensate(anchor,false/*not undoable*/ LOG_COMMENT_USE("rtree.4"));
+            xd->compensate(anchor,false/*not undoable*/ X_LOG_COMMENT_USE("rtree.4"));
         }
     }
         
@@ -1933,7 +1935,7 @@ rtree_m::remove(
 // print the rtree entries
 //
 rc_t
-rtree_m::print(const lpid_t& root)
+rtree_m::print(const lpid_t& root, ostream &out)
 {
     rtree_p page;
     W_DO( page.fix(root, LATCH_SH) ) ;
@@ -1942,32 +1944,33 @@ rtree_m::print(const lpid_t& root)
         // print real root boundary
             nbox_t bound(page.dim());
             W_DO(page.calc_bound(bound));
-            cout << "Universe:\n";
-            bound.print(cout, 5);
+            out << "Universe:\n";
+            bound.print(out, 5);
     }
    
     int i;
-    for (i = 0; i < 5 - page.level(); i++)  { cout << "\t"; }
-    cout << "LEVEL " << page.level() << ", page " 
+    for (i = 0; i < 5 - page.level(); i++)  { out << "\t"; }
+    out << "LEVEL " << page.level() << ", page " 
          << page.pid().page << ":\n";
-    page.print();
+    page.print(out);
     
     lpid_t sub_tree = page.pid();
     if (page.level() != 1)  {
         for (i = 0; i < page.nrecs(); i++) {
             sub_tree.page = page.rec(i).child();
-            W_DO( print(sub_tree) );
+            W_DO( print(sub_tree, out) );
         }
     }
     return RCOK;
 }
 
-#ifdef UNDEF
+#ifdef RTREE_DEBUG_PRINT_LEAVES
+// Not used for now.
 //
 // print out leaf boundaries only
 //
 rc_t 
-rtree_m::print(const lpid_t& root)
+rtree_m::print_leaves(const lpid_t& root)
 {
     rtree_p page;
     W_DO( page.fix(root, LATCH_SH) );
@@ -2069,14 +2072,14 @@ rtree_m::stats(
         lpid_t pid;
         bool allocated;
         rc_t   rc;
-        rc = io->first_page(root.stid(), pid, &allocated);
+        rc = io->first_page(root.stid(), pid, &allocated, NL);
         while (!rc.is_error()) {
             if (allocated) {
                 num_pages_store_scan++;
             } else {
                 stat.unalloc_pg_cnt++;
             }
-            rc = io->next_page(pid, &allocated);
+            rc = io->next_page(pid, &allocated); // no lock
         }
         w_assert3(rc.is_error());
         if (rc.err_num() != eEOF) return rc;
@@ -2730,7 +2733,10 @@ rtld_stk_t::wrap_up()
         //        means real root is one layer above
         num_pages++;
         W_DO( rp.set_level(_top+2) );
-        rtree_p np;
+        // hides outer np.  I hope that removing this
+        // doesn't change the behavior for the worse, since
+        // I don't see an explicit unfix of the np above.
+        // rtree_p np;
 
         do {
             // write each cache page to disk page
@@ -2789,13 +2795,12 @@ rtld_stk_t::wrap_up()
 rc_t
 rtree_m::bulk_load(
     const lpid_t&         root,        // I- root of rtree
-    int                         nsrcs,         // I- store containing new records
+    int                   nsrcs,         // I- store containing new records
     const stid_t*         src,         // I- store containing new records
-    const rtld_desc_t&        desc,        // I- load descriptor
-    rtree_stats_t&         stats)        // O- index stats
+    const rtld_desc_t&    desc,        // I- load descriptor
+    rtree_stats_t&        stats)        // O- index stats
 {
-    DBG(<<"bulk_load source=" << src << " index=" << root
-        );
+    DBG(<<"bulk_load source=" << src << " index=" << root);
     stats.clear();
     if (!is_empty(root)) {
          return RC(eNDXNOTEMPTY);
@@ -2823,10 +2828,10 @@ rtree_m::bulk_load(
     int i = 0;              // toggle
     file_p page[2];         // page[i] is current page
     const record_t* pr = 0; // previous record
-    base_stat_t cnt=0, uni_cnt=0;
+    base_stat_t cnt=0, uni_cnt=0, dup_cnt=0;
 
     for(int src_index=0; src_index<nsrcs; src_index++) {
-        X_DO( fi->first_page(src[src_index], pid, NULL/*allocated only*/), anchor );
+        X_DO( fi->first_file_page(src[src_index], pid, NULL/*allocated only*/, NL), anchor );
         for (bool eof = false; ! eof; ) {
             X_DO( page[i].fix(pid, LATCH_SH), anchor );
             for (slotid_t s = page[i].next_slot(0); s; s = page[i].next_slot(s)) {
@@ -2846,6 +2851,7 @@ rtree_m::bulk_load(
                         /* All rtrees handle duplicate keys, but
                          * not dup key/elems
                          */
+                        ++ dup_cnt; // duplicate key
                         w_assert1(pr->is_small());
                         if (el.cmp(pr->body(), (int)pr->body_size())==0) {
                             // duplicate null entries
@@ -2860,7 +2866,7 @@ rtree_m::bulk_load(
                 pr = r;
             }
             i = 1 - i;
-            X_DO( fi->next_page(pid, eof, NULL/*allocated only*/), anchor );
+            X_DO( fi->next_file_page(pid, eof, NULL/*allocated only*/, NL), anchor );
         }
     }
     if (cnt > 0)
@@ -2870,9 +2876,13 @@ rtree_m::bulk_load(
 
     if (xd)  {
         SSMTEST("rtree.5");
-        xd->compensate(anchor,false/*not undoable*/ LOG_COMMENT_USE("rtree.5"));
+        xd->compensate(anchor,false/*not undoable*/ X_LOG_COMMENT_USE("rtree.5"));
     }
 
+    DBG(<<"bulk_load source=" << src << " index=" << root
+            << " #entries " << cnt
+            << " unique " << uni_cnt
+            << " dup (key)" << dup_cnt);
     stats.entry_cnt = cnt;
     stats.unique_cnt = uni_cnt;
     stats.level_cnt = ld_stack.height;

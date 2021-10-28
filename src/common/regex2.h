@@ -1,7 +1,9 @@
 /*<std-header orig-src='regex' incl-file-exclusion='REGEX2_H'>
 
- $Id: regex2.h,v 1.9.2.3 2010/03/19 22:19:19 nhall Exp $
+ $Id: regex2.h,v 1.11 2010/07/01 00:08:17 nhall Exp $
 
+**\file src/common/regex2.h
+**\cond skip
 
 */
 
@@ -184,6 +186,8 @@ struct re_guts {
 /* misc utilities */
 #define    REGEX_OUT    (CHAR_MAX+1)    /* a non-character value */
 #define    ISWORD(c)    (isalnum(c) || (c) == '_')
+
+/**\endcond skip */
 
 /*<std-footer incl-file-exclusion='REGEX2_H'>  -- do not edit anything below this line -- */
 

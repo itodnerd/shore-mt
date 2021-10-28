@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='KEYED_H'>
 
- $Id: keyed.h,v 1.30.2.4 2010/01/28 04:54:04 nhall Exp $
+ $Id: keyed.h,v 1.31 2010/05/26 01:20:39 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

@@ -106,7 +106,7 @@ private:                        // Data members.
 };
 
 /// Class istrstream, an istream that manages a strstreambuf.
-class istrstream : public basic_istream<char>
+class istrstream : public std::basic_istream<char, std::char_traits<char> >
 {
 public:
   explicit istrstream(char*);
@@ -124,7 +124,7 @@ private:
 
 
 /// Class ostrstream, an ostream that manages a strstreambuf.
-class ostrstream : public basic_ostream<char>
+class ostrstream : public std::basic_ostream<char, std::char_traits<char> >
 {
 public:
   ostrstream();

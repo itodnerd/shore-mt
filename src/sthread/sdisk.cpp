@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: sdisk.cpp,v 1.8.2.7 2010/03/25 18:04:40 nhall Exp $
+ $Id: sdisk.cpp,v 1.11 2010/10/27 17:04:30 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -73,8 +73,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include <sthread.h>    /* XXX for error codes */
 
 
-const    int    stSHORTSEEK = sthread_base_t::stSHORTSEEK;
-
 
 int    sdisk_base_t::vsize(const iovec_t *iov, int iovcnt)
 {
@@ -119,6 +117,8 @@ w_rc_t    sdisk_t::readv(const iovec_t *iov, int iovcnt, int &transfered)
     int    i;
     w_rc_t    e;
 
+    (void) vsize(iov, iovcnt);
+
     for (i = 0; i < iovcnt; i++) {
         e = read(iov[i].iov_base, iov[i].iov_len, n);
         if (e.is_error())
@@ -141,6 +141,8 @@ w_rc_t    sdisk_t::writev(const iovec_t *iov, int iovcnt, int &transfered)
     int    i;
     w_rc_t    e;
 
+    (void) vsize(iov, iovcnt);
+
     for (i = 0; i < iovcnt; i++) {
         e = write(iov[i].iov_base, iov[i].iov_len, n);
         if (e.is_error())
@@ -162,80 +164,17 @@ w_rc_t    sdisk_t::writev(const iovec_t *iov, int iovcnt, int &transfered)
    seek to where the I/O is supposed to be, execute it, and
    then restore the old position.  */
 
-w_rc_t    sdisk_t::pread(void *buf, int size, fileoff_t pos,
-               int &transfered)
+w_rc_t    sdisk_t::pread(void *, int , fileoff_t , int &)
 {
   // make it safe or don't do it at all.
-  return RC(fcNOTIMPLEMENTED);
-  
-    fileoff_t    was;
-    fileoff_t    newpos;
-    int        n;
-    w_rc_t        e;
-    w_rc_t        es;
-
-    W_DO(seek(0, SEEK_AT_CUR, was));
-    /* Only move if it needs to */
-    if (pos != was) {
-        W_DO(seek(pos, SEEK_AT_SET, newpos));
-        if (newpos != pos) {
-            es = seek(was, SEEK_AT_SET, newpos);
-            if (es.is_error())
-                cerr << "Warning: pread reposition failed!"
-                    << endl << e << endl;
-            return RC(stSHORTSEEK);
-        }
-    }
-
-    e = read(buf, size, n);
-
-    es = seek(was, SEEK_AT_SET, newpos);
-    /* XXX should a reposition error make the I/O fail? */
-    if (es.is_error() || newpos != was)
-        cerr << "Warning: pread reposition failed!"
-            << endl << e << endl;
-
-    transfered = n;
-
-    return e;
+    return RC(fcNOTIMPLEMENTED);
 }
 
-w_rc_t    sdisk_t::pwrite(const void *buf, int size, fileoff_t pos,
-               int &transfered)
+w_rc_t    sdisk_t::pwrite(const void *, int , fileoff_t ,
+               int &)
 {
   // make it safe or don't do it at all.
   return RC(fcNOTIMPLEMENTED);
-  
-    fileoff_t    was;
-    fileoff_t    newpos;
-    int        n;
-    w_rc_t        e;
-    w_rc_t        es;
-
-    W_DO(seek(0, SEEK_AT_CUR, was));
-    /* Only move if it needs to */
-    if (pos != was) {
-        W_DO(seek(pos, SEEK_AT_SET, newpos));
-        if (newpos != pos) {
-            es = seek(was, SEEK_AT_SET, newpos);
-            if (es.is_error())
-                cerr << "Warning: pwrite reposition failed!"
-                    << endl << e << endl;
-            return RC(stSHORTSEEK);
-        }
-    }
-
-    e = write(buf, size, n);
-
-    es = seek(was, SEEK_AT_SET, newpos);
-    /* XXX should a reposition error make the I/O fail? */
-    if (es.is_error() || newpos != was)
-        cerr << "Warning: pwrite reposition failed!"
-            << endl << e << endl;
-
-    transfered = n;
-
-    return e;
 }
 
 

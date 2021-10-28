@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='ERRLOG_S_H'>
 
- $Id: errlog_s.h,v 1.9.2.4 2010/03/19 22:17:16 nhall Exp $
+ $Id: errlog_s.h,v 1.10 2010/05/26 01:20:21 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

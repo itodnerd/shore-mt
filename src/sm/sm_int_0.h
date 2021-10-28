@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='SM_INT_0_H'>
 
- $Id: sm_int_0.h,v 1.15.2.5 2010/03/19 22:20:27 nhall Exp $
+ $Id: sm_int_0.h,v 1.16 2010/05/26 01:20:43 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

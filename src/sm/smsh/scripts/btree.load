@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: btree.load,v 1.11.4.1 2009/12/21 18:45:13 nhall Exp $
+#  $Id: btree.load,v 1.15 2010/08/04 01:57:55 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -36,14 +36,16 @@
 #
 source $script_dir/vol.init
 
-set nrec 500
+# set nrec 500
+set nrec 133
 #
 # create file of <key, el> pair (to be sorted later in blkld)
 #
 sm begin_xct
 set f1 [sm create_file $volid]
 for {set i $nrec} {$i > 0} {set i [ expr {$i - 1} ]} {
-    sm create_rec $f1 [format $short_form $i] 10 $i
+    set rid [sm create_rec $f1 [format $short_form $i] 10 $i]
+	verbose sm create_rec $f1 [format $short_form $i] 10 $i -> $i $rid
 }
 sm commit_xct
 #
@@ -51,23 +53,27 @@ sm commit_xct
 #
 proc print_file {f1 in_xct} {
     if { $in_xct == 0 } {
-	sm begin_xct
+		sm begin_xct
     }
+	verbose print_file "{"
+
     set scan [sm scan_file_create $f1 t_cc_file]
     set i 0
     set pin [sm scan_file_next $scan 0]
-    while {$pin != "NULL"}  {
-	incr i
-	set r [sm read_rec [sm pin_rid $pin] 0 0]
-	verbose $i: read $r
-	set pin [sm scan_file_next $scan 0]
-    }
+	while {$pin != "NULL"}  {
+		incr i
+		set rid [sm pin_rid $pin] 
+		set r [sm read_rec $rid 0 0]
+		verbose $i: read $rid $r
+		set pin [sm scan_file_next $scan 0]
+	}
     sm scan_file_destroy $scan
+	verbose print_file "}"
     if { $in_xct == 0 } {
-	sm commit_xct
+		sm commit_xct
     }
 }
-#print_file $f1  0
+print_file $f1  0
 
 #
 # verify ascending
@@ -79,15 +85,17 @@ proc verify { ndx2 nrec str in_xct } {
 	sm begin_xct
     }
     set scan [sm create_scan $ndx2 >= neg_inf <= pos_inf]
-    for {set i 1} {$i <= $nrec} {incr i}  {
-	set r [sm scan_next $scan]
-	if {[string compare $r eof] == 0} then { break }
-	set key [string trimleft [lindex $r 0] 0]
-	set el [lindex $r 1]
-	verbose "scanned ($key, $el)"
-	assert {expr $key == $el}
-	assert {expr $i == $key}
-    }
+	for {set i 1} {$i <= $nrec} {incr i}  {
+		set r [sm scan_next $scan]
+		verbose raw result of scan_next: $r
+		if {[string compare $r eof] == 0} then { break }
+		set key [string trimleft [lindex $r 0] 0]
+		set el [lindex $r 1]
+		verbose el $el
+		verbose "scanned ($key, $el)"
+		assert {expr $key == $el}
+		assert {expr $i == $key}
+	}
     assert {expr $i > $nrec}
     assert {expr [string compare [sm scan_next $scan] eof] == 0}
     sm destroy_scan $scan
@@ -115,10 +123,14 @@ proc verify { ndx2 nrec str in_xct } {
 sm begin_xct
 
 set dummy [sm gather_stats reset]
+
+# create index into which to bulk-load
 set ndx1 [sm create_index $volid uni_btree]
 
+# do the bulk-load
 set stat [sm blkld_ndx $ndx1 1 $f1 b*1000]
 verbose result of bulkload: $stat
+
 verbose verify  ndx1 one
 verify $ndx1 $nrec one 1
 
@@ -169,5 +181,5 @@ sm destroy_index $ndx1
 sm destroy_index $ndx2
 sm commit_xct
 
-unset ndx1 ndx2 nrec i f1 stat dummy
+unset ndx1 ndx2 nrec i f1 stat dummy rid
 

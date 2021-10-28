@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='SM_INT_2_H'>
 
- $Id: sm_int_2.h,v 1.8.2.4 2010/01/28 04:54:16 nhall Exp $
+ $Id: sm_int_2.h,v 1.9 2010/05/26 01:20:43 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -45,14 +45,12 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 class btree_m;
 class file_m;
 class rtree_m;
-class ranges_m;
 
 class smlevel_2 : public smlevel_1 {
 public:
     static btree_m* bt;
     static file_m* fi;
     static rtree_m* rt;
-    static ranges_m* ra;
 };
 
 #if (SM_LEVEL >= 2)
@@ -71,7 +69,6 @@ public:
 #    include <nbox.h>
 #    include <rtree.h>
 #    include <file.h>
-#    include <ranges_p.h>
 #endif
 
 /*<std-footer incl-file-exclusion='SM_INT_2_H'>  -- do not edit anything below this line -- */

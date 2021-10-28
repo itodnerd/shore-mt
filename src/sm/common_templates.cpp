@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: common_templates.cpp,v 1.11.2.6 2010/03/19 22:20:23 nhall Exp $
+ $Id: common_templates.cpp,v 1.12 2010/05/26 01:20:37 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

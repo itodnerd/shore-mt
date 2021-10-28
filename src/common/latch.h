@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore' incl-file-exclusion='LATCH_H'>
 
- $Id: latch.h,v 1.33 2010/06/15 17:28:29 nhall Exp $
+ $Id: latch.h,v 1.35 2010/07/07 20:50:11 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -70,8 +70,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 /**\enum latch_mode_t
  */
-enum latch_mode_t { LATCH_NL = 0, LATCH_SH = 1, LATCH_EX = 2,
-		    LATCH_NLS = 4, LATCH_NLX = 8 }; // pin: for plp
+enum latch_mode_t { LATCH_NL = 0, LATCH_SH = 1, LATCH_EX = 2 };
 
 
 
@@ -95,22 +94,6 @@ class latch_holder_t
 {
 public:
 
-// #define LATCH_CAN_BLOCK_LONG 0 in sthread.h 
-/*
- FRJ says that it's not worth blocking the thread because
- latches aren't held long enough.  Possible exceptions: tree-
- crabbing, OS preemptions when not enough threads.  
- I also notice that we hold latches for possibly-long times, while
- acquiring page_write_mutexes.
-
- I thought about keeping this code in place, due to OS preemptions and
- b/c I didn't want to make any assumptions about #threads vs #cpu-equivalents,
- but the code doesn't even compile (what they sent us doesn't compile).  
- So I'm leaving it macro-d out for now; we need to resurrect and fix this.
-*/
-/**\bug GNATS 66 LATCH_CAN_BLOCK_LONG we haven't tested with this in place,
- and we need to decide which policy should be the default.
-*/
     static __thread latch_holder_t* thread_local_holders;
     static __thread latch_holder_t* thread_local_freelist;
 
@@ -200,9 +183,11 @@ public:
 
     /**\brief release the latch.  
      * \details
-     * Decrements the latch count.
+     * Decrements the latch count and releases only when
+	 * it hits 0.
+	 * Returns the resulting latch count. 
      */
-    void                    latch_release();
+    int                     latch_release();
     /**\brief Unreliable, but helpful for some debugging.
      */
     bool                    is_latched() const;
@@ -222,7 +207,8 @@ public:
     int                     num_holders() const;
     ///  True iff held in EX mode.
     bool                    is_mine() const; // only if ex 
-    ///  True iff held in EX or SH mode.
+    ///  True iff held in EX or SH mode.  Actually, it returns the
+	//latch count (# times this thread holds the latch).
     int                     held_by_me() const; // sh or ex
     ///  EX,  SH, or NL (if not held at all).
     latch_mode_t            mode() const;
@@ -235,7 +221,8 @@ private:
     w_rc_t                _acquire(latch_mode_t m,
                                  sthread_t::timeout_in_ms,
                                  latch_holder_t* me);
-    void                  _release(latch_holder_t* me);
+	// return #times this thread holds the latch after this release
+    int                   _release(latch_holder_t* me);
     void                  _downgrade(latch_holder_t* me);
     
 /* 
@@ -245,12 +232,7 @@ private:
  * understood-things with which to work.
  * Consequently, we use w_pthread_rwlock for our lock.
  */
-    mutable srwlock_t     _lock;
-#if LATCH_CAN_BLOCK_LONG
-    bool                        _blocking;   // true-> on _blocked_list
-    pthread_mutex_t             _block_lock; // paired w/ _blocked_list
-    sthread_priority_list_t     _blocked_list; // paired w/ _block_lock
-#endif
+    mutable srwlock_t           _lock;
 
     // disabled
     NORET                        latch_t(const latch_t&);
@@ -291,20 +273,12 @@ latch_t::num_holders() const
 inline latch_mode_t
 latch_t::mode() const
 {
-    if(_lock.is_plp()) {
-	if(_lock.is_reader()) {
-	    return LATCH_NLS;
-	} else {
-	    return LATCH_NLX;
-	}
-    } else {
-	switch(_lock.mode()) {
-	case mcs_rwlock::NONE: return LATCH_NL;
-	case mcs_rwlock::WRITER: return LATCH_EX;
-	case mcs_rwlock::READER: return LATCH_SH;
-	default: w_assert1(0); // shouldn't ever happen
-	    return LATCH_SH; // keep compiler happy
-	}
+    switch(_lock.mode()) {
+    case mcs_rwlock::NONE: return LATCH_NL;
+    case mcs_rwlock::WRITER: return LATCH_EX;
+    case mcs_rwlock::READER: return LATCH_SH;
+    default: w_assert1(0); // shouldn't ever happen
+             return LATCH_SH; // keep compiler happy
     }
 }
 

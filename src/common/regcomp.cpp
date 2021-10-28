@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: regcomp.cpp,v 1.20.2.4 2010/03/19 22:19:19 nhall Exp $
+ $Id: regcomp.cpp,v 1.22 2010/08/23 14:28:14 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -83,7 +83,6 @@ to the following restrictions:
 
 #include "regex_utils.h"
 #include "regex2.h"
-
 #include "regex_cclass.h"
 #include "regex_cname.h"
 

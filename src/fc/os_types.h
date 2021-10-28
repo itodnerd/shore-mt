@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='OS_TYPES_H'>
 
- $Id: os_types.h,v 1.4.2.2 2009/06/23 01:01:33 nhall Exp $
+ $Id: os_types.h,v 1.6 2010/12/08 17:37:37 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -35,13 +35,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 /*  -- do not edit anything above this line --   </std-header>*/
 
 #include <sys/types.h>
-
-#if defined(LARGEFILE_AWARE)
-/* Everything is built with -D_FILE_OFFSET_BITS=64 and
- * -D_LARGEFILE64_SOURCE.  This causes off_t to be redefined
- */
-#endif /* LARGEFILE_AWARE */
-
 
 /*<std-footer incl-file-exclusion='OS_TYPES_H'>  -- do not edit anything below this line -- */
 

@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: rtree.3,v 1.25.4.3 2010/01/12 02:02:03 nhall Exp $
+#  $Id: rtree.3,v 1.28 2010/10/07 15:12:40 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -38,16 +38,28 @@ set u "2.-1500.-1500.1500.1500"
 #
 #create and load a file with boxes
 #
+set boxes [open boxes w]
 sm begin_xct
 	verbose tid [sm xct_to_tid [sm xct]]
-set f1 [sm create_file $volid]
-verbose f1 = $f1
-for {set i 0} {$i < $nrec} {incr i} {
-    set box($i) [sm next_box $u]
-
-    verbose sm create_typed_hdr_rec $f1 $box($i) 4 $i spatial 
-    sm create_typed_hdr_rec $f1 $box($i) 4 $i spatial 
-}
+	set f1 [sm create_file $volid]
+	verbose f1 = $f1
+	for {set i 0} {$i < $nrec} {incr i} {
+		set box($i) [sm next_box $u]
+	# Verify that it's unique
+	    set ok 0
+		while { $ok == 0 } {
+		    set ok 1
+			for {set j 1} {$j < $i} {incr j} {
+			   if { $box($i) == $box($j) } {
+					set box($i) [sm next_box $u]
+					set ok 0
+					break
+			   }
+			}
+		}
+		puts $boxes "elem=($i) box.string=($box($i))"
+		sm create_typed_hdr_rec $f1 $box($i) 4 $i spatial 
+	}
 sm commit_xct
 
 #
@@ -55,33 +67,36 @@ sm commit_xct
 #
 sm begin_xct
 	verbose tid [sm xct_to_tid [sm xct]]
-set ndx [sm create_md_index $volid 2 rtree]
-verbose created rtree $ndx
+	set ndx [sm create_md_index $volid 2 rtree]
+	verbose created rtree $ndx
 
-set stat [sm blkld_md_ndx $ndx $f1 70 110 $u]
-verbose created and loaded rtree $ndx
-verbose stat: $stat
+	set stat [sm blkld_md_ndx $ndx $f1 70 110 $u]
+	verbose created and loaded rtree $ndx
+	verbose stat: $stat
 
-# this was an attempt to avoid the verbose output but it doesn't work
-set out [sm draw_rtree $ndx graph_out]
-verbose $out
-set out [sm print_md_index $ndx]
-verbose $out
-unset out
-
+	# this was an attempt to avoid the verbose output but it doesn't work
+	# set out [sm draw_rtree $ndx graph_out]
+	# verbose $out
+	# sm print_md_index $ndx out
+	# verbose $out
+	# unset out
 sm commit_xct
 
 sm begin_xct
 	verbose tid [sm xct_to_tid [sm xct]]
-verbose probe:
-for {set i 1} {$i < $nrec} {incr i} {
-    set r [sm find_md_assoc $ndx $box($i)]
-    verbose association returns $r
-    set el [lindex $r 0]
-    verbose i:$i box:$box($i) el:$el
-    assert {expr $i == $el}
-}
-verbose "---- successful"
+	verbose probe:
+	for {set i 1} {$i < $nrec} {incr i} {
+		set r [sm find_md_assoc $ndx $box($i)]
+		verbose association returns $r
+		set el [lindex $r 0]
+		verbose i:$i box:$box($i) el:$el
+		if [expr $i == $el] {
+		} else {
+		   echo ndx:$ndx i:$i box:$box($i) el:$el
+		}
+		assert {expr $i == $el}
+	}
+	verbose "---- successful"
 
 sm commit_xct
 

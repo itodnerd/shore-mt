@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='W_GETTIMEOFDAY_H'>
 
- $Id: w_gettimeofday.h,v 1.11.2.3 2009/09/14 00:08:44 nhall Exp $
+ $Id: w_gettimeofday.h,v 1.12 2010/05/26 01:20:25 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

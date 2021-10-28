@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: sm_s.cpp,v 1.30 2010/06/08 22:28:56 nhall Exp $
+ $Id: sm_s.cpp,v 1.32 2010/07/01 00:08:22 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -73,9 +73,8 @@ const lpid_t lpid_t::null;
 char const* 
 db_pretty_print(lsn_t const* lsn, int /*i=0*/, char const* /* s=0 */) 
 {
-  size_t nbytes = 100;
-  char *tmp = (char *) ::valloc(nbytes);
-  snprintf(tmp, nbytes, "%d.%lld", lsn->hi(), (long long int)(lsn->lo()));
+  char *tmp = (char *) ::valloc(100);
+  snprintf(tmp, sizeof(tmp), "%d.%lld", lsn->hi(), (long long int)(lsn->lo()));
   return tmp;
 }
 
@@ -160,66 +159,66 @@ w_rc_t key_type_s::parse_key_type(
     w_istrstream is(s);
 
     uint j;
-	for (j = 0; j < count; j++)  {
-		kc[j].variable = 0;
-		if (! (is >> kc[j].type))  {
-			if (is.eof())  break;
-			return RC(smlevel_0::eBADKEYTYPESTR);
-		}
-		if (is.peek() == '*')  {
-			// Variable-length keys look like:
-			// ... b*<max>
+    for (j = 0; j < count; j++)  {
+        kc[j].variable = 0;
+        if (! (is >> kc[j].type))  {
+            if (is.eof())  break;
+            return RC(smlevel_0::eBADKEYTYPESTR);
+        }
+        if (is.peek() == '*')  {
+            // Variable-length keys look like:
+            // ... b*<max>
 
-			if (! (is >> kc[j].variable))
-			return RC(smlevel_0::eBADKEYTYPESTR);
-		}
-		if (! (is >> kc[j].length))
-			return RC(smlevel_0::eBADKEYTYPESTR);
-		if (kc[j].length > key_type_s::max_len)
-			return RC(smlevel_0::eBADKEYTYPESTR);
+            if (! (is >> kc[j].variable))
+            return RC(smlevel_0::eBADKEYTYPESTR);
+        }
+        if (! (is >> kc[j].length))
+            return RC(smlevel_0::eBADKEYTYPESTR);
+        if (kc[j].length > key_type_s::max_len)
+            return RC(smlevel_0::eBADKEYTYPESTR);
 
-		switch (kc[j].type)  {
+        switch (kc[j].type)  {
 
-		case key_type_s::I: // signed compressed
-		case key_type_s::U: // unsigned compressed
-			kc[j].compressed = true;
-			// drop down
-		case key_type_s::i:
-		case key_type_s::u:
-			if ( (kc[j].length != 1 
-			&& kc[j].length != 2 
-			&& kc[j].length != 4 
-			&& kc[j].length != 8 )
-			|| kc[j].variable)
-			return RC(smlevel_0::eBADKEYTYPESTR);
-			break;
+        case key_type_s::I: // signed compressed
+        case key_type_s::U: // unsigned compressed
+            kc[j].compressed = true;
+            // drop down
+        case key_type_s::i:
+        case key_type_s::u:
+            if ( (kc[j].length != 1 
+            && kc[j].length != 2 
+            && kc[j].length != 4 
+            && kc[j].length != 8 )
+            || kc[j].variable)
+            return RC(smlevel_0::eBADKEYTYPESTR);
+            break;
 
-		case key_type_s::F: // float compressed
-			kc[j].compressed = true;
-			// drop down
-		case key_type_s::f:
-			if ((kc[j].length != 4 && kc[j].length != 8) 
-										   || kc[j].variable)
-			return RC(smlevel_0::eBADKEYTYPESTR);
-			break;
+        case key_type_s::F: // float compressed
+            kc[j].compressed = true;
+            // drop down
+        case key_type_s::f:
+            if ((kc[j].length != 4 && kc[j].length != 8) 
+                                           || kc[j].variable)
+            return RC(smlevel_0::eBADKEYTYPESTR);
+            break;
 
-		case key_type_s::B: // uninterpreted bytes, compressed
-			kc[j].compressed = true;
-			// drop down
-		case key_type_s::b: // uninterpreted bytes
-			w_assert3(kc[j].length > 0);
-			break;
+        case key_type_s::B: // uninterpreted bytes, compressed
+            kc[j].compressed = true;
+            // drop down
+        case key_type_s::b: // uninterpreted bytes
+            w_assert3(kc[j].length > 0);
+            break;
 
-		default:
-			return RC(smlevel_0::eBADKEYTYPESTR);
-			}
-	}
+        default:
+            return RC(smlevel_0::eBADKEYTYPESTR);
+            }
+    }
     count = j;
 
     for (j = 0; j < count; j++)  {
-		if (kc[j].variable && j != count - 1)
-			return RC(smlevel_0::eBADKEYTYPESTR);
-	}
+        if (kc[j].variable && j != count - 1)
+            return RC(smlevel_0::eBADKEYTYPESTR);
+    }
     
     return RCOK;
 }

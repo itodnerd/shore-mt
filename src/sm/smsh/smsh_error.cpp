@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: smsh_error.cpp,v 1.1.2.5 2010/03/19 22:20:31 nhall Exp $
+ $Id: smsh_error.cpp,v 1.2 2010/05/26 01:20:52 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

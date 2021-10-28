@@ -1,6 +1,6 @@
 /*<std-header orig-src='regex' incl-file-exclusion='REGEX_POSIX_H'>
 
- $Id: regex_posix.h,v 1.5.2.5 2010/03/19 22:19:19 nhall Exp $
+ $Id: regex_posix.h,v 1.6 2010/05/26 01:20:12 nhall Exp $
 
 
 */

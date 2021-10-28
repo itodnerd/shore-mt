@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='W_RC_H'>
 
- $Id: gethrtime.cpp,v 1.1.2.3 2010/01/28 04:53:06 nhall Exp $
+ $Id: gethrtime.cpp,v 1.3 2010/07/19 18:35:05 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -41,27 +41,13 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 #ifndef HAVE_GETHRTIME
 
-#if defined(__APPLE__)
-
-// For more info: http://stackoverflow.com/questions/3162826/fastest-timing-resolution-system
-#include <mach/mach_time.h>
-
-hrtime_t gethrtime()
-{
-   hrtime_t start = mach_absolute_time();
-   return (start);
-}
-
-#else 
-
-hrtime_t gethrtime()
+hrtime_t
+gethrtime()
 {
     struct timespec tsp;
     long e = clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &tsp);
     w_assert0(e == 0);
-    return tsp.tv_nsec; // nanosecs
+    // tsp.tv_sec is time_t
+    return (tsp.tv_sec * 1000* 1000 * 1000) + tsp.tv_nsec; // nanosecs
 }
-
-#endif // __APPLE__
-
-#endif // HAVE_GETHRTIME
+#endif

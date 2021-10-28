@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: deadlock.4,v 1.14.4.2 2009/11/23 22:34:44 nhall Exp $
+#  $Id: deadlock.4,v 1.17 2012/01/02 17:02:19 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -118,16 +118,17 @@ set x [fork_thread t1 {} ]
 set y [fork_thread t2 {} ]
 set z [fork_thread t3 {} ]
 
-sm sleep 1
+sm sleep 10
 #  after its first sync:  {2IS}
 # verbose sync_thread t2
 sync_thread $y 
 
-sm sleep 1
+sm sleep 10
 #  after its first sync:  {3IX} 
+
 # verbose sync_thread t3
 sync_thread $z
-
+# sm dump_locks
 sm sleep 10
 #  now     <-- 1SH <-- 2SH 
 #  but make sure that t1 happens first so
@@ -138,9 +139,11 @@ sm sleep 10
 #  that extra sync
 # verbose sync_thread t1
 sync_thread $x 
+# sm dump_locks
 
 verbose sync_thread t2
 sync_thread $y 
+# sm dump_locks
 
 verbose sync_thread t3
 sync_thread $z 

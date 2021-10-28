@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: deadlock.6,v 1.1.2.3 2010/03/19 22:20:36 nhall Exp $
+#  $Id: deadlock.6,v 1.4 2012/01/02 17:02:19 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -135,7 +135,8 @@ proc cycle {share1 share2 share3 excl} {
     verbose $tid "cycle: attempting to acquire EX on " $excl
 
     # catch deadlock
-    verbose $tid "catch deadlock:"
+    verbose $tid "catch deadlock acquiring $excl EX LONG:"
+
     set caught [catch {sm lock $excl EX LONG} errorno]
 	if {$caught == 0} {
 		verbose $tid "cycle: GOT EX on " $excl " committing"

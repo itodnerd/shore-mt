@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: btree.11,v 1.9 2010/06/08 22:28:28 nhall Exp $
+#  $Id: btree.11,v 1.11 2010/08/23 14:28:23 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -27,17 +27,23 @@
 #
 #   -- do not edit anything above this line --   </std-header>
 
-set nrec 1000
-
 source $script_dir/vol.init
+
+# set number of records to page size so that we ensure we have
+# enough to force > 1 run, except that in the b1 case, the test
+# automagically reduces it to 127 so that unique keys fits in the
+# b1. arg.  This means that the tests behave differently depending on the
+# page sizes.
+set nrec [expr $page_size / 8]
 
 if {$logging==0} {
     echo "Logging off: script not run. "
 } else {
-    set xlist { i4 u4 f8 f4 i8 u8 b1 i1 u1 i2 u2 }
+    set xlist { b1 i1 u1 i2 u2 i4 u4 f8 f4 i8 u8 }
     set xlistlen [llength $xlist]
     set x 0
-    if {1} {
+	##  TODO: restore to if { 1 }
+    if {0} {
 
 	# set nulls to one of { notnull nullok }
 	set nulls nullok
@@ -46,22 +52,31 @@ if {$logging==0} {
 	    set experiment [lindex $xlist $x] 
 	    sm begin_xct
 	    verbose sm test_bulkload_int_btree $volid $nrec $experiment $nulls
-	    sm test_bulkload_int_btree $volid $nrec $experiment $nulls
-	    verbose DONE: w/ sm test_bulkload_int_btree $volid $nrec $experiment $nulls
+	    set res [sm test_bulkload_int_btree $volid $nrec $experiment $nulls]
+	    verbose DONE: w/ sm test_bulkload_int_btree $volid $nrec $experiment $nulls result=$res
 	    set n [sm gather_xct_stats reset]
+	    verbose xct stats $n
+	    verbose committing
 	    sm commit_xct
-	    verbose $n
+	    verbose committed x $x listlen $xlistlen
 	}
     }
+
+	verbose next test
 
     # do b*1000 separately, because it has a max # records
     set nulls nullok
     set experiment b*1000
-    set nrec 126
+	set nrec [expr $page_size / 35]
+	echo $nrec
+    # set nrec 126
+    # set nrec 31
+    set nrec 21
 
     sm begin_xct
     verbose sm test_bulkload_int_btree $volid $nrec $experiment $nulls
-    sm test_bulkload_int_btree $volid $nrec $experiment $nulls
+	set res [sm test_bulkload_int_btree $volid $nrec $experiment $nulls]
+	verbose DONE: w/ sm test_bulkload_int_btree $volid $nrec $experiment $nulls result=$res
 
     # stats
     set n [sm gather_xct_stats reset]
@@ -71,5 +86,5 @@ if {$logging==0} {
     unset experiment xlistlen n x xlist
 }
 
-unset nrec
+unset nrec nulls
 

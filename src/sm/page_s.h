@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='PAGE_S_H'>
 
- $Id: page_s.h,v 1.33 2010/05/26 01:20:40 nhall Exp $
+ $Id: page_s.h,v 1.34 2010/07/26 23:37:12 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -89,7 +89,7 @@ public:
         // called on page format, rflag is true for rsvd_mode() pages
         void init_space_t(int nfree, bool rflag)  { 
             _tid = tid_t(0, 0);
-            _nfree = nfree;
+            _nfree = page_bytes_t(nfree);
             _nrsvd = _xct_rsvd = 0;
 
             _rflag = rflag;
@@ -150,7 +150,7 @@ public:
               + sizeof(w_base_t::uint4_t) // _private_store_flags
               + sizeof(w_base_t::uint4_t) // page_flags
               + 0),
-        hdr_sz = (_hdr_sz + static_align<footer_sz>::value),
+        hdr_sz = (_hdr_sz + align(footer_sz)),
         data_sz = smlevel_0::page_sz - hdr_sz,
         max_slot = data_sz / sizeof(slot_t) + 2
     };
@@ -192,17 +192,14 @@ public:
     w_base_t::uint4_t    page_flags;        // page_p::page_flag_t
     /* 4 bytes: offset 64 */
     /* MUST BE 8-BYTE ALIGNED HERE */
-    union slot_array {
-	char     data[data_sz];
-	slot_t   slot[max_slot];
-    } _slots;
+    char     data[data_sz];        // must be aligned
 
-    slot_t &slot(slotid_t idx) { return _slots.slot[max_slot-idx-1]; }
-    char *data() { return _slots.data; }
-    
-    slot_t const &slot(slotid_t idx) const { return _slots.slot[max_slot-idx-1]; }
-    char const *data() const { return _slots.data; }
-    
+    /* offset 8176 */
+    slot_t    reserved_slot[1];     // 2nd slot (declared to align
+                                    // end of _data)
+    /* offset 8180 */
+    slot_t    slot[1];        // 1st slot
+
     /* offset 8184 */
     /* NOTE: lsn_t now requires 8-byte alignment! */
     lsn_t    lsn2;

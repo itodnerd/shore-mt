@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='BASICS_H'>
 
- $Id: basics.h,v 1.71 2010/05/26 01:20:11 nhall Exp $
+ $Id: basics.h,v 1.74 2012/01/02 17:02:10 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -57,7 +57,9 @@ typedef uint4_t               smsize_t;
 typedef w_base_t::uint4_t    shpid_t; 
 
 #ifndef SM_SOURCE
-// This is for servers. SM_SOURCE is defined in the SM sources.
+/**\brief lock modes and duration type.
+ * Exported to API for use by servers to simplify the names.
+ */
 namespace locking {
 	typedef w_base_t::lock_duration_t  lock_duration_t; 
 	typedef w_base_t::lock_mode_t  lock_mode_t; 
@@ -68,12 +70,13 @@ namespace locking {
 	static const lock_mode_t SIX = w_base_t::SIX;
 	static const lock_mode_t UD = w_base_t::UD;
 	static const lock_mode_t EX = w_base_t::EX;
-};
+}
 using namespace locking;
 
+/**\brief Types for API used for 2PC */
 namespace two_phase_commit {
 	typedef w_base_t::vote_t  vote_t; 
-};
+}
 using namespace two_phase_commit;
 #endif
 

@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: tid_t.cpp,v 1.18.2.4 2009/10/30 23:51:11 nhall Exp $
+ $Id: tid_t.cpp,v 1.20 2010/12/08 17:37:34 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -54,30 +54,4 @@ template bool operator==(const opaque_quantity<max_server_handle_len> &,
                             const opaque_quantity<max_server_handle_len> &);
 #endif
 
-#ifdef VCPP_BUG_3
-
-bool operator==(const opaque_quantity<max_gtid_len> &l, const opaque_quantity <max_gtid_len> &r) 
-{
-    return ((l._length==r._length) &&
-        (memcmp(l._opaque,r._opaque,l._length)==0));
-}
-bool operator==(const opaque_quantity<max_server_handle_len> &l, const opaque_quantity <max_server_handle_len> &r) 
-{
-    return ((l._length==r._length) &&
-        (memcmp(l._opaque,r._opaque,l._length)==0));
-}
-
-ostream & 
-operator<<(ostream &o, const opaque_quantity<max_server_handle_len>    &b) 
-{
-    return b.print(o);
-}
-
-ostream & 
-operator<<(ostream &o, const opaque_quantity<max_gtid_len>    &b) 
-{
-    return b.print(o);
-}
-
-#endif /* VCPP_BUG_3 */
 

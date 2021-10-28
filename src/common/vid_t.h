@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='VID_T_H'>
 
- $Id: vid_t.h,v 1.27 2010/05/26 01:20:12 nhall Exp $
+ $Id: vid_t.h,v 1.28 2010/06/23 23:43:29 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -67,7 +67,7 @@ struct vid_t {
 
     // This function casts a vid_t to a uint2_t.  It is needed
     // in lid_t.h where there is a hack to use vid_t to
-    // create a logical volume ID.
+    // create a long volume ID.
                     operator uint2_t () const {return vol;}
 
     // Data Members
@@ -81,9 +81,6 @@ struct vid_t {
     }
     friend bool operator!=(const vid_t& v1, const vid_t& v2)  {
         return v1.vol != v2.vol;
-    }
-    friend bool operator<(const vid_t& v1, const vid_t& v2)  {
-        return v1.vol < v2.vol;
     }
 };
 

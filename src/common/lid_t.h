@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='LID_T_H'>
 
- $Id: lid_t.h,v 1.37 2010/05/26 01:20:12 nhall Exp $
+ $Id: lid_t.h,v 1.38 2010/12/08 17:37:34 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -65,7 +65,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 */
 typedef uint2_t VID_T;
 
-#define LVID_T
 /**\brief long volume ID.  See \ref IDS. 
  *\ingroup IDS
  *

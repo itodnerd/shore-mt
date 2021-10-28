@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: except.cpp,v 1.9.2.4 2010/03/19 22:20:03 nhall Exp $
+ $Id: except.cpp,v 1.11 2010/06/08 22:27:54 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

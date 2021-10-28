@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='TCL_THREAD_H'>
 
- $Id: tcl_thread.h,v 1.35.2.10 2010/03/19 22:20:31 nhall Exp $
+ $Id: tcl_thread.h,v 1.36 2010/05/26 01:20:52 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -39,8 +39,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #endif
 
 #include "tcl_workaround.h"
-
-#include "macpthread_barrier.h" // For pthread_barrier_t in MacOS
 
 extern "C" int num_tcl_threads_running();
 extern bool interactive; 

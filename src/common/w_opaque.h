@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='W_OPAQUE_H'>
 
- $Id: w_opaque.h,v 1.6.2.6 2010/03/19 22:19:19 nhall Exp $
+ $Id: w_opaque.h,v 1.8 2010/12/08 17:37:34 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -41,23 +41,11 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include <w_base.h>
 #endif
 
-#ifdef __GNUC__
-/* XXX gcc-2.7.2.3 has some weird problem with forward template function
-   declarations.   The easiest way (for now) is to just not do it.
-   This should be moved to w_workaround once the other similar
-   issues are accounted for. */
-#if W_GCC_THIS_VER < W_GCC_VER(2,95)
-#define    W_NO_TEMPLATE_FORWARD_DECLS
-#endif
-#endif
-
 template <int LEN> class opaque_quantity;
-#ifndef W_NO_TEMPLATE_FORWARD_DECLS
 template <int LEN> ostream &operator<<(ostream &o,
                        const opaque_quantity<LEN> &r);
 template <int LEN> bool operator==(const opaque_quantity<LEN> &l,
                    const opaque_quantity<LEN> &r);
-#endif
 
 /**\brief A set of untyped bytes. 
  *
@@ -222,7 +210,7 @@ private:
             if (isprint(*cp))
                 o << *cp;
             else {
-                W_FORM(o)("\\x%02X", *cp);
+                W_FORM(o)("\\x%02X", *cp); 
             }
         }
 

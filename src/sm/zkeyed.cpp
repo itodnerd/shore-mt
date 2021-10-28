@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: zkeyed.cpp,v 1.50 2010/05/26 01:20:49 nhall Exp $
+ $Id: zkeyed.cpp,v 1.54 2012/01/02 21:52:23 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -55,17 +55,11 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 /*  -- do not edit anything above this line --   </std-header>*/
 
 /*
- * overall upper limit on #prefix parts:
- */
-#define MAXPFX max_num_entries()
-
-/*
  * configured upper-limit on # prefix parts-
  * make this much more than 10, and the cost in cycles 
  * is too high, even though the space savings might
  * be huge. 
  */
-#define MAX_PREFIX_LEVEL 10
 
 #define SM_SOURCE
 #define ZKEYED_C
@@ -79,7 +73,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 MAKEPAGECODE(zkeyed_p, page_p)
 
 
-static int max_prefix_level = MAX_PREFIX_LEVEL;
+static int max_prefix_level = 10;
 
 
 /*********************************************************************
@@ -141,10 +135,9 @@ zkeyed_p::shift(slotid_t idx, zkeyed_p* rsib, bool compressed)
      * tmp_chunk_size slots at a time
      */
     const int tmp_chunk_size = 20;    // XXX magic number
-    vec_t *tp = new vec_t[tmp_chunk_size];
-    if (!tp)
-        return RC(fcOUTOFMEMORY);
-    w_auto_delete_array_t<vec_t>    ad_tp(tp);
+
+    // avoid heap activity.  This isn't so big after all.
+    vec_t tp[tmp_chunk_size];
 
     for (int i = start_simple_move; i < n && (! rc.is_error()); ) {
         int j;
@@ -158,97 +151,6 @@ zkeyed_p::shift(slotid_t idx, zkeyed_p* rsib, bool compressed)
         // i has been incremented j times, hence the
         // subtraction for the 1st arg to insert_expand():
         rc = rsib->insert_expand(1 + i - j, j, tp); // do it & log it
-    }
-    if (! rc.is_error())  {
-        DBG(<<"Removing " << n << " slots starting with " << 1+idx
-            << " from page " << pid().page);
-        rc = remove_compress(1 + idx, n);
-    }
-    DBG(<< " page " << pid().page << " has " << nrecs() << " slots");
-    DBG(<< " page " << rsib->pid().page << " has " << rsib->nrecs() 
-        << " slots");
-
-    return rc.reset();
-
-}
-
-
-/*********************************************************************
- *
- *  zkeyed_p::shift(idx, idx_dest, rsib, compressed)
- *
- *  Shift all entries starting at "idx" to idx_dest entry of page "rsib".
- *  This is called from btree.cpp, where nothing is known about
- *  key compression, so it's up to this function to maintain the
- *  invariant that the first slot on a page has no compression.
- *
- *********************************************************************/
-rc_t
-zkeyed_p::shift(slotid_t idx, slotid_t idx_dest, zkeyed_p* rsib, bool compressed)
-{
-    FUNC(zkeyed_p::shift);
-    w_assert1(idx >= 0 && idx < nrecs());
-
-    int n = nrecs() - idx;
-
-    DBG(<<"zkeyed_p::SHIFT "  
-        << " (compressed=" << compressed 
-        << ") from page " << pid().page << " idx " << idx
-        << " #recs " << n
-        );
-
-    int start_simple_move=0;
-    rc_t rc;
-    
-    if(compressed) {
-        // First slot is a special case
-        // See if it's got a compressed prefix; if so,
-        // materialize the whole thing through zkeyed_p::rec
-        // before stuffing it into the rsib.
-        //
-        // In several cases, though, idx is 0 (we're moving everything)
-        // and in that case, we don't have to check anything
-        if(idx > 0)
-        {
-            const char*    junk;
-            int            pxl;
-            int            pxp;
-            int             junklen;
-            cvec_t          key;
-            W_DO(this->rec(idx, pxl, pxp, key, junk, junklen));
-            if(pxl>0) {
-                cvec_t    aux;
-                aux.put(junk,junklen);
-                // It had better fit!
-                DBG(<<"Shift : first rec has " << pxp << " prefix parts");
-                W_COERCE(rsib->insert(key, aux, 0));
-                start_simple_move ++;
-            }
-        }
-    }
-    
-    /* 
-     * grot performance hack: do in chunks of up to 
-     * tmp_chunk_size slots at a time
-     */
-    const int tmp_chunk_size = 20;    // XXX magic number
-    vec_t *tp = new vec_t[tmp_chunk_size];
-    if (!tp)
-        return RC(fcOUTOFMEMORY);
-    w_auto_delete_array_t<vec_t>    ad_tp(tp);
-
-    for (int i = start_simple_move, k = idx_dest; i < n && (! rc.is_error()); ) {
-        int j;
-
-        // NB: this next for-loop increments variable i !!!
-        for (j = 0; j < tmp_chunk_size && i < n; j++, i++, k++)  {
-            tp[j].set(page_p::tuple_addr(1 + idx + i),
-                  page_p::tuple_size(1 + idx + i));
-        }
-
-        // i has been incremented j times, hence the
-        // subtraction for the 1st arg to insert_expand():
-        rc = rsib->insert_expand(1 + k - j, j, tp); // do it & log it
     }
     if (! rc.is_error())  {
         DBG(<<"Removing " << n << " slots starting with " << 1+idx
@@ -730,9 +632,9 @@ zkeyed_p::rewrite(
 
 
 #if W_DEBUG_LEVEL > 2
-    char *savebuf = new char[smlevel_0::page_sz];
-    if (!savebuf) W_FATAL(fcOUTOFMEMORY);
-    w_auto_delete_array_t<char> ad_savebuf(savebuf);
+    static __thread char savebuf[smlevel_0::page_sz];
+    // if (!savebuf) W_FATAL(fcOUTOFMEMORY);
+    // w_auto_delete_array_t<char> ad_savebuf(savebuf);
     size_t savesize;
     // copy the rec for later comparison purposes 
     savesize = thiskey.copy_to(savebuf, thiskey.size());
@@ -753,51 +655,49 @@ zkeyed_p::rewrite(
     vpx.put(&plen, sizeof(plen));
 
     if(prefix_len > thispxl) {
-    /*
-     * remove some of the data and overwrite
-     * the prefix length
-     */
-    W_DO(page_p::cut(slot, sizeof(uint2_t)*2, prefix_len - thispxl));
-    W_COERCE(page_p::overwrite(slot , 0, vpx));
-    } else if (prefix_len < thispxl) {
-    /*
-     * insert some of the data and overwrite
-     * the prefix length
-     */
-    DBG(<<"splitting vec at " << prefix_len);
-    thiskey.split(prefix_len, junkvec, rest);
-
-    DBG(<<"splitting rest at " << thispxl);
-    rest.split(thispxl, v, junkvec);
-
-    w_assert3((int)v.size() == thispxl - prefix_len);
-
-    /* 
-     * At this point, we've got to copy out what we're pasting in,
-     * so that the paste operation doesn't clobber what we're copying
-     */
-    w_assert1(v.size() < (smlevel_0::page_sz>>1));
-
-
-    {
-        char *save = new char[v.size()]; //auto-del
-        w_auto_delete_array_t<char> autodel(save);
-        size_t savesz;
-        savesz = v.copy_to(save, v.size());
-
-        v.reset().put(save, savesz);
-
-        DBG(<<"pasting in " << v.size() << " bytes");
-        W_DO(page_p::paste(slot, sizeof(uint2_t)*2, v));
-
-        DBG(<<"total slot size " << page_p::tuple_size(slot));
-        DBG(<<"overwrite pxl value " << thispxl << " with " << plen);
+        /*
+         * remove some of the data and overwrite
+         * the prefix length
+         */
+        W_DO(page_p::cut(slot, sizeof(uint2_t)*2, prefix_len - thispxl));
         W_COERCE(page_p::overwrite(slot , 0, vpx));
-    }
+    } else if (prefix_len < thispxl) {
+        /*
+         * insert some of the data and overwrite
+         * the prefix length
+         */
+        DBG(<<"splitting vec at " << prefix_len);
+        thiskey.split(prefix_len, junkvec, rest);
+
+        DBG(<<"splitting rest at " << thispxl);
+        rest.split(thispxl, v, junkvec);
+
+        w_assert3((int)v.size() == thispxl - prefix_len);
+
+        /* 
+         * At this point, we've got to copy out what we're pasting in,
+         * so that the paste operation doesn't clobber what we're copying
+         */
+        w_assert1(v.size() < (smlevel_0::page_sz>>1));
+
+        {
+            static __thread char save[smlevel_0::page_sz];
+            size_t savesz;
+            savesz = v.copy_to(save, v.size());
+
+            v.reset().put(save, savesz);
+
+            DBG(<<"pasting in " << v.size() << " bytes");
+            W_DO(page_p::paste(slot, sizeof(uint2_t)*2, v));
+
+            DBG(<<"total slot size " << page_p::tuple_size(slot));
+            DBG(<<"overwrite pxl value " << thispxl << " with " << plen);
+            W_COERCE(page_p::overwrite(slot , 0, vpx));
+        }
     } else {
-    /* no change */
-    w_assert3(prefix_len == thispxl);
-    DBG(<<"rewrite not necessary");
+            /* no change */
+            w_assert3(prefix_len == thispxl);
+            DBG(<<"rewrite not necessary");
     }
 
 #if W_DEBUG_LEVEL > 2
@@ -914,7 +814,7 @@ zkeyed_p::remove(slotid_t idx, bool compress)
             dump(prev_rec, __LINE__," PREV BEFORE REMOVE ");
         }
 #endif
-        bool    try_compress = max_prefix_level > 0;
+        try_compress = max_prefix_level > 0;
 
         if( (prevpxp + 1 >= (int)max_prefix_level) 
             || !try_compress) {
@@ -1160,7 +1060,7 @@ zkeyed_p::rec(
 {
     int pxl, pxp;
     w_rc_t rc = rec(idx, pxl, pxp, key, aux, auxlen);
-    w_assert3((smsize_t) pxp <= MAXPFX);
+    w_assert3((smsize_t) pxp <= max_num_entries());
     return rc;
 }
 
@@ -1211,79 +1111,77 @@ zkeyed_p::rec(
     // First item on the page cannot have a compressed prefix
     if(idx == 0) {
 #if W_DEBUG_LEVEL > 2
-    if(pxl!=0) {
-        DBG( << "PAGE's FIRST TUPLE HAS COMPRESSION!" << pxl);
-    }
+        if(pxl!=0) {
+            DBG( << "PAGE's FIRST TUPLE HAS COMPRESSION!" << pxl);
+        }
 #endif 
-    w_assert1(pxl == 0);
+        w_assert1(pxl == 0);
     }
 
     int l = (int) (* (int2_t*) p);
     p += sizeof(int2_t);
 
     if(pxl==0) {
-    w_assert3( (int)page_p::tuple_size(idx+1) >= l);
+        w_assert3( (int)page_p::tuple_size(idx+1) >= l);
     }
     if(pxl>0) {
-    pxinfo_t *prefixes = new pxinfo_t[MAXPFX+1]; // auto-del
-    w_auto_delete_array_t<pxinfo_t> autodel(prefixes);
+        static __thread pxinfo_t prefixes[ZKEYED_P_MAX_NUM_ENTRIES+1]; 
 
+        /*  
+         *  First, work backward, computing pointers to the prefix
+         *  portions and the *their* prefix lengths, until we find
+         *  a key with no prefix
+         *  When we are done, the structs will mean:
+         *    pfx -> ptr to the prefix portion
+         *    pxl -> length of this prefix portion (unexpanded)
+         *    pxxl -> length of this prefix portion's prefix
+         */
+        int     _kl = l;
+        int     _pxl = pxl;
+        const char* _pfx = p;
+        int     i=0;
+        bool    keep_going = true;
 
-    /*  
-     *  First, work backward, computing pointers to the prefix
-     *  portions and the *their* prefix lengths, until we find
-     *  a key with no prefix
-     *  When we are done, the structs will mean:
-     *    pfx -> ptr to the prefix portion
-     *    pxl -> length of this prefix portion (unexpanded)
-     *    pxxl -> length of this prefix portion's prefix
-     */
-    int     _kl = l;
-    int     _pxl = pxl;
-    const char* _pfx = p;
-    int     i=0;
-    bool    keep_going = true;
+        while(keep_going) {
+            DBG(<<"Prefix " << -i
+            << " _pxl:" << _pxl 
+             << " expanded:" << _kl 
+             << " _strl " << _kl - _pxl
+             );
+            prefixes[i].pxxl = _pxl;
+            prefixes[i].strl = _kl - _pxl;
+            prefixes[i].use = l - prefix_len - prefixes[i].pxxl;
+            prefixes[i].use = (prefixes[i].use <0)? 0: prefixes[i].use;
+            prefixes[i].pfx = _pfx;
+            DBG(<<"Use " << prefixes[i].use);
 
-    while(keep_going) {
-        DBG(<<"Prefix " << -i
-        << " _pxl:" << _pxl 
-         << " expanded:" << _kl 
-         << " _strl " << _kl - _pxl
-         );
-        prefixes[i].pxxl = _pxl;
-        prefixes[i].strl = _kl - _pxl;
-        prefixes[i].use = l - prefix_len - prefixes[i].pxxl;
-        prefixes[i].use = (prefixes[i].use <0)? 0: prefixes[i].use;
-        prefixes[i].pfx = _pfx;
-        DBG(<<"Use " << prefixes[i].use);
+            prefix_len += prefixes[i].use;
 
-        prefix_len += prefixes[i].use;
+            keep_going = (prefixes[i].pxxl > 0);
 
-        keep_going = (prefixes[i].pxxl > 0);
-
-        if(keep_going) {
-        i++;
-        w_assert1(i <= idx);
-        _pfx = (const char*) page_p::tuple_addr((idx-i)+1);
-        _pxl = (int) (* (int2_t*) _pfx);
-        _pfx += sizeof(int2_t); // skip past prefix-length, to key-length
-        _kl = (int) (* (int2_t*) _pfx);
-        _pfx += sizeof(int2_t); // again to get past key-length
+            if(keep_going) {
+                i++;
+                w_assert1(i <= idx);
+                _pfx = (const char*) page_p::tuple_addr((idx-i)+1);
+                _pxl = (int) (* (int2_t*) _pfx);
+                _pfx += sizeof(int2_t); // skip past prefix-length, to key-length
+                _kl = (int) (* (int2_t*) _pfx);
+                _pfx += sizeof(int2_t); // again to get past key-length
+            }
         }
-    }
-    prefix_parts = i;
-    w_assert3(prefix_len == l);
+        prefix_parts = i;
+        w_assert3(prefix_len == l);
 
-    prefix_len = 0;
-    while(i > 0) {
-        if(prefixes[i].use > 0) {
-        // Put only the amount needed 
-        key.put(prefixes[i].pfx, prefixes[i].use);
-        prefix_len += prefixes[i].use;
+        prefix_len = 0;
+        while(i > 0) {
+            if(prefixes[i].use > 0) {
+                // Put only the amount needed 
+                key.put(prefixes[i].pfx, prefixes[i].use);
+                prefix_len += prefixes[i].use;
+            }
+
+            i--;
         }
-
-        i--;
-    }
     }
     w_assert3(prefix_len == pxl);
 

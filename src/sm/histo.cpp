@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: histo.cpp,v 1.18 2010/06/15 17:30:07 nhall Exp $
+ $Id: histo.cpp,v 1.27 2010/12/08 17:37:42 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -87,10 +87,10 @@ int SearchableHeap<T, Cmp>::Search(int i, const T& t)
     int parent = i; // root
     // First, check sibling of parent if parent != root
     if (parent >0 && (RightSibling(parent) < numElements))  {
-    DBGTHRD(<<"check right sibling: " << RightSibling(parent));
-    if (cmp.ge(elements[RightSibling(parent)], t)) {
-        return RightSibling(parent);
-    }
+        DBGTHRD(<<"check right sibling: " << RightSibling(parent));
+        if (cmp.ge(elements[RightSibling(parent)], t)) {
+            return RightSibling(parent);
+        }
     }
 
     DBGTHRD(<<"parent=" << parent);
@@ -127,9 +127,9 @@ int SearchableHeap<T, Cmp>::Match(const T& t) const
 {
     w_assert3(HeapProperty(0));
     for (int i = 0;  i < numElements; i++) {
-    if (cmp.match(elements[i], t)) {
-        return i;
-    }
+        if (cmp.match(elements[i], t)) {
+            return i;
+        }
     }
     return -1; // none found
 }
@@ -154,27 +154,27 @@ typedef class w_hash_i<histoid_t, occ_rwlock, stid_t> w_hash_i_histoid_t_stid_t_
 
 // no point leaving this in the .h -- everything that uses it is in
 // this file, and we can change them w/o a full recompile if they're here.
-enum {     root = 0, // root of heap
+enum {  root = 0, // root of heap
         pages_in_heap = 20, 
         buckets_in_table = 11,
         max_stores_in_table = 33 };
 
 /**\brief Locks synchronizing access to hash table for histids.
  * \details
- * - htab_mutex_writer
+ * - _htab_mutex_writer
  *   Used in CRITICAL_SECTION allow only one
  *   thread inside destroyed_store at a time.
- * - htab_mutex: read-write lock 
+ * - _htab_mutex_rw: read-write lock 
  *   - acquired in read mode to print the cache and
  *     in histoid:::acquire()
  *   - acquired in write mode inside destroyed_store
  *     which is ensured to have at most 1 thread as 
- *     it's a critical section protected by htab_mutex_writer.
+ *     it's a critical section protected by _htab_mutex_writer.
  *     This is done because the occ_rwlock does not allow multiple
  *     threads to acquire_write. It's racy in that respect.
  */
-queue_based_block_lock_t    histoid_t::htab_mutex_writer;
-occ_rwlock                  histoid_t::htab_mutex;
+queue_based_block_lock_t    histoid_t::_htab_mutex_writer;
+occ_rwlock                  histoid_t::_htab_mutex_rw;
 
 w_hash_t<histoid_t, occ_rwlock, stid_t> *    histoid_t::htab = NULL;
 int                         histoid_t::initialized = 0;
@@ -187,7 +187,7 @@ histoid_t::histoid_t (stid_t s)
     DBGTHRD(<<"create histoid_t for store " << s
     << " returns this=" << this);
     pgheap = new SearchableHeap<pginfo_t, histoid_compare_t>(
-    cmp, pages_in_heap);
+                cmp, pages_in_heap);
     w_assert2(!_in_hash_table()); 
 }
 
@@ -207,7 +207,7 @@ rc_t histoid_t::initialize_table()
     w_assert1(htab == NULL);
     w_assert0(initialized==0);
     htab = new w_hash_t<histoid_t, occ_rwlock, stid_t>( buckets_in_table,
-                        W_HASH_ARG(histoid_t, cmp.key, link), &htab_mutex);
+                        W_HASH_ARG(histoid_t, cmp.key, link), &_htab_mutex_rw);
 
     if(htab) initialized++;
     return MAKERC(!htab, eOUTOFMEMORY);
@@ -222,9 +222,9 @@ histoid_t::destroy_table()
 
     {
         // Don't let me interfere with destroyed_store.
-        CRITICAL_SECTION(cs, htab_mutex_writer);
+        CRITICAL_SECTION(cs, _htab_mutex_writer);
         // Don't let me interfere with readers.
-        htab_mutex.acquire_write();
+        _htab_mutex_rw.acquire_write();
         histoid_t* h(NULL);
         w_hash_i_histoid_t_stid_t_iterator iter(*htab);
 
@@ -246,7 +246,7 @@ histoid_t::destroy_table()
             }
         } 
         // is empty
-        htab_mutex.release_write();
+        _htab_mutex_rw.release_write();
     }
 
     w_assert1(htab->num_members() == 0);
@@ -264,7 +264,7 @@ histoid_t::_victimize(int howmany)
     // the desired table size 
     DBGTHRD(<<"_victimize " << howmany );
 
-    // NB: ASSUMES CALLER HOLDS htab_mutex!!!
+    // NB: ASSUMES CALLER HOLDS _htab_mutex_rw!!!
     // NB: the mutex is a read mutex, which can be held by
     // multiple threads!
 
@@ -291,6 +291,7 @@ histoid_t::_victimize(int howmany)
                 h->_release_mutex();
             }
         }
+        w_assert1(!h->_have_mutex());
     }
 }
 
@@ -331,7 +332,7 @@ histoid_t*
 histoid_t::acquire(const stid_t& s) 
 {
     DBGTHRD(<<"acquire histoid for store " << s);
-    htab_mutex.acquire_read();
+    _htab_mutex_rw.acquire_read();
     histoid_t *h = htab->lookup(s);
     if(h) {
         DBGTHRD(<<"existing store " << s);
@@ -343,32 +344,32 @@ histoid_t::acquire(const stid_t& s)
               << " from " << h->refcount);
           atomic_inc(h->refcount);// give reference before unlocking lookup table
         }
-        htab_mutex.release_read();
+        _htab_mutex_rw.release_read();
         if(!pinned)
           h->_release_mutex();
 
     } else {
         // Release the read lock, grab a write lock for
         // these updates:
-        htab_mutex.release_read();
+        _htab_mutex_rw.release_read();
 
         if(htab->num_members() >= max_stores_in_table) {
             // See if we can free up some space.
             // Only one thread can request the
-            // htab_mutex in write mode. 
-            CRITICAL_SECTION(cs, htab_mutex_writer);
+            // _htab_mutex_rw in write mode. 
+            CRITICAL_SECTION(cs, _htab_mutex_writer);
             // Wait for the readers to drain out.
-            htab_mutex.acquire_write();
+            _htab_mutex_rw.acquire_write();
             // recheck after acquiring write mode...
             if(htab->num_members() >= max_stores_in_table) 
             {
 
-                // choose a replacement while we have the htab_mutex,
+                // choose a replacement while we have the _htab_mutex_rw,
                 // throw it out
 
                 _victimize(1 + (htab->num_members() - max_stores_in_table));
             }
-            htab_mutex.release_write();
+            _htab_mutex_rw.release_write();
         }
 
         // Create a new histoid for the given store
@@ -379,14 +380,14 @@ histoid_t::acquire(const stid_t& s)
 
         {
             // Only one thread can request the
-            // htab_mutex in write mode. 
-            CRITICAL_SECTION(cs, htab_mutex_writer);
+            // _htab_mutex_rw in write mode. 
+            CRITICAL_SECTION(cs, _htab_mutex_writer);
             // Wait for the readers to drain out.
-            htab_mutex.acquire_write();
+            _htab_mutex_rw.acquire_write();
 
             htab->push(h); // insert into hash table
             w_assert2(h->_in_hash_table()); 
-            htab_mutex.release_write();
+            _htab_mutex_rw.release_write();
         }
         h->_grab_mutex();
 
@@ -414,6 +415,7 @@ histoid_t::acquire(const stid_t& s)
 void 
 histoid_t::_insert_store_pages(const stid_t& s) 
 {
+    FUNC(_insert_store_pages);
     DBGTHRD(<<"_insert_store_pages histoid " << this << " for store " << s);
     w_assert3(_in_hash_table()); 
     w_assert3(_have_mutex());
@@ -464,9 +466,9 @@ histoid_t::release()
 }
 
 #if W_DEBUG_LEVEL > 2
-#define TRACEIT
+#define TRACEIT_HISTOID_T
 #endif
-#ifdef TRACEIT
+#ifdef TRACEIT_HISTOID_T
 struct trace_info {
     int line;
     int members;
@@ -475,15 +477,15 @@ struct trace_info {
 };
 #endif
 
-#ifdef TRACEIT
+#ifdef TRACEIT_HISTOID_T
 const int  TRACE_NUM=10;
 static __thread struct trace_info TRACE_LINE[TRACE_NUM]; // DEBUGGING
 static __thread int TRACE_IDX=0; // DEBUGGING
-#define T(l,c,h)\
+#define TRACE_HISTO(l,c,h)\
 { trace_info &x=TRACE_LINE[TRACE_IDX];  \
     x.line=l; x.members=c; x.h=h; TRACE_IDX++; }
 #else
-#define T(l,c,h)
+#define TRACE_HISTO(l,c,h)
 #endif
 
 void     
@@ -492,17 +494,17 @@ histoid_t::destroyed_store(const stid_t&s, sdesc_t*sd)
     DBGTHRD(<<"histoid_t::destroyed_store " << s);
 
     bool success = false;
-#ifdef TRACEIT
+#ifdef TRACEIT_HISTOID_T
    TRACE_IDX=0;
 #endif
     while (!success) {
         // Only one thread can request the
-        // htab_mutex in write mode. 
-        CRITICAL_SECTION(cs, htab_mutex_writer);
+        // _htab_mutex_rw in write mode. 
+        CRITICAL_SECTION(cs, _htab_mutex_writer);
         // Wait for the readers to drain out.
-        htab_mutex.acquire_write();
+        _htab_mutex_rw.acquire_write();
         histoid_t *h = htab->lookup(s);
-T(__LINE__, htab->num_members(), h);
+TRACE_HISTO(__LINE__, htab->num_members(), h);
         if(h) {
             DBGTHRD(<<"lookup found " << h
                 << " refcount " << h->refcount);
@@ -518,18 +520,19 @@ T(__LINE__, htab->num_members(), h);
                 else
                     w_assert1(h->refcount == 0 || h->refcount == 1);
 #endif
-T(__LINE__, htab->num_members(), h);
+TRACE_HISTO(__LINE__, htab->num_members(), h);
 
                 DBGTHRD(<<"removing " << h );
 
                 w_assert1( h->_in_hash_table()); 
-T(__LINE__, htab->num_members(), h);
+TRACE_HISTO(__LINE__, htab->num_members(), h);
                 w_assert1( htab->num_members() >= 1);
                 htab->remove(h); // h->link.detach(), decrement _cnt 
-T(__LINE__, htab->num_members(), h);
+TRACE_HISTO(__LINE__, htab->num_members(), h);
                 w_assert2( !h->_in_hash_table()); 
                 h->_release_mutex();
             }
+            w_assert1(!h->_have_mutex());
         } else {
            success = true; // is gone already
         }
@@ -537,7 +540,7 @@ T(__LINE__, htab->num_members(), h);
         // Out of critical section: done messing
         // with hash table, h is no longer in it
         // and we have a lock on h (if h is non-null)
-        htab_mutex.release_write();
+        _htab_mutex_rw.release_write();
         cs.exit();
 
         if(h) {
@@ -559,25 +562,18 @@ T(__LINE__, htab->num_members(), h);
                  * the reference to h, so we can't
                  * delete it, even though we have removed
                  * it from the table.
-				 *
+                 *
                  * The problem here is that it WILL get
                  * cleaned up if we're in fwd/rollback (when
                  * the dir cache gets invalidated), but
                  * NOT if we're in crash-recovery/rollback
                  * or in pseudo-crash-recovery/rollback as 
                  * realized by ssh "sm restart" command.  
+                 *
+                 * FIX: in the destructor for the sdesc_cache_t, we
+                 * now invalidate the entries before deleting them; 
+                 * that should clean up these references.
                  */
-T(__LINE__, htab->num_members(), h);
-#if W_DEBUG_LEVEL >= 0
-                fprintf(stderr, 
-		"GNATS 108 histoid cleanup problem. Refcount %d sd %p in_recov %d\n",
-				h->refcount ,
-				sd,
-				smlevel_0::in_recovery()
-				);
-                // croak here
-                // RE-insert this to debug : w_assert0(0);
-#endif
                  DBGTHRD(<<"ROLLBACK! can't delete h= " << h);
             }
         } 
@@ -608,9 +604,12 @@ histoid_t::__find_page_in_heap(
 
     int hook;
     while(1) {
+        DBGTHRD(<<"while 1 root=" << root 
+                << " pgheap->NumElements() " << pgheap->NumElements()
+                );
         w_assert3(pgheap->HeapProperty(0));
         for(hook = root; hook < pgheap->NumElements(); hook++) {
-            DBG(<<"checking at hook=" << hook
+            DBGTHRD(<<"checking at hook=" << hook
                 << " page=" << pgheap->Value(hook).page() );
             if(pgheap->Value(hook).page() == pid) {
                 DBGTHRD(<<"grabbing hook " << hook
@@ -622,18 +621,19 @@ histoid_t::__find_page_in_heap(
         }
         if(insert_if_not_found) {
             /* Not found: create one & insert it */
-            pginfo_t info(pid,0); // unknown size 
+            pginfo_t info(pid, pginfo_t::unknown_size()); // unknown size 
             w_assert3(_have_mutex());
-            DBG(<<"insert if not found");
-            install(info);
+            DBGTHRD(<<"insert if not found pid " << pid);
+            _install(info);
             // search to get the hook
         } else {
             return nohook;
         }
     }
     // should never happen
+    /*NOTREACHED*/
     W_FATAL(eINTERNAL);
-    return (-1); // to keep compiler happy
+    return 0; // shut the compiler up
 }
 
 /********************************************************************
@@ -662,8 +662,10 @@ histoid_t::_find_page_return_info(
     pginfo_t&          result
 )
 {
+    DBGTHRD(<<"_find_page_return_info pid " << pid);
     // Don't create a pginfo_t, insert, then remove
     _grab_mutex();
+    w_assert3(_have_mutex());
     int hook = __find_page_in_heap(false, pid);
     w_assert3(_have_mutex());
 
@@ -698,10 +700,13 @@ histoid_t::find_page(
     bool&            found,
     pginfo_t&        info, 
     file_p*          pagep,     // input
-    slotid_t&        idx,    // output iff found
-    const bool       bIgnoreParents
+    slotid_t&        idx    // output iff found
+#ifdef SM_DORA
+    , const bool     bIgnoreParents
+#endif
 ) const
 {
+    FUNC(find_page);
     DBGTHRD(<<"histoid_t::find_page in store " << cmp.key
     << " w/ at least " << space_needed << " free bytes "
     << " refcount=" << refcount
@@ -763,18 +768,34 @@ histoid_t::find_page(
             // the following latch/lock, the page could have been freed.
             // So latch_lock_get_slot has to verify that the page is still
             // a valid page for this store.
+            // Given that we're checking below anyway, we 
+            // removed the is_valid_page_of check above.
             if(success) {
                 success=false;
+                w_assert1(pagep->is_fixed()==false); 
                 W_DO(latch_lock_get_slot(pg, pagep, space_needed,
-					 false, // not append-only
-					 success, idx, bIgnoreParents));
+                    false, // not append-only
+                    success, idx
+#ifdef SM_DORA
+                                         , bIgnoreParents
+#endif
+                                         ));
+#if W_DEBUG_LEVEL > 1
                 if(success) {
+                    w_assert1(pagep->is_fixed()==true); 
                     // checking here ONLY so we can tell the path taken 
                     w_assert2(pagep->pid().page == pg);
                     w_assert2(pagep->pid().stid().store == cmp.key.store);
                     lpid_t pid(cmp.key, pagep->pid().page);
-                    w_assert2(io->is_valid_page_of(pid, cmp.key.store));
+                    {
+                    bool ivpo;
+                    W_COERCE(io->is_valid_page_of(pid, cmp.key.store, ivpo));
+                    w_assert2(ivpo);
+                    }
+                } else {
+                    w_assert1(pagep->is_fixed()==false); 
                 }
+#endif
             }
             if(success) {
                 found = true;
@@ -784,8 +805,14 @@ histoid_t::find_page(
                 w_assert2(pagep->pid().page == pg);
                 DBGTHRD(<<"histoid_t::find_page FOUND " << pagep->pid().page);
 
+#if W_DEBUG_LEVEL > 1
+                {
                 lpid_t pid(cmp.key, pagep->pid().page);
-                w_assert2(io->is_valid_page_of(pid, cmp.key.store));
+                bool ivpo;
+                W_COERCE(io->is_valid_page_of(pid, cmp.key.store, ivpo));
+                w_assert1(ivpo);
+                }
+#endif
                 return RCOK;
             } else {
                   if(last_extent.e == ext && last_extent.s == cmp.key.store)
@@ -805,31 +832,86 @@ histoid_t::find_page(
     return RCOK;
 }
 
+/*
+ * Latch the page and see if it's got room for a new record that requires
+ * space_needed.
+ * Since this reverses the protocol from lock-latch to latch-lock,
+ * the latch is conditional.
+ *
+ * The incoming page might already be latched. In that case, we upgrade
+ * the latch if needed; in this case, we do NOT increase the number of latches.
+ * We only increase the number of latches on the page if it weren't already
+ * latched by the caller.
+ *
+ * We do NOT block waiting for the latch; if we cannot satisfy the
+ * conditional latch w/o waiting, we return error.
+ *
+ *
+ * In the argument "success" we return true/false : found a slot or not.
+ * If we found a slot, we leave the page latched.
+ * If we did not, we unlatch the page.
+ *
+ * We go to some length to ensure that
+ *    success==true iff page is latched upon return.
+ *
+ */
+
 w_rc_t        
 histoid_t::latch_lock_get_slot(
-    shpid_t&     shpid,
+    const shpid_t&     shpid,
     file_p*      pagep, 
     smsize_t     space_needed,
     bool         append_only,
     bool&        success,
-    slotid_t&    idx,   // only meaningful if success
-    const bool   bIgnoreParents
+    slotid_t&    idx    // only meaningful if success
+#ifdef SM_DORA
+    , const bool bIgnoreParents
+#endif
 ) const 
 {
+    FUNC(latch_lock_get_slot);
+#if W_DEBUG_LEVEL > 0
+    int latch_count1 = 0;
+    int latch_count2 = 0;
+    if( pagep->is_fixed() ) {
+        latch_count1 = pagep->my_latch()->held_by_me();
+    } else {
+        w_assert0(0 == pagep->my_latch()->held_by_me());
+    }
+#endif
     success    = false;
     lpid_t    pid(cmp.key, shpid);
     /*
      * conditional_fix doesn't re-fix if it's already
      * fixed in desired mode; if mode isn't sufficient,
-     * is upgrades rather than double-fixing
+     * it upgrades rather than double-fixing. If it can't
+     * upgrade w/o blocking, we'll get a timeout.
      */
     // rc_t rc = pagep->conditional_fix(pid, LATCH_EX, 0, st_bad, true);
+    //
+    // NB: we have to cast this to an any-type-page-fix
+    // because we really don't know if it's still a file page
+    // or belongs to this store or what.
     store_flag_t        junk = st_bad;
     rc_t rc = ((page_p *)pagep)->conditional_fix(pid, page_p::t_any_p,
                         LATCH_EX, 0, junk, true);
 
-
-    DBGTHRD(<<"rc=" << rc);
+    DBGTHRD(<<"conditional fix returns rc=" << rc);
+#if W_DEBUG_LEVEL > 0
+    if(pagep->is_fixed()) {
+        latch_count2 = pagep->my_latch()->held_by_me();
+    }
+    if(rc.is_error()) {
+        w_assert1(latch_count1  == latch_count2);
+    } else if(latch_count1) {
+        w_assert1(latch_count1  == latch_count2);
+    } else  {
+        // can't say it's exactly 1 because 
+        // app could have a pin_i hanging around at
+        // the time it calls the sm.
+        w_assert1(latch_count2>=1);
+    }
+#endif
     if(rc.is_error()) {
         // used to be stTIMEOUT
         // Now can be stTIMEOUT or stINUSE
@@ -838,16 +920,30 @@ histoid_t::latch_lock_get_slot(
             // someone else has it latched - give up
             // on trying to allocate from it. We haven't
             // covered this page with a lock or a latch.
+            // reject this page
+            if(pagep->is_fixed()) {
+                pagep->unfix();
+            }
+            w_assert1(latch_count1  == latch_count2);
+            w_assert1(!success);
+            w_assert1(!pagep->is_fixed()); 
+            DBG(<<"fm_page_nolatch");
             INC_TSTAT(fm_page_nolatch);
             return RCOK;
         } 
         // error we can't handle
         DBGTHRD(<<"rc=" << rc);
         INC_TSTAT(fm_error_not_handled);
+        w_assert1(latch_count1  == latch_count2);
+        w_assert1(!success);
+        w_assert1(!pagep->is_fixed()); 
+        DBG(<<"fm_error_not_handled");
         return RC_AUGMENT(rc);
     } 
 
-    w_assert3(pagep->is_fixed());
+    w_assert1(pagep->is_fixed());
+    w_assert1(latch_count1 == latch_count2 || 
+             (latch_count1==0 && latch_count2>=1) );
 
     if(pagep->pid().stid() != cmp.key) 
     {
@@ -855,99 +951,124 @@ histoid_t::latch_lock_get_slot(
         DBGTHRD(<<"stid changed to " << pagep->pid().stid());
         // reject this page
         pagep->unfix();
+        w_assert1(!success);
+        w_assert1(pagep->is_fixed()==success);
         INC_TSTAT(fm_page_moved);
+        DBG(<<"fm_page_moved");
         return RCOK; 
-    } else {
-        /* while we have the page fixed, we have to check
-         * its store membership. The above check only catches
-         * a changed allocation status if it were re-allocated to
-         * a different store, which shows up on the page only
-         * as it's formatted.
-         * It doesn't catch the case in which the page is freed from
-         * the store but not re-formatted.  In theory, our caches shouldn't
-         * find it as an allocated page and we should have been forced
-         * to allocate it first, but...
-         *
-         * The problem here is that if we check that first, we
-         * won't have the protection of a lock on the page.
-         * What we really need to do is to IX-lock the page iff
-         * the page is allocated to the store.  The layering of
-         * histo/file/sm_io/vol makes that difficult.
-         *
-         * We grab an IS lock, which we'll upgrade to an IX if
-         * the page is used (one of its records is locked). 
-         * The down side is that this will prevent the page from
-         * being freed until we commit.
-         *
-         * Note that if the page has changed stores, this lock will not
-         * conflict with that page lock, however, all we need to do
-         * here is to protect ourselves  from the page being freed
-         * from THIS store while we are doing this check of the
-         * extent's allocation-to-store info.
-         */
-        rc_t rc = lm->lock_force(pid, IS, t_long, WAIT_IMMEDIATE);
-        if(rc.is_error()) {
-            DBGTHRD(<<"rc=" << rc);
-            pagep->unfix();
-            // couldn't get the lock so someone has it ex-locked.
-            INC_TSTAT(fm_page_nolock);
-            return RCOK; 
-        }
-         
-        if( ! io_m::is_valid_page_of(pid, pid._stid.store)) {
-            DBGTHRD(<<"page no longer in store " << cmp.key);
-            // reject this page
-            //
-            pagep->unfix();
-            INC_TSTAT(fm_page_invalid);
-            return RCOK; 
-        }
-        /* Try to acquire the lock */
-        DBGTHRD(<<"Try to acquire slot & lock ");
-
-        rc = pagep->_find_and_lock_free_slot(append_only,
-                                             space_needed, idx,
-                                             bIgnoreParents);
-        DBGTHRD(<<"rc=" <<rc);
-
-        if(rc.is_error()) {
-            DBGTHRD(<<"rc=" << rc);
-
-            pagep->unfix();
-
-            if (rc.err_num() == eRECWONTFIT) {
-                INC_TSTAT(fm_page_full);
-                return RCOK; 
-
-            } else if (rc.err_num() == ePAGECHANGED) {
-                // fprintf(stderr, 
-                // "-*-*- Oops! Tried to use a deallocated page %d.%d.%d!\n",
-                // pid.vol().vol, pid.store(), pid.page);
-                INC_TSTAT(fm_page_moved);
-                return RCOK;
-            } 
-            W_FATAL_MSG(rc.err_num(), << " Error not handled");
-            // error we can't handle
-            INC_TSTAT(fm_error_not_handled);
-            return RC_AUGMENT(rc);
-        }
-        DBGTHRD(<<"acquired slot " << idx);
-        INC_TSTAT(fm_ok);
-        success = true;
-        // idx is set
+    } 
+    /* while we have the page fixed, we have to check
+     * its store membership. The above check only catches
+     * a changed allocation status if it were re-allocated to
+     * a different store, which shows up on the page only
+     * as it's formatted.
+     * It doesn't catch the case in which the page is freed from
+     * the store but not re-formatted.  In theory, our caches shouldn't
+     * find it as an allocated page and we should have been forced
+     * to allocate it first, but...
+     *
+     * The problem here is that if we check that first, we
+     * won't have the protection of a lock on the page.
+     * What we really need to do is to IX-lock the page iff
+     * the page is allocated to the store.  The layering of
+     * histo/file/sm_io/vol makes that difficult.
+     *
+     * We grab an IS lock, which we'll upgrade to an IX if
+     * the page is used (one of its records is locked). 
+     * The down side is that this will prevent the page from
+     * being freed until after we commit (free the IS lock on the page).
+     *
+     * Note that if the page has changed stores, this lock will not
+     * conflict with that page lock, however, all we need to do
+     * here is to protect ourselves  from the page being freed
+     * from THIS store while we are doing this check of the
+     * extent's allocation-to-store info.
+     */
+    DBGTHRD(<<" get lock on " << pid);
+    rc = lm->lock_force(pid, IS, t_long, WAIT_IMMEDIATE);
+    if(rc.is_error()) {
+        DBGTHRD(<<"rc=" << rc);
+        pagep->unfix();
+        // couldn't get the lock so someone has it ex-locked.
+        INC_TSTAT(fm_page_nolock);
+        w_assert1(pagep->is_fixed()==success);
+        w_assert1(!success);
+        DBG(<<"fm_page_nolock");
+        return RCOK; 
     }
+     
+    DBGTHRD(<<" check page validity of " << pid);
+    bool ivpo;
+    W_DO( io_m::is_valid_page_of(pid, pid._stid.store, ivpo));
+    if( !ivpo) {
+        DBGTHRD(<<"page no longer in store " << cmp.key);
+        // reject this page
+        pagep->unfix();
+        INC_TSTAT(fm_page_invalid);
+        w_assert1(!success);
+        w_assert1(pagep->is_fixed()==success);
+        DBG(<<"fm_page_invalid");
+        return RCOK; 
+    }
+    /* Try to acquire the lock */
+    DBGTHRD(<<"Try to acquire slot & lock ");
+
+    rc = pagep->_find_and_lock_free_slot(append_only,
+                                         space_needed, idx
+#ifdef SM_DORA
+                                         , bIgnoreParents
+#endif
+                                         );
+    DBGTHRD(<<"rc=" <<rc);
+
+    if(rc.is_error()) {
+        DBGTHRD(<<"rc=" << rc);
+
+        pagep->unfix();
+
+        if (rc.err_num() == eRECWONTFIT) {
+            INC_TSTAT(fm_page_full);
+            w_assert1(pagep->is_fixed()==success);
+            DBG(<<"fm_page_full");
+            return RCOK; 
+
+        } else if (rc.err_num() == ePAGECHANGED) {
+            // fprintf(stderr, 
+            // "-*-*- Oops! Tried to use a deallocated page %d.%d.%d!\n",
+            // pid.vol().vol, pid.store(), pid.page);
+            INC_TSTAT(fm_page_moved);
+            DBG(<<"fm_page_moved");
+            w_assert1(pagep->is_fixed()==success);
+            return RCOK;
+        } 
+        W_FATAL_MSG(rc.err_num(), << " Error not handled");
+        // error we can't handle
+        INC_TSTAT(fm_error_not_handled);
+        w_assert1(pagep->is_fixed()==success);
+        DBG(<<"fm_error_not_handled");
+        return RC_AUGMENT(rc);
+    }
+    DBGTHRD(<<"fm_ok: acquired slot " << idx);
+    INC_TSTAT(fm_ok);
+    success = true;
+    // idx is set
+    w_assert1(pagep->is_fixed()==success);
     w_assert2(pagep->is_fixed());
     return RCOK;
 }
 
 void        
-histoid_t::install(const pginfo_t &info)
+histoid_t::_install(const pginfo_t &info)
 {
-    DBGTHRD("install info in heap" << info);
+    DBGTHRD("install info in heap" << info
+            << " threshhold " << size_threshhold());
+    if (info.space() < size_threshhold()) return;
+    DBGTHRD("installing " );
     w_assert1( _in_hash_table() );
     bool do_release = false;
     bool do_install = true;
     if(!_have_mutex()) {
+        DBGTHRD("grab mutex " );
         _grab_mutex();
         do_release = true;
     }
@@ -955,17 +1076,18 @@ histoid_t::install(const pginfo_t &info)
     // Install new info for page
     // NB: assumes it's not already there 
 
-#if W_DEBUG_LEVEL > 2
+#if 0 && W_DEBUG_LEVEL > 2
     {   // verify that the page isn't already in the heap
         pginfo_t tmp(info.page(), 0);
         w_assert3(pgheap->Match(tmp) == -1);
     }
 #endif 
 
-    w_assert3(_have_mutex());
+    w_assert1(_have_mutex());
 
     w_assert3(pgheap->HeapProperty(0));
     int n = pgheap->NumElements();
+    DBGTHRD("n " << n << " pages_in_heap" << pages_in_heap );
     if(n >= pages_in_heap) {
         // remove one iff this is greater than
         // one of the smallest there (e.g. last one)
@@ -977,7 +1099,8 @@ histoid_t::install(const pginfo_t &info)
             t.space());
             do_install = false;
         } 
-        pginfo_t p = pgheap->RemoveN(n-1); // makes a copy
+        (void) pgheap->RemoveN(n-1); // makes a copy
+        // p is unused
     }
     if(do_install) {
         DBGTHRD(<<"pgheap.AddElement page" << info.page()
@@ -992,18 +1115,21 @@ histoid_t::install(const pginfo_t &info)
 }
 
 /*
- * update_page - called when we added/removed something
+ * _update_page - called when we added/removed something
  * to/from a page, so we will want to cause an
  * entry to be in the table, whether or not it was
  * there before.
+ *
+ * Find page in heap. If not there, insert.
+ * Exceptions: if new amount is 0 or smaller than
+ * threshhold, we remove the page from the heap.
  */
 void        
-histoid_t::update_page(const shpid_t& pid, smsize_t amt)
+histoid_t::_update_page(const shpid_t& pid, smsize_t amt)
 {
-    DBGTHRD(<<"update_page");
+    DBGTHRD(<<"_update_page");
     _grab_mutex();
     int hook = __find_page_in_heap(true, pid); // insert if not found
-
 
     // hang onto mutex while updating...
     w_assert3(_have_mutex());
@@ -1011,13 +1137,15 @@ histoid_t::update_page(const shpid_t& pid, smsize_t amt)
     w_assert3(pgheap->HeapProperty(0));
     pginfo_t&    t = pgheap->Value(hook);
 
-    DBGTHRD(<<"histoid_t::update_page hook " 
+    DBGTHRD(<<"histoid_t::_update_page hook " 
         << hook 
         << " page " <<  t.page()
         << " amt " << amt);
 
     smsize_t    old = t.space();
-    if(amt != old) {
+    if(amt < size_threshhold()) {
+        pgheap->RemoveN(hook);
+    } else if(amt != old) {
         DBGTHRD(<<"before update space: " << t.space());
         t.update_space(amt);
         DBGTHRD(<<"after update space: " << t.space());
@@ -1038,6 +1166,7 @@ histoid_t::update_page(const shpid_t& pid, smsize_t amt)
 }
 
 
+// find out if the histogram ctns any page with the given space
 w_rc_t        
 histoid_t::exists_page(
     smsize_t space_needed,
@@ -1095,7 +1224,7 @@ ostream &operator<<(ostream&o, const histoid_t&h)
 ostream &histoid_t::print_cache(ostream &o, bool locked)
 {
     if (initialized>0 && locked)
-        htab_mutex.acquire_read();
+        _htab_mutex_rw.acquire_read();
 
     o << "HISTOID_T::PRINT_CACHE { " << endl;
 
@@ -1120,7 +1249,7 @@ ostream &histoid_t::print_cache(ostream &o, bool locked)
     o << "END PRINT_CACHE } " << endl;
 
     if (initialized>0 && locked)
-        htab_mutex.release_read();
+        _htab_mutex_rw.release_read();
     
     return o;
 }
@@ -1228,9 +1357,11 @@ histoid_update_t::~histoid_update_t()
                 w_assert3(_info.page() == _page->pid().page);
             }
             DBGTHRD(<<"calling bucket change for page " << _info.page());
+            // adjust the bucket info, but don't do anything to data for
+            // this page.
             _h->bucket_change(_old_space, _info.space());
             DBGTHRD(<<"destructor, error case, found in table, put back");
-            _h->install(_info); 
+            _h->_install(_info); 
         }
         if(_h->release()) {
             // won't get deleted if it's in the hash table
@@ -1273,9 +1404,11 @@ histoid_update_t::replace_page(file_p *p, bool reinstall)
             if(_page && _page->is_fixed()) {
                 w_assert3(_info.page() == _page->pid().page);
             }
+            // adjust the bucket info, but don't do anything to data for
+            // this page.
             _h->bucket_change(_old_space, _info.space());
             DBGTHRD(<<"replace page ");
-            _h->install(_info); 
+            _h->_install(_info); 
         }
         _page = p;
         DBGTHRD(<<"replaced old page with " 
@@ -1301,11 +1434,14 @@ histoid_update_t::remove()
     DBGTHRD(<<"remove page " << _page->pid().page
                     << " refcount= " << _h->refcount);
     _page = 0;
-    _found_in_table = 0;
+    _found_in_table = false;
     DBGTHRD(<<"bucket change for page " << _info.page());
     w_assert2(_h);
 
+    // adjust the bucket info, but don't do anything to data for
+    // this page.
     _h->bucket_change(_old_space, _info.space());
+
     _info.set(0,0); // unknown size
     if(_h->release()) { 
         delete _h; 
@@ -1332,14 +1468,21 @@ histoid_update_t::update()
     DBGTHRD(<<"bucket change for page " << _info.page());
     w_assert3(_info.page() == _page->pid().page);
 
+    // adjust the bucket info, but don't do anything to data for
+    // this page.
     _h->bucket_change(_old_space, newamt);
-    _h->update_page(_page->pid().page, newamt);
+    // Update the heap for this page. 
+    // If newamt is small enough, the page will be removed from the heap.
+    _h->_update_page(_page->pid().page, newamt);
     /*
      * If the page wasn't originally in the heap, it 
-     * is now, so be sure we don't try to put it in
-     * a 2nd time when this object is destroyed.
-     * _found_in_table means a) page was found there, and
+     * is now (if it has sufficient space), so be sure 
+     * we don't try to put it in a 2nd time when this object is destroyed.
+     * _found_in_table means 
+     * a) page was found there, and
      * b) we removed it and so we want to put it back.
+     * We set it to false here to be sure that  we don't reinsert it
+     * in our destructor.
      */
     _found_in_table = false;
 }
@@ -1411,33 +1554,37 @@ histoid_compare_t::ge(const pginfo_t& left, const pginfo_t& right) const
     return false;
 }
 
-// WARNING: this function assumes that a thread only locks one histoid
+// WARNING: this code assumes that a thread only locks one histoid
 // at a time. AFAIK this is the case, and there are assertions to
 // verify as well.
-//static __thread queue_based_lock_t::ext_qnode histoid_me = EXT_QNODE_INITIALIZER;
-static __thread queue_based_lock_t::ext_qnode histoid_me = QUEUE_EXT_QNODE_INITIALIZER;
+
 
 void
 histoid_t::_release_mutex() const
 {
-    w_assert2(_histoid_mutex.is_mine(&histoid_me));
-    _histoid_mutex.release(&histoid_me);
+    w_assert1( _have_mutex());
+    _histoid_mutex.release(&me()->get_histoid_me());
+    w_assert1( !_have_mutex());
 }
 void
 histoid_t::_grab_mutex() const
 {
-    w_assert2( ! _histoid_mutex.is_mine(&histoid_me));
-    _histoid_mutex.acquire(&histoid_me);
+    w_assert1( !_have_mutex());
+    _histoid_mutex.acquire(&me()->get_histoid_me());
+    w_assert1( _have_mutex());
 }
 void
 histoid_t::_grab_mutex_cond(bool& got) const
 {
-    w_assert2( ! _histoid_mutex.is_mine(&histoid_me));
-    got = _histoid_mutex.attempt(&histoid_me);
+    w_assert1( !_have_mutex());
+    got = _histoid_mutex.attempt(&me()->get_histoid_me());
+    if(got) {
+        w_assert1( _have_mutex());
+    }
 }
 
 bool
 histoid_t::_have_mutex() const
 {
-    return _histoid_mutex.is_mine(&histoid_me);
+    return _histoid_mutex.is_mine(&me()->get_histoid_me());
 }

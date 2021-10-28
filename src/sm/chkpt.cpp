@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: chkpt.cpp,v 1.74.2.14 2010/03/19 22:20:23 nhall Exp $
+ $Id: chkpt.cpp,v 1.81 2010/07/29 21:22:46 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -106,7 +106,7 @@ private:
 
 
 struct old_xct_tracker {
-    struct dependent : xct_dependent_t  {
+    struct dependent : public xct_dependent_t  {
         w_link_t _link;
         old_xct_tracker* _owner;
 
@@ -132,7 +132,7 @@ struct old_xct_tracker {
     
     ~old_xct_tracker() {
         w_assert2(! _count);
-        while(_list.pop()) ;
+        while(_list.pop());
     }
     
     void track(xct_t* xd) {
@@ -319,12 +319,12 @@ void chkpt_m::take()
      * reclaim a log segment this reservation is topped up atomically.
      */
 #define LOG_INSERT(constructor_call, rlsn)            \
-    do {                            \
-    new (logrec) constructor_call;                \
-    W_COERCE( log->insert(*logrec, rlsn) );            \
-    if(!log->consume_chkpt_reservation(logrec->length())) {    \
-        W_FATAL(eOUTOFLOGSPACE);                \
-    }                            \
+    do {                                              \
+        new (logrec) constructor_call;                \
+        W_COERCE( log->insert(*logrec, rlsn) );       \
+        if(!log->consume_chkpt_reservation(logrec->length())) { \
+            W_FATAL(eOUTOFLOGSPACE);                            \
+        }                                                       \
     } while(0)
     
     /* if current partition is max_openlog then the oldest lsn we can
@@ -347,30 +347,30 @@ void chkpt_m::take()
        complete any checkpoint after this one, so we must reclaim
        space even if the log doesn't seem to be full.
     */
-		long too_old_pnum = log->global_min_lsn().file();
-		if(too_old_pnum == curr_pnum) {
-			// how/why did they reserve so much log space???
-			W_FATAL(eOUTOFLOGSPACE);
-		}
-	}
+        too_old_pnum = log->global_min_lsn().file();
+        if(too_old_pnum == curr_pnum) {
+            // how/why did they reserve so much log space???
+            W_FATAL(eOUTOFLOGSPACE);
+        }
+    }
 
-	/* We cannot proceed if any transaction has a too-low start_lsn;
-	   wait for them to complete before continuing.
-	   
-	   WARNING: we have to wake any old transactions which are waiting
-	   on locks, or we risk deadlocks where the lock holder waits on a
-	   full log while the old transaction waits on the lock.
-	 */
-	lsn_t oldest_valid_lsn = log_m::first_lsn(too_old_pnum+1);
-	old_xct_tracker tracker;
+    /* We cannot proceed if any transaction has a too-low start_lsn;
+       wait for them to complete before continuing.
+       
+       WARNING: we have to wake any old transactions which are waiting
+       on locks, or we risk deadlocks where the lock holder waits on a
+       full log while the old transaction waits on the lock.
+     */
+    lsn_t oldest_valid_lsn = log_m::first_lsn(too_old_pnum+1);
+    old_xct_tracker tracker;
     { 
     xct_i it(true); // do acquire the xlist_mutex...
     while(xct_t* xd=it.next()) {
         lsn_t const &flsn = xd->first_lsn();
         if(flsn.valid() && flsn < oldest_valid_lsn) {
-			// poison the transaction and add it to the list...
-			xd->force_nonblocking();
-			tracker.track(xd);
+            // poison the transaction and add it to the list...
+            xd->force_nonblocking();
+            tracker.track(xd);
         }
     }
     }
@@ -502,6 +502,7 @@ void chkpt_m::take()
     }
 
 
+    W_COERCE(xct_t::acquire_xlist_mutex());
     /*
      *  Checkpoint the transaction table, and record
      *  minimum of first_lsn of all transactions.
@@ -524,7 +525,7 @@ void chkpt_m::take()
            want to hold the mutex longer than it's in scope so we
            continue using manual locking.
         */
-        xct_i x(true); // true -> acquire the mutex
+        xct_i x(false); // false -> do not acquire the mutex
 
         const xct_t* xd = 0;
         do {
@@ -589,11 +590,9 @@ void chkpt_m::take()
 
     /*
      *  Checkpoint the prepared transactions 
-     *
-     *  We hold the chkpt_serial, so no transactions can change state
      */
     DBG(<< "checkpoint prepared tx");
-    xct_i x(true);    /* again, the locked iterator */
+    xct_i x(false);    /* again, the unlocked iterator */
     xct_t* xd = 0;
     while( (xd = x.next()) )  {
         DBG(<< xd->tid() << " has state " << xd->state());
@@ -614,10 +613,12 @@ void chkpt_m::take()
         }
     }
 
+    xct_t::release_xlist_mutex();
+
     /*
      *  Make sure that min_rec_lsn and min_xct_lsn are valid
-	 *       
-	 *  Log reservations require that min_rec_lsn <= master; this is
+     *       
+     *  Log reservations require that min_rec_lsn <= master; this is
      *  correct because if everything is clean the min_*_lsn are still
      *  set to lsn_t::max, and even if a min_*_lsn were larger than
      *  the master, recovery would have to start from the master LSN

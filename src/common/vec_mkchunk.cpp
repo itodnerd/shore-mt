@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: vec_mkchunk.cpp,v 1.14.2.4 2010/03/19 22:19:19 nhall Exp $
+ $Id: vec_mkchunk.cpp,v 1.15 2010/05/26 01:20:12 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

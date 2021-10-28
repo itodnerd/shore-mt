@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: mpw.sub2,v 1.2 2010/05/26 01:21:12 nhall Exp $
+#  $Id: mpw.sub2,v 1.3 2010/08/23 14:28:23 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -108,21 +108,27 @@ set body [format "%0*s" $objsize a]
 # 
 # create a huge file
 #
+
 set dummy 0
 if {$fid==0} {
 	sm begin_xct
 	set fid [sm create_file $volid tmp ]
 	sm commit_xct
 	verbose fid=$fid
-	set dummy [sm gather_stats reset]
 }
-verbose creating $nobjs objects of size $objsize 
 sm begin_xct
 sm lock $volid EX LONG 0
+set dummy [sm gather_stats reset]
+verbose creating $nobjs objects of size $objsize 
 set wtime [ time {
-sm create_multi_recs $fid $hdr $objsize $body $nobjs
+set err [catch {sm create_multi_recs $fid $hdr $objsize $body $nobjs} caught]
 } 1 ]
-sm commit_xct
+if {$err == 0} {
+	sm commit_xct
+} else {
+    echo Caught $err $caught - Aborting.
+	sm abort_xct
+}
 verbose done creating...
 pstats
 

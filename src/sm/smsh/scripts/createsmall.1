@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: createsmall.1,v 1.13.4.1 2010/01/12 02:02:00 nhall Exp $
+#  $Id: createsmall.1,v 1.16 2010/08/23 14:28:23 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -66,6 +66,7 @@ set id_width %06d
 
 sm begin_xct
 for {set i 1} {$i <= $num_rec} {incr i} {
+	if { [is_set r] } { unset r }
     set r [sm read_rec $rid($i) 0 0]
     set id [format $id_width $i]
     verbose i=$i id=$id r=$r

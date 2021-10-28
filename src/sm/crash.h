@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='CRASH_H'>
 
- $Id: crash.h,v 1.19.2.7 2010/03/19 22:20:23 nhall Exp $
+ $Id: crash.h,v 1.21 2010/10/27 17:04:23 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -36,27 +36,52 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 extern bool logtrace;
 #if W_DEBUG_LEVEL >= 0
+
+// used in xct_t::rollback where we do have xct state
 #define LOGTRACE(arg) \
 if(logtrace) {\
     w_ostrstream s; \
-    s <<" th."<<me()->id << " " << "tid." << xct()->tid() << " "  arg ; \
+    s <<" th."<<me()->id << " " \
+	    << (const char *)(xct()->state()==xct_active?"Act" : \
+	    xct()->state()==xct_freeing_space?"FrS": \
+	    xct()->state()==xct_prepared?"Pre": \
+	    xct()->state()==xct_aborting?"Abt": \
+	    xct()->state()==xct_committing?"Com": \
+	    xct()->state()==xct_ended?"End": \
+	    xct()->state()==xct_stale?"Stl": \
+	    xct()->state()==xct_chaining?"Chn": \
+	    "???") \
+		<< " "  arg ; \
     fprintf(stderr, "%s\n", s.c_str()); \
 }
 
+// Used in restart passes where we might have no xct state yet.
 #define LOGTRACE1(arg) \
 if(logtrace) {\
     w_ostrstream s; \
-    s <<" th."<<me()->id << " "  arg ; \
+    s <<" th."<<me()->id << " " \
+	<< "???" \
+	<< " "  arg ; \
     fprintf(stderr, "%s\n", s.c_str()); \
 }
+
+// Used in rollback for supplementary info during rollback; usually turned off
+// #define LOGTRACE2(arg) LOGTRACE(arg)
+#define LOGTRACE2(arg) 
 
 #else
 #define LOGTRACE(arg) 
 #define LOGTRACE1(arg) 
+#define LOGTRACE2(arg) 
 #endif
 
 
-enum debuginfo_enum { debug_none, debug_delay, debug_crash, debug_abort, debug_yield };
+enum debuginfo_enum { 
+	debug_none,  //0
+	debug_delay,  // 1
+	debug_crash, // 2
+	debug_abort,  // 3
+	debug_yield };
 
 extern w_rc_t ssmtest(log_m *, const char *c, const char *file, int line) ;
 extern void setdebuginfo(debuginfo_enum, const char *, int );

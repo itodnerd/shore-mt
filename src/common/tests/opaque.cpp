@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: opaque.cpp,v 1.17.2.5 2009/10/30 23:50:53 nhall Exp $
+ $Id: opaque.cpp,v 1.18 2010/05/26 01:20:15 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

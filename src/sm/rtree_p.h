@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='RTREE_P_H'>
 
- $Id: rtree_p.h,v 1.20 2010/05/26 01:20:41 nhall Exp $
+ $Id: rtree_p.h,v 1.21 2010/10/07 15:12:36 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -159,7 +159,7 @@ public:
     int2_t&                num_slot,
     bool                include_nulls);
 
-    void             print();
+    void             print(ostream &f);
     void             draw(ostream &, nbox_t &);
     uint2_t          ovp();        
 

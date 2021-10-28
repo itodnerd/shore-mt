@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='VTABLE_ENUM_H'>
 
- $Id: sthread_vtable_enum.h,v 1.1.2.4 2010/03/19 22:20:01 nhall Exp $
+ $Id: sthread_vtable_enum.h,v 1.2 2010/05/26 01:21:34 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

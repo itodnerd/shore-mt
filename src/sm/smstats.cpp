@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: smstats.cpp,v 1.16 2010/05/26 01:20:43 nhall Exp $
+ $Id: smstats.cpp,v 1.23 2012/01/02 17:02:17 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -57,8 +57,8 @@ void bf_htab_stats_t::compute()
     smlevel_0::bf->htab_stats(*this);
     {
         w_base_t::base_float_t *avg = &bf_htab_insert_avg_tries;
-		w_base_t::base_stat_t *a = &bf_htab_insertions;
-		w_base_t::base_stat_t *b = &bf_htab_slots_tried;
+        w_base_t::base_stat_t *a = &bf_htab_insertions;
+        w_base_t::base_stat_t *b = &bf_htab_slots_tried;
         if(*a > 0) {
            *avg = *b /(w_base_t::base_float_t) (*a);
         } else {
@@ -67,8 +67,8 @@ void bf_htab_stats_t::compute()
     }
     {
         w_base_t::base_float_t *avg = &bf_htab_lookup_avg_probes;
-		w_base_t::base_stat_t *a = &bf_htab_lookups;
-		w_base_t::base_stat_t *b = &bf_htab_probes;
+        w_base_t::base_stat_t *a = &bf_htab_lookups;
+        w_base_t::base_stat_t *b = &bf_htab_probes;
         if(*a > 0) {
            *avg = *b /(w_base_t::base_float_t) (*a);
         } else {
@@ -79,30 +79,44 @@ void bf_htab_stats_t::compute()
 
 void sm_stats_t::compute()
 {
-    if(need_vol_lock_r > 0) {
-        double x = double(await_vol_lock_r);
-        x *= 100;
-        x /= double(need_vol_lock_r);
-        await_vol_lock_r_pct = w_base_t::base_stat_t(x);
+    latch_uncondl_waits = need_latch_uncondl - latch_uncondl_nowaits;
+
+    await_vol_lock_r = need_vol_lock_r - nowait_vol_lock_r;
+    await_vol_lock_w = need_vol_lock_w - nowait_vol_lock_w;
+
+    if(log_bytes_written > 0) {
+        // skip-log and padding bytes -- actually,
+        // anything flushed more than once, although inserted
+        // bytes not yet flushed will tend to warp this number
+        // if the log wasn't recently flushed.
+        log_bytes_rewritten = log_bytes_written - log_bytes_generated;
     }
-
-    if(need_vol_lock_w > 0) {
-        double y = double(await_vol_lock_w);
-        y *= 100;
-        y /= double(need_vol_lock_w);
-        await_vol_lock_w_pct = w_base_t::base_stat_t(y);
-    } 
-
+    if(log_bytes_generated_rb > 0) {
+        // get the # bytes generated during forward processing.
+        double z = log_bytes_generated;
+        double y = log_bytes_generated_rb;
+        double x = z - y;
+        w_assert0(x >= 0.0);
+        // should always be > 0, since the log_bytes_generated is 
+        // the total of fwd and rollback bytes.
+        if(x>0.0) {
+            log_bytes_rbfwd_ratio = double(log_bytes_generated_rb) / x;
+        }else {
+            log_bytes_rbfwd_ratio = 0.0;
+        }
+    }
 }
 
 sm_stats_info_t &operator+=(sm_stats_info_t &s, const sm_stats_info_t &t)
 {
+    s.bfht += t.bfht;
     s.sm += t.sm;
     return s;
 }
 
 sm_stats_info_t &operator-=(sm_stats_info_t &s, const sm_stats_info_t &t)
 {
+    s.bfht -= t.bfht;
     s.sm -= t.sm;
     return s;
 }
@@ -117,7 +131,7 @@ sm_stats_info_t &operator-=(sm_stats_info_t &s, const sm_stats_info_t &t);
 namespace local_ns {
     sm_stats_info_t _global_stats_;
     static queue_based_block_lock_t _global_stats_mutex;
-};
+}
 void
 smlevel_0::add_to_global_stats(const sm_stats_info_t &from)
 {

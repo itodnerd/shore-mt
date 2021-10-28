@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: pthread_test.cpp,v 1.1.2.3 2009/11/23 22:33:42 nhall Exp $
+ $Id: pthread_test.cpp,v 1.5 2010/12/09 15:20:18 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -34,7 +34,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 /* Not a test, but give us some info for debugging */ 
 /* Also finds out os-dependent maximum # threads per process */
 
-#include <pthread.h>
+#include <w_pthread.h>
 #include <iostream>
 #include <w_defines.h>
 #include <w.h>
@@ -43,8 +43,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include <limits.h>
 // for _SC_PTHREAD_THREAD_MAX:
 #include <unistd.h>
-
-#include "macpthread_barrier.h" // For pthread_barrier_t in MacOS
 
 static pthread_barrier_t b;
 
@@ -81,8 +79,8 @@ void simple_thread_t::run()
     pthread_barrier_wait(&b);
 }
 
-#undef RUNTIMEMAX
-#ifdef RUNTIMEMAX
+#undef TEST_FIND_PTHREAD_RUNTIMEMAX
+#ifdef TEST_FIND_PTHREAD_RUNTIMEMAX
 void* dummy(void *) {return NULL;}
 #endif
 
@@ -203,7 +201,7 @@ main()
 
 	// create and fork as many threads as the system will allow,
 
-#ifdef RUNTIMEMAX
+#ifdef TEST_FIND_PTHREAD_RUNTIMEMAX
 	threads=0;
     while(true) {
 		threads++;
@@ -238,18 +236,6 @@ main()
 
     for (int i = 0; i < threads; i++)
 	t[i]->fork();
-
-
-#if 0
-    // if you want a chance to use a debugger to look at anything,
-    // here's your chance
-    const char *prompt = "Hit any key ";
-    SAFE_IO(
-    prompt << endl << flush;
-    )
-    static char buf[1000];
-    cin >> buf;
-#endif
 
     pthread_barrier_wait(&b);
 

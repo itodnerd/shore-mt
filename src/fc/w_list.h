@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='W_LIST_H'>
 
- $Id: w_list.h,v 1.52.2.7 2010/03/19 22:17:19 nhall Exp $
+ $Id: w_list.h,v 1.56 2010/07/26 23:37:09 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -450,7 +450,7 @@ public:
         _next = (backwards ? l._tail.prev() : l._tail.next());
     }
 
-    NORET            ~w_list_i()    {};
+    virtual NORET    ~w_list_i()    {};
 
     /// Make an iterator usable (possibly again), for the given list,
     /// backward or forward.

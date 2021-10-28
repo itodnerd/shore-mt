@@ -1,6 +1,6 @@
 # <STD-HEADER STYLE=TCL ORIG-SRC=SHORE>
 # 
-#   $Id: random.perf.tcl,v 1.1.2.1 2009/12/03 00:21:13 nhall Exp $
+#   $Id: random.perf.tcl,v 1.3 2010/06/08 22:28:29 nhall Exp $
 # 
 # 
 # 

@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='PIN_H'>
 
- $Id: pin.h,v 1.89 2010/06/08 22:28:55 nhall Exp $
+ $Id: pin.h,v 1.92 2010/08/23 14:28:18 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -226,8 +226,7 @@ public:
     rc_t        pin(
         const rid_t &          rid,
         smsize_t               start,
-        lock_mode_t            lmode = SH,
-        const bool             bIgnoreLatches = false);
+        lock_mode_t            lmode = SH);
 
     /**\brief Pin a portion of the record starting at a given location. 
      * \details
@@ -342,15 +341,15 @@ public:
      * place to perform the update.
      * @param[in] data A vector containing the data to place in the record
      * at location \a start.
+     * @param[out] old_value deprecated
      * The portion of the record containing the start byte need not
      * be pinned before this is called.
      */
-    rc_t    update_rec(smsize_t start, const vec_t& data,
-                       const bool bIgnoreLocks = false);
-
-    rc_t    update_mrbt_rec(smsize_t start, const vec_t& data,
-			    const bool bIgnoreLocks = false,
-			    const bool bIgnoreLatches = false);
+    rc_t    update_rec(smsize_t start, const vec_t& data, int* old_value = 0
+#ifdef SM_DORA
+                       , const bool bIgnoreLocks = false
+#endif
+                       );
 
     /**\brief Update the pinned record's header.
      * \details
@@ -359,8 +358,11 @@ public:
      * @param[in] hdr A vector containing the data to place in the header
      * at location \a start.
      */
-    rc_t    update_rec_hdr(smsize_t start, const vec_t& hdr,
-                           const bool bIgnoreLocks = false);
+    rc_t    update_rec_hdr(smsize_t start, const vec_t& hdr
+#ifdef SM_DORA
+                           , const bool bIgnoreLocks = false
+#endif 
+                           );
 
     /**\brief Append to a pinned record.
      * \details
@@ -370,10 +372,6 @@ public:
      */
     rc_t    append_rec(const vec_t& data);
 
-    rc_t    append_mrbt_rec(const vec_t& data,
-			    const bool bIgnoreLocks = false,
-			    const bool bIgnoreLatches = false);
-    
     /**\brief Shorten a record.
      * \details
      * @param[in] amount Number of bytes to chop off the end of the 
@@ -415,12 +413,13 @@ private:
     rc_t        _pin(const rid_t &rid, smsize_t start, lock_mode_t m, 
                     latch_mode_t l);
 
-    rc_t        _pin(const rid_t &rid, smsize_t start, lock_mode_t m,
-                     const bool bIgnoreLatches = false);
+    rc_t        _pin(const rid_t &rid, smsize_t start, lock_mode_t m);
 
-    rc_t        _repin(lock_mode_t lmode,
-                       const bool bIgnoreLocks = false,
-		       const bool bIgnoreLatches = false);
+    rc_t        _repin(lock_mode_t lmode, int* old_value = 0
+#ifdef SM_DORA
+                       , const bool bIgnoreLocks = false
+#endif
+                       );
 
     file_p*     _get_hdr_page_no_lsn_check() const {
                         return pinned() ? &_hdr_page() : 0;}
@@ -429,7 +428,7 @@ private:
 
     // NOTE: if the _check_lsn assert fails, it usually indicates that
     // you tried to access a pinned record after having updated the
-    // record, but before calling repin.
+    // page, but before calling repin.
     // The _set_lsn() function is used to reset the lsn to the page's
     // new value, after an update operation.
     //
@@ -484,29 +483,29 @@ private:
     // disable
     NORET        pin_i(const pin_i&);
     NORET        pin_i& operator=(const pin_i&);
-    
+
 public:
     /**\cond skip */
     // Put inside pin_i only for the purpose of namescoping.
-    static latch_mode_t lock_to_latch(lock_mode_t m, bool bIgnoreLatches = false);
+    static latch_mode_t lock_to_latch(lock_mode_t m);
     /**\endcond skip */
 };
 
 /**\cond skip */
-inline latch_mode_t pin_i::lock_to_latch(lock_mode_t m, bool bIgnoreLatches) {
+inline latch_mode_t pin_i::lock_to_latch(lock_mode_t m) {
     switch(m) {
     case SH:
     case UD:
     case NL:
-	return bIgnoreLatches ? LATCH_NLS : LATCH_SH;
+        return LATCH_SH;
     case EX:
-	return bIgnoreLatches ? LATCH_NLX : LATCH_EX;
-	
+        return LATCH_EX;
+
     default:
-	W_FATAL(smlevel_0::eNOTIMPLEMENTED);
+        W_FATAL(smlevel_0::eNOTIMPLEMENTED);
     }
     return LATCH_NL; // never gets here
-};
+}
 /**\endcond skip */
 
 /*<std-footer incl-file-exclusion='PIN_H'>  -- do not edit anything below this line -- */

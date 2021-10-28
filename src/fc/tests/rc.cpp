@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: rc.cpp,v 1.26 2010/06/08 22:27:15 nhall Exp $
+ $Id: rc.cpp,v 1.27 2010/08/30 21:28:28 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -86,14 +86,14 @@ int main()
 	// Turn on checking but turn off W_FATAL response.
 	w_rc_t::set_return_check(true, false);
 
-
-    cout << "Expect two 'error not checked' messages" << endl;
     {
         w_rc_t rc;
+		cout << "Expect one 'error not checked' message" << endl;
 		rc = testing();
     }
 
     {
+		cout << "Expect another 'error not checked' message" << endl;
         testing_ok();
     }
 

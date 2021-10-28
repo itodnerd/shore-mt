@@ -1,6 +1,7 @@
 ## Process this file with automake to produce Makefile.in
 SUBDIRS = tests smsh
 include $(top_srcdir)/Makefile.generic
+
 EXTRA_DIST = e_error.dat\
 	 sm_stats.dat logdef.dat \
 	 bf_htab_stats.dat
@@ -38,7 +39,7 @@ BF_HTAB_STATS_GENFILES_CPP = \
 	bf_htab_stats_t_collect_gen.cpp \
 	bf_htab_stats_t_dec_gen.cpp \
 	bf_htab_stats_t_inc_gen.cpp \
-	bf_htab_stats_t_out_gen.cpp
+	bf_htab_stats_t_out_gen.cpp 
 
 LOGDEF_GENFILES_H = \
 	logfunc_gen.h \
@@ -49,11 +50,12 @@ LOGDEF_GENFILES_CPP = \
 	redo_gen.cpp \
 	logdef_gen.cpp \
 	logstr_gen.cpp \
-	logstub_gen.cpp
+	logstub_gen.cpp \
+	logfudge_gen.cpp
 
 GENFILES_CPP = $(SM_STATS_GENFILES_CPP) \
-	       $(BF_HTAB_STATS_GENFILES_CPP) \
-	       $(LOGDEF_GENFILES_CPP)
+	   $(BF_HTAB_STATS_GENFILES_CPP) \
+	   $(LOGDEF_GENFILES_CPP)
 
 GENFILES_H = $(E_ERROR_GENFILES_H) \
 	   $(SM_STATS_GENFILES_H) \
@@ -69,10 +71,8 @@ include_HEADERS = \
 	bf.h bf_core.h  bf_htab.h bf_transit_bucket.h\
 	bf_prefetch.h bf_s.h \
 	btcursor.h btree.h btree_impl.h btree_p.h \
-	btree_latch_manager.h \
 	chkpt.h chkpt_serial.h \
 	crash.h \
-        data_access_histogram.h \
 	device.h dir.h \
 	extent.h \
 	file.h file_s.h \
@@ -80,12 +80,10 @@ include_HEADERS = \
 	lgrec.h lid.h \
 	lock.h lock_cache.h lock_core.h lock_s.h lock_s_inline.h lock_x.h \
 	log.h log_core.h partition.h logrec.h \
-	key_ranges_map.h \
 	page.h page_alias.h page_h.h page_s.h \
 	pin.h \
 	pmap.h \
 	prologue.h \
-	ranges_p.h \
 	restart.h restart_s.h \
 	rtree.h rtree_p.h \
 	scan.h sdesc.h \
@@ -106,16 +104,14 @@ libsm_a_SOURCES      =  \
 	bf_htab.cpp bf_htab_test.cpp \
 	bf_prefetch.cpp \
 	btcursor.cpp btree.cpp btree_bl.cpp btree_impl.cpp btree_p.cpp \
-	btree_latch_manager.cpp \
 	chkpt.cpp chkpt_serial.cpp \
 	common_templates.cpp \
 	crash.cpp \
-	data_access_histogram.cpp device.cpp \
+	device.cpp \
 	dir.cpp \
 	file.cpp \
 	histo.cpp \
-	key_ranges_map.cpp keyed.cpp zkeyed.cpp \
-	ranges_p.cpp \
+	keyed.cpp zkeyed.cpp \
 	lexify.cpp \
 	lgrec.cpp \
 	lid.cpp \
@@ -129,7 +125,7 @@ libsm_a_SOURCES      =  \
 	restart.cpp \
 	rtree.cpp \
 	scan.cpp \
-	sm.cpp sm-no-inline.cpp \
+	sm.cpp \
 	sm_du_stats.cpp \
 	sm_io.cpp \
 	sm_s.cpp \
@@ -145,21 +141,15 @@ libsm_a_SOURCES      =  \
 MOSTLYCLEANFILES = $(GENFILES) e_error.timestamp logdef.timestamp \
 	sm_stats.timestamp
 
-bf.$(OBJEXT): $(E_ERROR_GENFILES_H)
 $(E_ERROR_GENFILES_H): e_error.dat
 	$(PERL) $(top_srcdir)/tools/errors.pl --d --e $?
 
-bf.$(OBJEXT): $(BF_HTAB_STATS_GENFILES_H)
-sm.$(OBJEXT): $(BF_HTAB_STATS_GENFILES_CPP)
 $(BF_HTAB_STATS_GENFILES_CPP) $(BF_HTAB_STATS_GENFILES_H): bf_htab_stats.dat
 	$(PERL) $(top_srcdir)/tools/stats.pl $?
 
-bf.$(OBJEXT): $(SM_STATS_GENFILES_H)
-sm.$(OBJEXT): $(SM_STATS_GENFILES_CPP)
 $(SM_STATS_GENFILES_CPP) $(SM_STATS_GENFILES_H): sm_stats.dat
 	$(PERL) $(top_srcdir)/tools/stats.pl $?
 
-chkpt.$(OBJEXT): $(LOGDEF_GENFILES_CPP)
 $(LOGDEF_GENFILES_H) $(LOGDEF_GENFILES_CPP): logdef.dat
 	$(PERL) -w $(top_srcdir)/tools/logdef.pl $?
 

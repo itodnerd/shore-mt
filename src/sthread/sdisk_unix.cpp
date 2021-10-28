@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: sdisk_unix.cpp,v 1.22.2.12 2010/03/19 22:20:01 nhall Exp $
+ $Id: sdisk_unix.cpp,v 1.28 2012/01/02 17:02:22 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -79,11 +79,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include <sthread.h>
 #include <sdisk.h>
 #include <sdisk_unix.h>
-
-#ifdef EXPENSIVE_STATS
-#include <stime.h>
-#endif
-
 #include <sthread_stats.h>
 extern class sthread_stats SthreadStats;
 
@@ -102,8 +97,6 @@ extern class sthread_stats SthreadStats;
 
 
 const int stBADFD = sthread_base_t::stBADFD;
-const int stINVAL = sthread_base_t::stINVAL;
-
 
 int    sdisk_unix_t::convert_flags(int sflags)
 {
@@ -195,10 +188,9 @@ w_rc_t    sdisk_unix_t::open(const char *name, int flags, int mode)
         return RC(stBADFD);    /* XXX in use */
 
     _fd = ::os_open(name, convert_flags(flags), mode);
-    _flags = flags;
     if (_fd == -1) {
         w_rc_t rc = RC(fcOS);
-        RC_APPEND_MSG(rc, << "Offending file: " << name);
+        RC_APPEND_MSG(rc, << "Offending file: " << name << " mode " << mode);
         return rc;
     }
 
@@ -229,9 +221,6 @@ w_rc_t    sdisk_unix_t::read(void *buf, int count, int &done)
         return RC(stBADFD);
 
     int    n;
-
-    INC_STH_STATS(num_io);
-
     n = ::os_read(_fd, buf, count);
     if (n == -1)
         return RC(fcOS);
@@ -247,8 +236,6 @@ w_rc_t    sdisk_unix_t::write(const void *buf, int count, int &done)
         return RC(stBADFD);
 
     int    n;
-
-    INC_STH_STATS(num_io);
 
     n = ::os_write(_fd, buf, count);
     if (n == -1)
@@ -274,20 +261,7 @@ w_rc_t    sdisk_unix_t::readv(const iovec_t *iov, int iovcnt, int &done)
 
     int    n;
 
-    INC_STH_STATS(num_io);
-
-#ifdef IOVEC_MISMATCH
-    {
-        struct iovec _iov[sthread_t::iovec_max];
-        for (int i = 0; i < iovcnt; i++) {
-            _iov[i].iov_base = (char *) iov[i].iov_base;
-            _iov[i].iov_len = iov[i].iov_len;
-        }
-        n = ::os_readv(_fd, _iov, iovcnt);
-    }
-#else
     n = ::os_readv(_fd, (const struct iovec *)iov, iovcnt);
-#endif
     if (n == -1)
         return RC(fcOS);
 
@@ -303,20 +277,7 @@ w_rc_t    sdisk_unix_t::writev(const iovec_t *iov, int iovcnt, int &done)
 
     int    n;
 
-    INC_STH_STATS(num_io);
-
-#ifdef IOVEC_MISMATCH
-    {
-        struct iovec _iov[sthread_t::iovec_max];
-        for (int i = 0; i < iovcnt; i++) {
-            _iov[i].iov_base = (char *) iov[i].iov_base;
-            _iov[i].iov_len = iov[i].iov_len;
-        }
-        n = ::os_writev(_fd, _iov, iovcnt);
-    }
-#else
     n = ::os_writev(_fd, (const struct iovec *)iov, iovcnt);
-#endif
     if (n == -1)
         return RC(fcOS);
 
@@ -340,8 +301,6 @@ w_rc_t    sdisk_unix_t::pread(void *buf, int count, fileoff_t pos, int &done)
 
     int    n;
 
-    INC_STH_STATS(num_io);
-
     n = ::os_pread(_fd, buf, count, pos);
     if (n == -1)
         return RC(fcOS);
@@ -359,8 +318,6 @@ w_rc_t    sdisk_unix_t::pwrite(const void *buf, int count, fileoff_t pos,
         return RC(stBADFD);
 
     int    n;
-
-    INC_STH_STATS(num_io);
 
     n = ::os_pwrite(_fd, buf, count, pos);
     if (n == -1)
@@ -408,7 +365,6 @@ w_rc_t    sdisk_unix_t::truncate(fileoff_t size)
 {
     if (_fd == FD_NONE)
         return RC(stBADFD);
-    INC_STH_STATS(num_io);
     int    n = ::os_ftruncate(_fd, size);
     return (n == -1) ? RC(fcOS) : RCOK;
 }
@@ -417,10 +373,7 @@ w_rc_t    sdisk_unix_t::sync()
 {
     if (_fd == FD_NONE)
         return RC(stBADFD);
-    if (modeBits(_flags) == OPEN_RDONLY)
-        return RCOK; // nothing to sync when read-only
 
-    INC_STH_STATS(num_io);
     int n = os_fsync(_fd);
 
     /* fsync's to r/o files and devices can fail ok */

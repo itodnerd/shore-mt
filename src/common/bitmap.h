@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='BITMAP_H'>
 
- $Id: bitmap.h,v 1.22.2.3 2010/01/28 04:52:52 nhall Exp $
+ $Id: bitmap.h,v 1.23 2010/05/26 01:20:11 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='SM_S_H'>
 
- $Id: sm_s.h,v 1.91 2010/05/26 01:20:43 nhall Exp $
+ $Id: sm_s.h,v 1.94 2010/12/08 17:37:43 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -57,9 +57,11 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 /*  -- do not edit anything above this line --   </std-header>*/
 
-/**\brief Extent number.
+/**\brief Extent Number
+ *\ingroup IDS
  * \details
- * Used in extid_t.
+ * This type represents an extent number, 
+ * used in extid_t.
  */
 typedef w_base_t::uint4_t        extnum_t;
 
@@ -91,7 +93,10 @@ public:
     friend istream& operator>>(istream&, extid_t &x); 
 };
 
-#define LPID_T
+/**\brief Long page ID.
+ * \details
+ * Store ID (volume number + store number) + page number.
+ */
 class lpid_t {
 public:
     stid_t        _stid;
@@ -119,6 +124,7 @@ public:
     bool operator>=(const lpid_t& p) const;
     friend ostream& operator<<(ostream&, const lpid_t& p);
     friend istream& operator>>(istream&, lpid_t& p);
+
 
     static const lpid_t bof;
     static const lpid_t eof;
@@ -155,8 +161,6 @@ public:
 };
 
 
-#define RID_T
-
 /**\brief Record ID
  *\ingroup IDS
  * \details
@@ -182,8 +186,6 @@ public:
 
     bool operator==(const rid_t& r) const;
     bool operator!=(const rid_t& r) const;
-    bool operator<(const rid_t& r) const;
-    
     friend ostream& operator<<(ostream&, const rid_t& s);
     friend istream& operator>>(istream&, rid_t& s);
 
@@ -192,6 +194,12 @@ public:
 
 #include <lsn.h>
 
+/**\brief Encapsulates metadata about the type of an index key.
+ * \details Contains the following type metadata:
+ * - indication of integer/float/uninterpreted
+ * - length (size as well as indication of fixed or variable) 
+ * - indication of compressed or not
+ */
 struct key_type_s {
     enum type_t {
         i = 'i',                // integer (1,2,4)
@@ -209,10 +217,10 @@ struct key_type_s {
         // u2, u4 may use faster comparisons than b2, b4, which will 
         // always use umemcmp (possibly not optimized). 
     };
-    enum { max_len = 2000 };
+    enum max_length_t { max_len = 2000 };
     char        type;
     char        variable; // Boolean - but its size is unpredictable
-    uint2_t        length;        
+    uint2_t     length;        
     char        compressed; // Boolean - but its size is unpredictable
 #ifdef __GNUG__        /* XXX ZERO_INIT canidate? */
     fill1        dummy; 
@@ -230,8 +238,6 @@ struct key_type_s {
     static w_rc_t get_key_type(char* s, int buflen, w_base_t::uint4_t count, const key_type_s *kc);
 
 };
-#define null_lsn (lsn_t::null)
-#define max_lsn  (lsn_t::max)
 
 inline ostream& operator<<(ostream& o, const lsn_t& l)
 {
@@ -285,11 +291,6 @@ inline bool lpid_t::operator!=(const lpid_t& p) const
     return !(*this == p);
 }
 
-inline bool lpid_t::operator<(const lpid_t& p) const
-{
-    return _stid == p._stid && page < p.page;
-}
-
 inline bool lpid_t::operator<=(const lpid_t& p) const
 {
     return _stid == p._stid && page <= p.page;
@@ -300,18 +301,6 @@ inline bool lpid_t::operator>=(const lpid_t& p) const
     return _stid == p._stid && page >= p.page;
 }
 
-inline w_base_t::uint4_t w_hash(const lpid_t& p)
-{
-    return p._stid.vol ^ (p.page + 113);
-}
-
-inline w_base_t::uint4_t w_hash(const vid_t v)
-{
-    return v;
-}
-
-
-
 inline bool rid_t::operator==(const rid_t& r) const
 {
     return (pid == r.pid && slot == r.slot);
@@ -320,11 +309,6 @@ inline bool rid_t::operator==(const rid_t& r) const
 inline bool rid_t::operator!=(const rid_t& r) const
 {
     return !(*this == r);
-}
-
-inline bool rid_t::operator<(const rid_t& r) const
-{
-    return pid < r.pid || (pid == r.pid && slot < r.slot);
 }
 
 /*<std-footer incl-file-exclusion='SM_S_H'>  -- do not edit anything below this line -- */

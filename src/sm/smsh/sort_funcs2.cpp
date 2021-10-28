@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: sort_funcs2.cpp,v 1.25 2010/05/26 01:20:52 nhall Exp $
+ $Id: sort_funcs2.cpp,v 1.27 2010/10/07 15:12:39 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -95,7 +95,6 @@ delete_rtree_entries(
         w_assert3(!feof);
     }
     offset -=  pin->start_byte();
-    // not handling logical case...
         smsize_t amt = pin->length() - offset;
         DBG(<<"offset=" <<offset << " amt=" << amt);
         memcpy(&stringbuffer, pin->body() + offset, amt);
@@ -220,7 +219,7 @@ delete_rtree_entries(
         << key 
         << "," << elem
         << endl;
-        W_DO( sm->print_md_index(idx) );
+        W_DO( sm->print_md_index(idx, cout) );
     }
 #endif
     
@@ -841,7 +840,7 @@ t_test_bulkload_rtree(Tcl_Interp* ip, int ac, TCL_AV char* av[])
 #ifdef W_TRACE
         if(_w_debug.flag_on(("sort_funcs2.cpp"),__FILE__))  {
         cout << "PRINT RTREE AFTER BULK LOAD" << endl;
-        DO( sm->print_md_index(stid) );
+        DO( sm->print_md_index(stid, cout) );
         }
 #endif
 
@@ -938,7 +937,6 @@ t_test_bulkload_rtree(Tcl_Interp* ip, int ac, TCL_AV char* av[])
 
 
     { /* test insert/remove/probe for nulls */
-        // not implemented for logical
         w_rc_t rc = delete_rtree_entries(stid, 
             fid, // orig file
             zeroes.size());

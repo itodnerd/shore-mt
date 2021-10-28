@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: btree.1,v 1.44.4.1 2010/01/12 02:01:58 nhall Exp $
+#  $Id: btree.1,v 1.48 2010/10/07 15:12:40 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -31,7 +31,12 @@
 #  Load a btree, and verify its content
 #
 
-set form_len [expr {$short_form_len - 10}]
+set form_len [expr {$short_form_len - 15}]
+# NOTE: this form_len is pretty fragile.It adds the #chars needed to 
+# append the record#, so if you insert 1000 records, you'll be inserting 4-byte
+# elements, whereas if you use only 10, you'll insert 2-byte elements. 
+# There's not an easy way to take that into account.
+
 proc scan_up_partial {ndx lb ub nrec} {
     verbose "scan up partial:" $lb $ub 
     set scan [sm create_scan $ndx >= $lb <= $ub]
@@ -40,14 +45,21 @@ proc scan_up_partial {ndx lb ub nrec} {
     set ub [string trimleft $ub 0]
 
     for {set i 1} {$i <= $nrec} {incr i} {
-	set r [sm scan_next $scan]
+		set r [sm scan_next $scan]
         if {[string compare $r eof] == 0} then { break }
-	set key [string trimleft [lindex $r 0] 0]
-	set el [lindex $r 1]
-	verbose "scanned ($key, $el)"
-	assert {expr $key == $el}
-	assert {expr $key == $lb + $i - 1}
+		set key [string trimleft [lindex $r 0] 0]
+		set el [lindex $r 1]
+		verbose "scanned ($key, $el)"
+		assert {expr $key == $el}
+		assert {expr $key == $lb + $i - 1}
     }
+
+    if [expr $i > $nrec] {
+	} else {
+		# print some stuff in anticipation of the assert
+		echo i:$i r:$r expected i=nrec=$nrec
+        echo "from scan up partial: $ndx $lb $ub $nrec"
+	}
     assert {expr $i > $nrec}
     assert {expr [string compare [sm scan_next $scan] eof] == 0}
     sm destroy_scan $scan
@@ -69,6 +81,13 @@ proc scan_up {ndx nrec}  {
         assert {expr $key == $el}
         assert {expr $i == $key}
     }
+
+    if [expr $i > $nrec] {
+	} else {
+		# print some stuff in anticipation of the assert
+		echo i:$i r:$r expected i=nrec=$nrec
+        echo "from scan up partial: $ndx $lb $ub $nrec"
+	}
     assert {expr $i > $nrec}
     assert {expr [string compare [sm scan_next $scan] eof] == 0}
     sm destroy_scan $scan
@@ -103,53 +122,63 @@ if {$logging==0} {
     # create index and load it up 
     #
     sm begin_xct
-verbose tid [sm xct_to_tid [sm xct]]
+	verbose tid [sm xct_to_tid [sm xct]]
+	verbose create index
     set ndx [sm create_index $volid btree]
     verbose created index $ndx
     sm commit_xct
 
     sm begin_xct
-verbose tid [sm xct_to_tid [sm xct]]
+	verbose tid [sm xct_to_tid [sm xct]]
+	verbose load up index
     for {set i 1} {$i <= $nrec} {incr i} {
-	verbose2 inserting $i
-	sm create_assoc $ndx [formatlong 0 $form_len %010d $i] $i
+		verbose inserting $i / $nrec length $form_len + 10
+		sm create_assoc $ndx [formatlong 0 $form_len %010d $i] $i
+		verbose inserted
     }
-
     verbose restart
     restart
 
     sm begin_xct
-verbose tid [sm xct_to_tid [sm xct]]
+	verbose tid [sm xct_to_tid [sm xct]]
     verbose scan_up $ndx 0
     scan_up $ndx 0
+    verbose destroy_index
     sm destroy_index $ndx
+    verbose commit
     sm commit_xct
 
     sm begin_xct
-verbose tid [sm xct_to_tid [sm xct]]
+	verbose tid [sm xct_to_tid [sm xct]]
+	verbose create index
     set ndx [sm create_index $volid btree]
     verbose created index $ndx
     for {set i 1} {$i <= $nrec} {incr i} {
-	verbose2 inserting $i
-	sm create_assoc $ndx [formatlong 0 $form_len %010d $i] $i
+		verbose inserting $i  / $nrec len $form_len + 10
+		sm create_assoc $ndx [formatlong 0 $form_len %010d $i] $i
     }
 
+    verbose commit
     sm commit_xct
     verbose after create
 
-    if {$logging==1} {
-	verbose restart
-	restart
+	if {$logging==1} {
+		verbose restart
+		restart
 
-	sm begin_xct
-verbose tid [sm xct_to_tid [sm xct]]
-	scan_up $ndx $nrec
-	probe $ndx $nrec
-	scan_up_partial $ndx [formatlong 0 $form_len %010d 2] \
-		    [formatlong 0 $form_len %010d [expr {$nrec - 1}]] [expr {$nrec - 2}]
-	sm destroy_index $ndx
-	sm commit_xct
-    }
+		sm begin_xct
+		verbose tid [sm xct_to_tid [sm xct]]
+		verbose scan up
+		scan_up $ndx $nrec
+		verbose probe
+		probe $ndx $nrec
+		verbose scan up partial
+		scan_up_partial $ndx [formatlong 0 $form_len %010d 2] \
+				[formatlong 0 $form_len %010d [expr {$nrec - 1}]] [expr {$nrec - 2}]
+		verbose destroy index
+		sm destroy_index $ndx
+		sm commit_xct
+	}
 
     verbose2 [sm gather_stats]
     verbose2 [vtable thread]

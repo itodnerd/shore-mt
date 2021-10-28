@@ -3,16 +3,6 @@
 */
 
 #include "./../../config/shore-config.h"
-#if defined(__sparcv9)
-        .section        ".data",#alloc,#write
-	.align  4
-	.global atomic_ops_keep_symtab_nonempty
-atomic_ops_keep_symtab_nonempty:	
-	.word   0x1
-	.type   atomic_ops_keep_symtab_nonempty,#object
-	.size   atomic_ops_keep_symtab_nonempty,4
-#endif
-	
 #ifndef HAVE_ATOMIC_H
 
 #if defined(ARCH_LP64)
@@ -21,7 +11,7 @@ atomic_ops_keep_symtab_nonempty:
 #include "asm_linkage/usr/src/lib/libbc/sparc/inc/sparc/asm_linkage.h"
 #include "atomic_ops/sparcv9/atomic.s"
 
-#elif defined(__i386__) || defined(i386) || defined(amd64) || defined(x86_64) || defined(__x86_64__)
+#elif defined(__i386__) || defined(i386) || defined(amd64) || defined(x86_64)
 #include "atomic_ops/amd64/atomic.s"
 
 #elif defined(IA64)

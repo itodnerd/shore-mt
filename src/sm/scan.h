@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='SCAN_H'>
 
- $Id: scan.h,v 1.91 2010/06/08 22:28:55 nhall Exp $
+ $Id: scan.h,v 1.94 2010/12/08 17:37:43 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -225,8 +225,7 @@ t_cc_file  | error     | error       | error     | error     | SH/none
         const cvec_t&             bound2,
         bool                      include_nulls = false,
         concurrency_t             cc = t_cc_kvl,
-        lock_mode_t               mode = SH,
-        const bool                bIgnoreLatches = false
+        lock_mode_t               mode = SH
         );
 
 
@@ -285,7 +284,6 @@ private:
     bool                 _skip_nulls;
     concurrency_t        _cc;
     lock_mode_t          _mode;
-    bool                 _bIgnoreLatches;
 
     rc_t            _fetch(
         vec_t*                key, 
@@ -299,8 +297,7 @@ private:
         const cvec_t&         bound,
         cmp_t                 c2,
         const cvec_t&         b2,
-        lock_mode_t           mode = SH,
-        const bool            bIgnoreLatches = false);
+        lock_mode_t           mode = SH);
 
     void            xct_state_changed(
         xct_state_t            old_state,
@@ -385,14 +382,14 @@ private:
     concurrency_t        _cc;
 
     rc_t            _fetch(
-    	nbox_t&             key, 
-    	void*                el,
-    	smsize_t&            elen, 
-    	bool&             eof, 
-    	bool                 skip);
+        nbox_t&             key, 
+        void*                el,
+        smsize_t&            elen, 
+        bool&             eof, 
+        bool                 skip);
     void             _init(
-    	nbox_t::sob_cmp_t         c, 
-    	const nbox_t&             qbox);
+        nbox_t::sob_cmp_t         c, 
+        const nbox_t&             qbox);
 
     void            xct_state_changed(
     xct_state_t            old_state,
@@ -440,7 +437,7 @@ class bf_prefetch_thread_t;
 class scan_file_i : public smlevel_top, public xct_dependent_t {
 public:
     stid_t                stid;
-    rid_t                curr_rid;
+    rid_t                 curr_rid;
     
     /**\brief Construct an iterator over the given store (file).
      *
@@ -464,8 +461,7 @@ public:
         const rid_t&             start,
         concurrency_t            cc = t_cc_file,
         bool                     prefetch=false,
-        lock_mode_t              ignored = SH,
-        const bool               bIgnoreLatches = false);
+        lock_mode_t              ignored = SH);
 
     /**\brief Construct an iterator over the given store (file).
      *
@@ -492,8 +488,7 @@ public:
         const stid_t&            stid,
         concurrency_t            cc = t_cc_file,
         bool                     prefetch=false,
-        lock_mode_t              ignored = SH,
-        const bool               bIgnoreLatches = false);
+        lock_mode_t              ignored = SH);
 
     NORET            ~scan_file_i();
     
@@ -563,9 +558,6 @@ protected:
     concurrency_t    _cc;  // concurrency control
     lock_mode_t      _page_lock_mode;
     lock_mode_t      _rec_lock_mode;
-
-    bool             _bIgnoreLatches;
-
 
     rc_t             _init(bool for_append=false);
 

@@ -2,19 +2,11 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.59)
-AC_INIT(Shore-Storage-Manager, 7.0.0, Noone._Sadly-_this_is_unsupported_software.)
+AC_INIT(shore-sm, 6.0.2, nhall@cs.wisc.edu.)
 AC_CONFIG_HEADERS([config/shore-config.h:config/shore-config-h.in])
 AC_CONFIG_SRCDIR([config/shore.def])
 AC_COPYRIGHT(COPYRIGHT-NOTICE)
 AC_CONFIG_AUX_DIR(config)
-AC_CONFIG_MACRO_DIR([m4])
-
-# clobber the annoying '-g -O2' automake likes to insert
-CXXFLAGS=
-
-echo configure args: $* > tmpcfg.txt
-
-
 ##
 ## Note that AM_INIT_AUTOMAKE is required.
 ## Turn on all automake warnings and treat them as errors.
@@ -26,7 +18,9 @@ AM_INIT_AUTOMAKE([-Wall -Werror foreign])
 ## This package uses an assembler.
 ## Define CCAS and CCASFLAGS 
 AM_PROG_AS
-AM_PROG_AR
+
+## Add dependencies
+AC_SUBST([CONFIG_STATUS_DEPENDENCIES],['$(top_srcdir)/configure.ac'])
 
 # Checks for programs.
 ## preprocessor required
@@ -34,7 +28,7 @@ AC_PROG_CXXCPP
 AC_REQUIRE_CPP
 
 using_gcc=$ac_cv_cxx_compiler_gnu
-# echo using gcc $using_gcc
+## echo using gcc $using_gcc
 
 AC_LANG_PUSH(C++)
 if [test "x$using_gcc" = xyes]; then
@@ -59,6 +53,19 @@ if [test "x$using_gcc" = xyes]; then
     # here, with certainty not sunCC or unknown
     AM_CONDITIONAL([COMPILER_IS_SUNCC], [test -z "1"])
     AM_CONDITIONAL([COMPILER_IS_UNKNOWN], [test -n "1"]) 
+
+
+    AC_PREPROC_IFELSE([AC_LANG_PROGRAM(
+    [[
+    #if defined(__INTEL_COMPILER) 
+    #else
+    #error "not GNU  ICC"
+    #endif
+    ]])], 
+    [AM_CONDITIONAL([COMPILER_IS_ICC], [test -n "1"]) AC_MSG_RESULT[] ],
+    [AM_CONDITIONAL([COMPILER_IS_ICC], [test -z "1"])  AC_MSG_RESULT[]]
+    )
+    # empty msg result above gives us a newline in the output
 
     # -------------------------------------------------------------------------
     #
@@ -256,31 +263,13 @@ else
 
 # With certainty, not GCC
     AM_CONDITIONAL([COMPILER_IS_GCC], [test -z "1"])
+    AM_CONDITIONAL([COMPILER_IS_ICC], [test -z "1"])
     AM_CONDITIONAL([GCC_BROKEN_WARNINGS], [test -z "1"])
     AM_CONDITIONAL([GCC_VER_34_WARNINGS], [test -z "1"])
     AM_CONDITIONAL([GCC_VER_3_WARNINGS],[test -z "1"])
     AM_CONDITIONAL([NOPEDANTIC], [test -n "1"])
 
 fi
-
-#AC_MSG_CHECKING([extra library needed for gethostbyname])
-AC_SEARCH_LIBS([gethostbyname],
-        [nsl],
-        [AC_MSG_RESULT([$ac_cv_search])],
-        [AC_MSG_ERROR([$ac_cv_search])])
-
-AX_PTHREAD
-LIBS="$PTHREAD_LIBS $LIBS"
-CXXFLAGS="$CXXFLAGS $PTHREAD_CFLAGS"
-
-AH_TEMPLATE(HAVE_GCC_ATOMIC_BUILTINS, [gcc-style __sync_* builtins])
-AC_MSG_CHECKING([if compiler supports gcc atomic builtins])
-AC_LINK_IFELSE([AC_LANG_PROGRAM(
-[[void inc(int*ptr) { __sync_fetch_and_add(ptr, 1); }
-]])],
-[AM_CONDITIONAL([HAVE_GCC_ATOMIC_BUILTINS], [true]) AC_DEFINE([HAVE_GCC_ATOMIC_BUILTINS], [1]) AC_MSG_RESULT([yes])],
-[AM_CONDITIONAL([HAVE_GCC_ATOMIC_BUILTINS], [false]) AC_DEFINE([HAVE_GCC_ATOMIC_BUILTINS], [0]) AC_MSG_RESULT([no])],
-)
 AC_LANG_POP(C++)
 
 ## AC_PROG_INSTALL 
@@ -293,13 +282,6 @@ AC_PATH_PROG([PERL], [perl], [],[])
 AC_PATH_TOOL([DTRACE], [dtrace], [],[]) 
 
 AC_CHECK_TOOL(RMM, rm, /bin/rm)
-
-# Checks for header files.
-## AC_INCLUDES_DEFAULT([]) TODO: put this in
-## AC_HEADER_STDBOOL 
-## AC_HEADER_STDC 
-## AC_HEADER_SYS_WAIT 
-## AC_HEADER_TIME 
 
 ## HAVE_DIRENT_H : src/sthread/os_interface.h
 AC_HEADER_DIRENT 
@@ -330,34 +312,10 @@ AC_CHECK_HEADERS([sys/param.h])
 ## used in sthread/sfile.cpp, hpp
 AC_CHECK_HEADERS([sys/socket.h]) 
 
-## unistd had better be there; we have no alternative
-## AC_CHECK_HEADERS([unistd.h]) 
-
 ## used in error log and w_form
 AC_FUNC_VPRINTF 
 
 AC_CHECK_TYPES([ptrdiff_t, uchar_t, ushort_t, ulong_t, char_t, short_t, long_t]) 
-## these are not available in autoconf 2.59
-## AC_TYPE_INT8_T 
-## AC_TYPE_INT16_T
-## AC_TYPE_INT32_T 
-## AC_TYPE_INT64_T 
-## 
-## AC_TYPE_UINT8_T 
-## AC_TYPE_UINT16_T
-## AC_TYPE_UINT32_T 
-## When the definition of [u]int64_t becomes available,
-## we should remove the references to long long and -Wno-long-long
-## AC_TYPE_UINT64_T 
-## 
-## AC_TYPE_LONG_LONG_INT 
-## AC_TYPE_UNSIGNED_LONG_LONG_INT 
-
-
-## leave in the arcane existing handling of signals in
-## src/fc/w_signal.h
-## AC_TYPE_SIGNAL 
-
 AC_TYPE_SIZE_T 
 AC_TYPE_UID_T 
 AC_TYPE_PID_T 
@@ -386,7 +344,12 @@ AC_CHECK_HEADERS([atomic.h])
 # endian checks used in unit tests
 AC_C_BIGENDIAN
 
-AH_TEMPLATE(Alpha,	[architecture])
+
+## Architectures: These are defined even though SHORE-MT is not supported
+## on most.  As it is ported to other architectures, we may use these.
+## The AH_TEMPLATES are needed prior to the architecture-detecting macros 
+## uses below.
+
 AH_TEMPLATE(I860,	[architecture])
 AH_TEMPLATE(I386,	[architecture])
 AH_TEMPLATE(i386,	[architecture - not always defined by compiler])
@@ -395,73 +358,36 @@ AH_TEMPLATE(amd64,	[architecture])
 AH_TEMPLATE(x86_64,	[architecture])
 AH_TEMPLATE(Snake, 	[architecture])
 AH_TEMPLATE(Sparc, 	[architecture])
-AH_TEMPLATE(PowerPC,	[architecture])
-AH_TEMPLATE(Rs6000,	[architecture])
-AH_TEMPLATE(Mips,	[architecture])
 
-AH_TEMPLATE(AIX32, 	[operating system])
-AH_TEMPLATE(AIX41, 	[operating system])
 AH_TEMPLATE(HPUX8, 	[operating system])
-AH_TEMPLATE(Irix,	[operating system])
 AH_TEMPLATE(Linux,	[operating system])
-AH_TEMPLATE(MacOSX,	[operating system])
-AH_TEMPLATE(OSF1,	[operating system])
-AH_TEMPLATE(OSF1AD,	[operating system])
 AH_TEMPLATE(SOLARIS2,	[operating system])
 AH_TEMPLATE(SUNOS41,	[operating system])
-AH_TEMPLATE(Ultrix42,	[operating system])
-AH_TEMPLATE(__MacOSX__,	[operating system])
-AH_TEMPLATE(w_NetBSD,	[operating system])
 
-AH_TEMPLATE(IS_AIX,	[operating system])
-AH_TEMPLATE(IS_AIX3,	[operating system])
-AH_TEMPLATE(IS_AIX4,	[operating system])
 AH_TEMPLATE(IS_HPUX8,	[operating system])
 AH_TEMPLATE(IS_LINUX,	[operating system])
-AH_TEMPLATE(IS_IRIX,	[operating system])
-AH_TEMPLATE(IS_MACOSX,	[operating system])
-AH_TEMPLATE(IS_NETBSD,	[operating system])
-AH_TEMPLATE(IS_OSF1,	[operating system])
-AH_TEMPLATE(IS_OSF1AD,	[operating system])
 AH_TEMPLATE(IS_SOLARIS2,[operating system])
-AH_TEMPLATE(IS_ULTRIX42,[operating system])
 AH_TEMPLATE(IS_SUNOS41,	[operating system])
-AH_TEMPLATE(win32,	[operating system])
 
-
-AH_TEMPLATE(IS_ALPHA_OSF1,	[combo])
-AH_TEMPLATE(IS_I386_CYGWIN,	[combo])
 AH_TEMPLATE(IS_I386_LINUX,	[combo])
-AH_TEMPLATE(IS_I386_NETBSD,	[combo])
 AH_TEMPLATE(IS_I386_SOLARIS2,	[combo])
-AH_TEMPLATE(IS_I860_OSF1AD,	[combo])
 AH_TEMPLATE(IS_IA64_LINUX,	[combo])
-AH_TEMPLATE(IS_IX86_NT,		[combo])
-AH_TEMPLATE(IS_MIPS_IRIX,	[combo])
-AH_TEMPLATE(IS_MIPS_ULTRIX42,	[combo])
-AH_TEMPLATE(IS_POWERPC_MACOSX,	[combo])
-AH_TEMPLATE(IS_RS6000_AIX32,	[combo])
-AH_TEMPLATE(IS_RS6000_AIX41,	[combo])
 AH_TEMPLATE(IS_SNAKE_HPUX8,	[combo])
 AH_TEMPLATE(IS_SPARC_SOLARIS2,	[combo])
 AH_TEMPLATE(IS_SPARC_SUNOS41,	[combo])
-AH_TEMPLATE(IS_IX86_NT,		[combo])
-AH_TEMPLATE(IS_I386_CYGWIN,	[combo])
 AH_TEMPLATE(IS_X86_64,          [combo])
 AH_TEMPLATE(IS_AMD64,          [combo])
 
-AH_TEMPLATE(IS_UNIX,		[windows or unix?])
-AH_TEMPLATE(IS_NT,		[opposite of IS_UNIX])
-AH_TEMPLATE(IS_DOSDEV,		[dos-based])
-AH_TEMPLATE(IS_CYGWIN,		[windows])
+
+##  SHORE-MT debugging config options:
 
 AH_TEMPLATE(DEBUG,		[old debug code included])
 AH_TEMPLATE(NDEBUG,		[no debug code included])
 AH_TEMPLATE(W_TRACE,		[tracing debugging code included])
 AH_TEMPLATE(W_DEBUG_RC,		[rc-is-checked code included])
 
-AH_TEMPLATE(SM_PLP_TRACING,     [PLP tracing code included])
-AH_TEMPLATE(SM_HISTOGRAM,       [HISTOGRAM-related code included])
+##  SHORE-MT DIAS projects:
+AH_TEMPLATE(SM_DORA,            [DORA-related code included])
 
 ## Check for atomic ops
 AC_CHECK_FUNCS([membar_enter]) 
@@ -476,28 +402,36 @@ AC_CHECK_FUNCS([gettimeofday])
 ## For now, don't bother checking, because we don't have any
 ## alternatives at the moment, and we're not trying to build this
 ## on windows..
-## AC_CHECK_FUNCS([gethostbyname]) 
-## AC_CHECK_FUNCS([gethostname]) 
-## AC_CHECK_FUNCS([getpagesize]) 
-## AC_CHECK_FUNCS([isascii]) 
-## AC_CHECK_FUNCS([localtime_r]) 
-## AC_CHECK_FUNCS([lstat]) 
+
+## AC_SEARCH_LIBS and AC_CHECK_LIB do not define HAVE_xxx
+## so we must also use CHECK_FUNCS for all 3
+## and AC_SEARCH_LIBS to add the proper libraries for linking.
+AC_SEARCH_LIBS([getaddrinfo],[socket])
+AC_SEARCH_LIBS([gethostname],[nsl])
+AC_SEARCH_LIBS([gethostbyname],[nsl])
+AC_CHECK_FUNCS([getaddrinfo])
+AC_CHECK_FUNCS([gethostname])
+AC_CHECK_FUNCS([gethostbyname])
+
+## These are needed but have no alternative if not present
+## from <cstring>:
 ## AC_CHECK_FUNCS([memchr]) 
 ## AC_CHECK_FUNCS([memmove]) 
 ## AC_CHECK_FUNCS([memset]) 
-## AC_CHECK_FUNCS([re_comp]) 
-## AC_CHECK_FUNCS([regcomp]) 
-## AC_CHECK_FUNCS([select]) 
-## AC_CHECK_FUNCS([sqrt]) 
-## AC_CHECK_FUNCS([strcasecmp]) 
 ## AC_CHECK_FUNCS([strchr]) 
-## AC_CHECK_FUNCS([strdup]) 
 ## AC_CHECK_FUNCS([strrchr]) 
 ## AC_CHECK_FUNCS([strstr]) 
+AC_CHECK_FUNCS([strerror]) 
+
+## for smsh shell 
+AC_SEARCH_LIBS([strcasecmp],[c]) 
+AC_SEARCH_LIBS([strdup],[c]) 
+
+## from <cstdlib>
 ## AC_CHECK_FUNCS([strtol]) 
 ## AC_CHECK_FUNCS([strtoul]) 
 ## AC_CHECK_FUNCS([strtoull]) 
-AC_CHECK_FUNCS([strerror]) 
+
 
 ##  Check for size of pthread_t
 ## solaris says int, linux says unsigned long
@@ -505,19 +439,11 @@ AC_CHECK_FUNCS([strerror])
 AC_CHECK_SIZEOF(pthread_t,[],[])
 
 
-
-## define PTHREAD_SEMAPHORE if the system
-## supports the real-time extensions
-## TODO: TEST WITHOUT:
-AC_CHECK_HEADERS([semaphore.h]) 
-
 ## define HAVE_LIBrt and prepend -lrt to LIBS:
 AC_CHECK_LIB([rt], [clock_gettime])
 
-## Not any alternatives to these:
-## AC_CHECK_LIB([c], [malloc])
-## AC_CHECK_LIB([c], [realloc])
-## AC_CHECK_LIB([c], [memcmp])
+## look for faster multi-threaded malloc library
+AC_CHECK_LIB([mtmalloc], [malloc],,,[tmalloc])
 
 ## check for the pthread func to get the stack size and addr
 AH_TEMPLATE(HAVE_PTHREAD_ATTR_GETSTACK, [have pthread_attr_getstack?] )
@@ -534,7 +460,7 @@ AC_CHECK_LIB([pthread], [pthread_attr_getstacksize],
 [AC_DEFINE(HAVE_PTHREAD_ATTR_GETSTACKSIZE,0)]
 )
 
-## check for the pthread barriers option
+## check for the pthread barriers option for smsh
 AH_TEMPLATE(HAVE_PTHREAD_BARRIERS, [have pthreads barriers?] )
 AC_CHECK_LIB([pthread], [pthread_barrier_wait], 
 [AC_DEFINE(HAVE_PTHREAD_BARRIERS,1)],
@@ -546,7 +472,7 @@ AC_CHECK_LIB([pthread], [pthread_barrier_wait],
 ## 
 ## -------------- Architecture
 ##
-## NOTE: all these IS_xxx, including IS_NT and IS_UNIX
+## NOTE: all these IS_xxx
 ## are not used in the sources and can be removed. For now, they
 ## are left in for developers' convenience, in event we decide
 ## to port to some other platform and need them.
@@ -558,7 +484,6 @@ AC_LANG_PUSH(C++)
 
 AC_MSG_CHECKING([architecture])
 AC_SUBST([uname_machine], [`uname -m`])
-AC_MSG_RESULT($uname_machine)
 
 AC_PREPROC_IFELSE([AC_LANG_PROGRAM(
 [[#if defined(__SVR4) && defined(sparc) && defined(sun)
@@ -570,37 +495,6 @@ AC_PREPROC_IFELSE([AC_LANG_PROGRAM(
 AC_DEFINE(IS_SPARC_SOLARIS2,1,[is sparc solaris])
 AC_DEFINE(IS_SOLARIS2,1,[is solaris])
 AC_MSG_RESULT([Sparc Solaris])
-],
-[])
-
-AC_PREPROC_IFELSE([AC_LANG_PROGRAM(
-[[#if defined(_WIN32) && defined(_M_IX86) && defined(_MSC_VER)
-#else
-#error not this architecture
-#endif
-]])], 
-[AC_DEFINE(I386,,[])
-AC_DEFINE(i386)
-AC_DEFINE(win32,,[])
-AC_DEFINE(IS_IX86_NT,1,[x86 nt])
-AC_DEFINE(IS_NT,1,[is nt])
-AC_DEFINE(IS_DOSDEV,1,[dos-based])
-AC_MSG_RESULT([dos-based nt i386])
-],
-[])
-
-AC_PREPROC_IFELSE([AC_LANG_PROGRAM(
-[[#if defined(_WIN32) && defined(__GNUC__) && defined(i386)
-#else
-#error not this architecture
-#endif
-]])], 
-[AC_DEFINE(I386,,[])
-AC_DEFINE(win32,,[])
-AC_DEFINE(IS_NT,1,[is nt])
-AC_DEFINE(IS_CYGWIN,1,[nt cygwin])
-AC_DEFINE(IS_I386_CYGWIN,1,[x86 nt cygwin])
-AC_MSG_RESULT([cygwin nt i386])
 ],
 [])
 
@@ -621,89 +515,6 @@ AH_VERBATIM([hpux],[/*turn off hpux and hp9000s800*/
 #if defined(hpux) && defined(hp9000s800)
 #undef hpux
 #undef hp9000s800
-#endif
-])
-
-AC_PREPROC_IFELSE([AC_LANG_PROGRAM(
-[[#if defined(__OSF1__) && defined(__PARAGON__)
-#else
-#error not this architecture
-#endif
-]])], 
-[AC_DEFINE(I860,,[])
-AC_DEFINE(OSF1AD,,[])
-AC_DEFINE(IS_I860_OSF1AD,1,[osf1 paragon])
-AC_DEFINE(IS_OSF1AD,1,[osf1])
-AC_MSG_RESULT([osf1 paragon])
-],
-[])
-
-AC_PREPROC_IFELSE([AC_LANG_PROGRAM(
-[[#if defined(__osf__) && defined(__alpha)
-#else
-#error not this architecture
-#endif
-]])], 
-[AC_DEFINE(Alpha,,[])
-AC_DEFINE(OSF1,,[])
-AC_DEFINE(IS_ALPHA_OSF1,1,[osf1 alpha])
-AC_DEFINE(IS_OSF1,1,[osf1])
-AC_MSG_RESULT([osf1 alpha 64 bit])
-],
-[])
-
-AC_PREPROC_IFELSE([AC_LANG_PROGRAM(
-[[#if defined(mips) && defined(ultrix)
-#else
-#error not this architecture
-#endif
-]])], 
-[AC_DEFINE(Mips,,[])
-AC_DEFINE(Ultrix42,,[])
-AC_DEFINE(IS_MIPS_ULTRIX42,1,[mips ultrix])
-AC_DEFINE(IS_ULTRIX42,1,[ultrix])
-AC_MSG_RESULT([ultrix mips])
-],
-[])
-AH_VERBATIM([mips],[/*turn off mips and ultrix*/
-#if defined(mips) && defined(ultrix)
-#undef mips
-#undef ultrix
-#endif
-])
-
-
-AC_PREPROC_IFELSE([AC_LANG_PROGRAM(
-[[#if defined(__NetBSD__) && defined(i386)
-#else
-#error not this architecture
-#endif
-]])], 
-[AC_DEFINE(I386,,[])
-AC_DEFINE(Ultrix42,,[])
-AC_DEFINE(IS_I386_NETBSD,1,[i386 netbsd])
-AC_DEFINE(w_NetBSD,1,[ultrix])
-AC_DEFINE(IS_NETBSD, 1, [netbsd])
-AC_MSG_RESULT([netbsd i386])
-],
-[])
-
-AC_PREPROC_IFELSE([AC_LANG_PROGRAM(
-[[#if defined(sgi) 
-#else
-#error not this architecture
-#endif
-]])], 
-[AC_DEFINE(Mips,,[])
-AC_DEFINE(Irix,,[])
-AC_DEFINE(IS_MIPS_IRIX,1,[sgi mips irix])
-AC_DEFINE(IS_IRIX,1,[irix])
-AC_MSG_RESULT([irix mips])
-],
-[])
-AH_VERBATIM([sgi],[/*turn off sgi */
-#if defined(sgi) 
-#undef sgi
 #endif
 ])
 
@@ -755,74 +566,6 @@ AC_MSG_RESULT([linux ia64])
 ],
 [])
 
-AC_PREPROC_IFELSE([AC_LANG_PROGRAM(
-[[#if defined(aix)  && defined(FORCE_AIX4)
-#else
-#error not this architecture
-#endif
-]])], 
-[AC_DEFINE(Rs6000,,[])
-AC_DEFINE(AIX41,,[])
-AC_DEFINE(IS_RS6000_AIX41,1,[Rs6000 aix41])
-AC_DEFINE(IS_AIX4,1,[aix41])
-AC_DEFINE(IS_AIX,1,[aix])
-AC_MSG_RESULT([aix4 Rs6000])
-],
-[])
-
-AC_PREPROC_IFELSE([AC_LANG_PROGRAM(
-[[#if defined(aix)  && !defined(FORCE_AIX4)
-#else
-#error not this architecture
-#endif
-]])], 
-[AC_DEFINE(Rs6000,,[])
-AC_DEFINE(AIX32,,[])
-AC_DEFINE(IS_RS6000_AIX32,1,[Rs6000 aix32])
-AC_DEFINE(IS_AIX3,1,[aix3])
-AC_DEFINE(IS_AIX,1,[aix])
-AC_MSG_RESULT([aix3 Rs6000])
-],
-[])
-
-
-AC_PREPROC_IFELSE([AC_LANG_PROGRAM(
-[[#if defined(__ppc__) && defined(__APPLE__)
-#else
-#error not this architecture
-#endif
-]])], 
-[AC_DEFINE(PowerPC,,[])
-AC_DEFINE(MacOSX,,[])
-AC_DEFINE(__MacOSX__)
-AC_DEFINE(IS_POWERPC_MACOSX,1,[powerpc macosx])
-AC_DEFINE(IS_MACOSX,1,[apple mac osx])
-AC_MSG_RESULT([mac osx powerpc])
-],
-[])
-
-AC_PREPROC_IFELSE([AC_LANG_PROGRAM(
-[[#if defined(__i386__) && defined(__APPLE__)
-#else
-#error not this architecture
-#endif
-]])], 
-[AC_DEFINE(I386,,[])
-AC_DEFINE(MacOSX,,[])
-AC_DEFINE(__MacOSX__)
-AC_DEFINE(IS_I386_MACOSX,1,[i386 macosx])
-AC_DEFINE(IS_MACOSX,1,[apple mac osx])
-AC_MSG_RESULT([mac osx i386])
-],
-[])
-
-## -------------- IS NT OR UNIX
-
-AH_VERBATIM([IS_UNIX],[/*simply !IS_NT*/
-#ifndef IS_NT 
-#define IS_UNIX 1
-#endif
-])
 AC_LANG_POP(C++)
 
 AC_LANG_PUSH(C++)
@@ -831,11 +574,13 @@ AC_LANG_PUSH(C++)
 # USE_IOS_COMPAT
 # This simply causes configure/make to add the compat/ directory to
 # the include list for compiles.
-#
 # -------------------------------------------------------------------------
 # NOTE: must use AC_PREPROC_IFELSE here because at least one
 # compiler version (4.1.2) produces bad assembly, which causes this
 # test to fail. Cannot use 4.1.2
+# 
+# NOTE: compat library no longer used (6.0 release). Code left in place
+# for historical reasons.
 # -------------------------------------------------------------------------
 AC_MSG_CHECKING([whether the ios headers exist without .h suffix])
 AC_PREPROC_IFELSE([AC_LANG_PROGRAM(
@@ -863,39 +608,43 @@ AH_VERBATIM([W_USE_COMPAT_STRSTREAM],[/*for in-memory str streams*/
 AC_LANG_POP(C++)
 
 
-# -------------------------------------------------------------------------
-#
-# SM_PAGESIZE
-# Needed at compile time. Default is 8K. 
-# User can override in shore.def
-#
-# -------------------------------------------------------------------------
-AH_VERBATIM([SM_PAGESIZE],[/*1024 to 32768 inclusive*/
-#ifndef SM_PAGESIZE
-#define SM_PAGESIZE 8192
-#endif
-])
 
-# add a bogus "feature" simply for the purpose of getting nicer --help 
+# add bogus "features" simply for the purpose of getting nicer --help 
 AC_ARG_ENABLE([bogus],
 [
 SHORE-specific Features:], [], [])
 
+
+# -------------------------------------------------------------------------
+#
+# SM_PAGESIZE :: --with-page-size=xxx
+#  
+# -------------------------------------------------------------------------
+
+AC_MSG_CHECKING([for sm page size])
+AC_ARG_WITH([page-size],
+[AS_HELP_STRING([--with-page-size],[1024, 2048, 4196, 8192(default), 16384, or 32768])],
+[],
+[with_page_size=8192])
+AC_DEFINE_UNQUOTED(SM_PAGESIZE, $with_page_size, [configured page size])
+AC_MSG_RESULT([$with_page_size])
 # -------------------------------------------------------------------------
 #
 # HAVE_HUGETLBFS
 #  
 #  Generate HAVE_HUGETLBFS if so configured
 #
+# NOTE ************************************  REMOVED FOR NOW - problematic.
+# If/when reinstalled, then add back in doxygen info in src/mainpage.h
+#
 # -------------------------------------------------------------------------
-
-AC_ARG_WITH([hugetlbfs],
-[AS_HELP_STRING([--with-hugetlbfs],[Use the hugetlbfs for the buffer pool])],
-[],
-[with_hugetlbfs=no])
-AS_IF([test "x$with_hugetlbfs" = xyes],
-[AC_DEFINE_UNQUOTED(HAVE_HUGETLBFS, 1, [use hugetlbfs for buffer pool])]
-)
+# AC_ARG_WITH([hugetlbfs],
+# [AS_HELP_STRING([--with-hugetlbfs],[Use the hugetlbfs for the buffer pool])],
+# [],
+# [with_hugetlbfs=no])
+# AS_IF([test "x$with_hugetlbfs" = xyes],
+# [AC_DEFINE_UNQUOTED(HAVE_HUGETLBFS, 1, [use hugetlbfs for buffer pool])]
+# )
 
 ## invoke gethugepagesize.sh to establish the page size
 ## we do this regardless of the --with-hugetlbfs option; it's
@@ -916,25 +665,50 @@ AC_MSG_RESULT([$hugepagesize])
 #  else valloc if it's here.
 #
 # -------------------------------------------------------------------------
-
-AC_ARG_WITH([mmap],
-[AS_HELP_STRING([--without-mmap],[Do not use mmap for the buffer pool. Trumps hugetlbfs option])],
-[],
-[with_mmap=yes])
-AS_IF([test "x$with_mmap" = xno],
-[AC_DEFINE_UNQUOTED(WITHOUT_MMAP, 1, [do not mmap the buffer pool])]
-)
+# 
+#
+#AC_ARG_WITH([mmap],
+#[AS_HELP_STRING([--without-mmap],[Do not use mmap for the buffer pool. Trumps hugetlbfs option])],
+#[],
+#[with_mmap=yes])
+#AS_IF([test "x$with_mmap" = xno],
+#[AC_DEFINE_UNQUOTED(WITHOUT_MMAP, 1, [do not mmap the buffer pool])]
+#)
 AC_CHECK_FUNCS([posix_memalign])
 AC_CHECK_FUNCS([memalign])
 AC_CHECK_FUNCS([valloc])
 
+# -------------------------------------------------------------------------
+#
+# handle --enable-pthread-mutex  --disable-pthread-mutex
+#
+# Determines what compile-time options to use for USE_PTHREAD_MUTEX
+# (src/sthread/sthread.h), to use pthread mutexen implementation of
+# queue_based_lock_t
+#
+#
+# -------------------------------------------------------------------------
+AH_TEMPLATE(USE_PTHREAD_MUTEX, [enable-pthread-mutex ?] )
+AC_MSG_CHECKING(whether to enable pthreads-based mutex implementation)
+AC_ARG_ENABLE([pthread-mutex],
+[  --enable-pthread-mutex default:yes	Compile to use pthreads-based mutexes for certain critical sections],
+ [case "${enableval}" in
+ yes) usepthreadmutex=ON ;;
+ no)  usepthreadmutex=OFF ;;
+ *) AC_MSG_ERROR([bad value ${enableval} for --enable-pthread-mutex]) ;;
+esac]
+ , 
+[usepthreadmutex=ON]
+)
 
-## TODO: look into these stats
-
-AH_VERBATIM([EXPENSIVE_STATS],[/*for thread statistics*/
-#define EXPENSIVE_STATS
-])
-
+if test "x$usepthreadmutex" = xON
+then 
+     AC_MSG_RESULT(yes)
+     AC_DEFINE(USE_PTHREAD_MUTEX, 1)
+else
+     AC_MSG_RESULT(no)
+     AC_DEFINE(USE_PTHREAD_MUTEX, 0)
+fi
 
 # -------------------------------------------------------------------------
 #
@@ -958,47 +732,10 @@ esac]
 
 AM_CONDITIONAL([ENABLE_ARCH_LP64], [test x$lp64 = xON])
 
-#
-# Get the programming environment that allows large file offsets
-# with whatever data model the compiler can provide.  We will
-# prefer LP64, but if not available, we'll compile for ILP32,
-# even though we're not supporting it (the SM remains untested for this).
-## TODO REMOVE
-## AC_MSG_CHECKING([for LP64 make flags])
-## AC_SUBST([ARCH_LP64_CFLAGS], [`getconf POSIX_V6_LP64_OFF64_CFLAGS`])
-## AC_SUBST([ARCH_LP64_LDFLAGS], [`getconf POSIX_V6_LP64_OFF64_LDFLAGS`])
-## AC_SUBST([ARCH_LP64_LIBS], [`getconf POSIX_V6_LP64_OFF64_LIBS`])
-## 
-## AC_MSG_CHECKING([for ILP32 make flags])
-## AC_SUBST([ARCH_ILP32_CFLAGS], [`getconf POSIX_V6_ILP32_OFFBIG_CFLAGS`])
-## AC_SUBST([ARCH_ILP32_LDFLAGS], [`getconf POSIX_V6_ILP32_OFFBIG_LDFLAGS`])
-## AC_SUBST([ARCH_ILP432_LIBS], [`getconf POSIX_V6_ILP32_OFFBIG_LIBS`])
 
-## AC_DEFINE(_POSIX_C_SOURCE, 200112L, Define to activate features from IEEE Stds 1003.1-2001)
-## AC_DEFINE(_XOPEN_SOURCE, 600, Define to activate features from IEEE Stds 1003.1-2001)
-
-
-
-## The following is installed in w_defines.h (unfortunately),
-## because autoconf mangles the #undef ARCH_LP64, whether we use
-## AH_VERBATIM or AH_BOTTOM or ...
-## 
-## AH_BOTTOM([
-## #include <unistd.h>
-## #if _SC_V6_LP64_OFF64 || _XBS5_LP64_OFF64 || _SC_V6_LPBIG_OFFBIG || _XBS5_LPBIG_OFFBIG
-## #else
-## #warning Turning off ARCH_LP64
-## #undef ARCH_LP64
-## 
-## #if _SC_V6_ILP32_OFFBIG || _XBS5_ILP32_OFFBIG
-## #else
-## #warning large file off_t support seems to be missing accoring to sysconf !
-## #endif
-## #endif
-## ])
-
-# Legacy macro :
-# TODO: get rid of this and assume always large file aware
+# This is unnecessary for LP64  **however** we are leaving it in 
+# in anticipation of porting back to LP32
+# 
 AH_VERBATIM([W_LARGEFILE],[#if (defined(_LARGEFILE_SOURCE) && defined(_FILE_OFFSET_BITS)) || defined(ARCH_LP64)
 #define LARGEFILE_AWARE
 #endif
@@ -1153,28 +890,21 @@ AS_IF(
 AC_MSG_RESULT([Debugger symbols $dbgsymbols])
 AM_CONDITIONAL([DEBUGGERSYMBOLS], [test x$dbgsymbols = xtrue -o x$with_debug_level1 = xyes -o x$with_debug_level2 = xyes -o x$with_debug_level3 = xyes])
 
-AC_ARG_ENABLE([optimize],
-[  --enable-optimize	default:yes	Turn off compiler optimizations],
-[case "${enableval}" in
- yes)	optimize=true ;;
- no)	optimize=false ;;
- *)	AC_MSG_ERROR([bad value ${enableval} for --enable-optimize]) ;;
- esac], [optimize=true])
-AM_CONDITIONAL([DISABLE_OPTIMIZATIONS], [test x$optimize = xfalse])
 
 # -------------------------------------------------------------------------
 #
 # handle --enable-explicit --disable-explicit
 # Needed at config time to tell make what flags to put on the compiles.
+# DISABLED: this needs work!
 #
 # -------------------------------------------------------------------------
-AC_ARG_ENABLE([explicit],
-[  --enable-explicit	default:no	Compile with explicit templates],
-[case "${enableval}" in
- yes) explicit=true ;;
- no)  explicit=false ;;
- *) AC_MSG_ERROR([bad value ${enableval} for --enable-explicit]) ;;
-esac], [explicit=false])
+# AC_ARG_ENABLE([explicit],
+# [  --enable-explicit	default:no	Compile with explicit templates],
+# [case "${enableval}" in
+#  yes) explicit=true ;;
+#  no)  explicit=false ;;
+#  *) AC_MSG_ERROR([bad value ${enableval} for --enable-explicit]) ;;
+# esac], [explicit=false])
 AM_CONDITIONAL([EXPLICIT_TEMPLATE], [test x$explicit = xtrue])
 
 # -------------------------------------------------------------------------
@@ -1229,53 +959,30 @@ AM_CONDITIONAL([PURECOV], [test x$purecov = xtrue])
 #
 # Shore-MT new features
 #
+# There are six supported additional options:
+#
+# (1) --enable-dora       : defines SM_DORA
+# Enables the code paths for Data-oriented Transaction Execution (DORA)
+#
 # -------------------------------------------------------------------------
-
-#
-# (1) --enable-plptracing : define SM_PLP_TRACING
-# Enables the code paths that enable tracing of page-level accesses and/or 
-# critical sections
-AC_MSG_CHECKING(whether to enable PLP tracing)
-AC_ARG_ENABLE([plptracing], 
-[  --enable-plptracing        default:no   Enable PLP tracing],
+AC_MSG_CHECKING(whether to enable DORA-support)
+AC_ARG_ENABLE([dora], 
+[  --enable-dora         default:no      Enable DORA],
 [case "${enableval}" in
-  yes) plptracing=true ;;
-  no)  plptracing=false ;;
-  *) plptracing=false ;;
-esac],[plptracing=false])
-AM_CONDITIONAL([USE_PLPTRACING], [test x$plptracing = xtrue])
+  yes) dora=true ;;
+  no)  dora=false ;;
+  *) dora=false ;;
+esac],[dora=false])
+AM_CONDITIONAL([USE_DORA], [test x$dora = xtrue])
 
-if test "$plptracing" = true
+if test "$dora" = true
 then 
      AC_MSG_RESULT(yes)
-     AC_DEFINE(SM_PLP_TRACING)
+     AC_DEFINE(SM_DORA)
 else
      AC_MSG_RESULT(no)
 fi
-
-#
-# (2) --enable-histogram : defines SM_HISTOGRAM
-# Enables the code paths for collecting information on data accesses
-AC_MSG_CHECKING(whether to enable HISTOGRAM-support)
-AC_ARG_ENABLE([histogram], 
-[  --enable-histogram         default:no   Enable DATA ACCESS HISTOGRAM],
-[case "${enableval}" in
-  yes) histogram=true ;;
-  no)  histogram=false ;;
-  *) histogram=false ;;
-esac],[histogram=false])
-AM_CONDITIONAL([USE_HISTOGRAM], [test x$histogram = xtrue])
-
-if test "$histogram" = true
-then 
-     AC_MSG_RESULT(yes)
-     AC_DEFINE(SM_HISTOGRAM)
-else
-     AC_MSG_RESULT(no)
-fi
-
-
-AC_SUBST(HAVE_GCC_ATOMIC_BUILTINS)
+# -------------------------------------------------------------------------
 
 
 AC_CONFIG_FILES([Makefile])

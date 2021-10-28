@@ -1,8 +1,9 @@
-#!/bin/ksh 
+#!/bin/bash 
+# NOTE: ksh will do. On Solaris, sh might not do.
 
 # <std-header style='shell' orig-src='shore'>
 #
-#  $Id: testall,v 1.5 2010/06/15 22:22:14 nhall Exp $
+#  $Id: testall,v 1.10 2010/12/08 17:37:55 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -32,14 +33,19 @@
 
 PATH=.:$PATH
 
+vg=""
+
+function print {
+    echo $*
+}
 
 function run_thread3 {
     thread3 | sort
 }
 
 function execute  {
-    print -n "$1\t--> running --> "
-    print "running $1" >> $2
+    print -n "$vg $1    --> running --> "
+    print "running $$vg $1" >> $2
 
 	if [[ -z $3 ]]; then
 		# no comparison file
@@ -54,7 +60,7 @@ function execute  {
 
     if [[ -n $3 ]]; then
 	of=/tmp/$$
-	if $1 > $of 2>&1; then
+	if $vg $1 > $of 2>&1; then
 	    if diff $of $3 >> $2; then
 		print "ok"
 	    else
@@ -64,16 +70,16 @@ function execute  {
                 exit 1
 	    fi
 	else
-	    print "failed to execute " $1
+	    print "failed to execute " $vg $1
             exit 1
 	fi
 	cat $of >> $2
 	rm $of
 
-    elif $1 >> $2 2>&1; then
+    elif $vg $1 >> $2 2>&1; then
 	print "ok"
     else
-	print "failed to execute " $1
+	print "failed to execute " $vg $1
         exit 1
     fi
 }
@@ -95,6 +101,8 @@ execute run_thread3 $outf
 execute thread4 $outf
 execute pthread_test $outf
 execute mmap $outf
+execute errlogtest $outf
+
 
 print
 print "result in $outf"

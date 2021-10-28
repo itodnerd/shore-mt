@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='STIME_H'>
 
- $Id: stime.h,v 1.20.2.6 2010/03/19 22:17:16 nhall Exp $
+ $Id: stime.h,v 1.23 2010/12/09 15:20:12 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -40,9 +40,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  * debugging and testing.
  * */
 
-extern "C" {
 #include <sys/time.h>
-}
 
 /**\brief General-purpose time interval class.
 *
@@ -65,11 +63,11 @@ extern "C" {
 
 // USE_POSIX_TIME has protection from double-define so that
 // you can override this in shore.def
-#if     HAVE_CLOCK_GETTIME
+#if     defined(HAVE_CLOCK_GETTIME)
 #ifndef USE_POSIX_TIME
 #define USE_POSIX_TIME 1
 #endif
-#elif   !HAVE_GETTIMEOFDAY
+#elif   !defined(HAVE_GETTIMEOFDAY)
 #error  No suitable get-time system call. Cannot build.
 #endif
 
@@ -161,16 +159,16 @@ public:
     long    nsecs() const;        /* nano seconds */
 
     /* input conversion operators for integral types */
-    static    stime_t sec(int seconds); 
+    static    stime_t    sec(int seconds); 
     static    stime_t    usec(int micro_seconds, int seconds = 0);
     static    stime_t    msec(int milli_seconds, int seconds = 0);
     static    stime_t    nsec(int nano_seconds, int seconds = 0);
 
     /* the Current time */
-    static    stime_t now();
+    static    stime_t    now();
 
-    ostream    &print(ostream &s) const;
-    ostream &ctime(ostream &s) const;
+    ostream&             print(ostream &s) const;
+    ostream&             ctime(ostream &s) const;
 };
 
 

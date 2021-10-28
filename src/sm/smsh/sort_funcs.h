@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='SORT_FUNCS_H'>
 
- $Id: sort_funcs.h,v 1.13 2010/05/26 01:20:52 nhall Exp $
+ $Id: sort_funcs.h,v 1.14 2010/08/23 14:28:21 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -41,9 +41,11 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #define MAXBV 0x7f
 struct metadata {
     typed_btree_test t;
-    smsize_t      offset;
-    smsize_t      length;
-    bool    aligned;
+    smsize_t offset;
+    smsize_t length;
+    smsize_t dlength; // derived-key length. might not be same
+	// as key length
+    bool     aligned;
     bool     fixed;
     bool     lexico;
     bool     nullable;

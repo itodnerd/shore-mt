@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: lgrec.very.0,v 1.5.4.4 2010/01/28 04:54:35 nhall Exp $
+#  $Id: lgrec.very.0,v 1.9 2010/08/23 14:28:23 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -175,12 +175,22 @@ sm begin_xct
 # try to scan again (file is destroyed)
 	verbose calling scan_recs $f1 after $f1 is destroyed
 	catch {sm scan_recs $f1} catcherr
-	verbose (EXPECTED) scan_recs error: $catcherr
+	verbose (EXPECTED-1) scan_recs error: $catcherr
+	assert { expr {[error_is $catcherr E_BADSTID] == 1} }
 
 # try to read record (file is destroyed)
 	verbose calling read_rec $r(2) after $f1 is destroyed
 	catch {sm read_rec $r(2) 0 0} catcherr
-	verbose (EXPECTED) read_rec error: $catcherr
+	verbose (EXPECTED-2) read_rec error: $catcherr
+	# will read page and think it's still allocated
+	# but will find that page has no records.
+	# It's a problem in that read_rec, update_rec, etc do not
+	# check allocated-status.
+	if { [expr { [error_is $catcherr E_BADSTID] != 1 } ] }  {
+		assert { 
+			expr { [error_is $catcherr E_BADSLOTNUMBER] == 1 }
+		}
+	}
 
 	verbose aborting file destroy
 sm abort_xct
@@ -189,33 +199,63 @@ sm abort_xct
 # echo CHECK VOLUME AFTER $f1 destroy file aborted
 # sm check_volume $volid
 
+sm begin_xct
+#  new xct: the file-destroy should be aborted so we
+#  should be able to scan and find every record there.
+	verbose "re-scanning file"
+	catch {sm scan_recs $f1} catcherr
+	# destroy but don't commit
+	sm destroy_file $f1
 
+# Now file is no longer there, but we have not
+# removed the recs from the pages first.
+# We just did a wholesale destroy_file.
+# This catches the cases in which the code doesn't check
+# that the page is still allocated to the store and that
+# the store isn't legit anymore.
+	verbose Verifying file destroy -- THIS SHOULD GENERATE 2 ERRORS
+# so scan should get error
+	verbose calling scan_recs $f1 after $f1 is destroyed
+	catch {sm scan_recs $f1} catcherr
+	verbose (EXPECTED-3) scan_recs error: $catcherr
+	assert { expr {[error_is $catcherr E_BADSTID] == 1} }
+# and read rec should get error
+	verbose calling read_rec $r(2) after $f1 is destroyed
+	catch {sm read_rec $r(2) 0 0} catcherr
+	verbose (EXPECTED-4) read_rec error: $catcherr
+	assert { expr {[error_is $catcherr E_BADSTID] == 1} }
+sm abort_xct
+
+
+sm begin_xct
 #  new xct: the file-destroy should be aborted so we
 #  should be able to scan and find every record there.
 verbose "re-scanning file"
-
-sm begin_xct
 catch {sm scan_recs $f1} catcherr
 # destroy and commit
 sm destroy_file $f1
 verbose committing file destroy
 sm commit_xct
 
-# Now file is no longer there
+# Now file is no longer there, but we have not
+# removed the recs from the pages first.
+# We just did a wholesale destroy_file.
+# This catches the cases in which the code doesn't check
+# that the page is still allocated to the store and that
+# the store isn't legit anymore.
 sm begin_xct
 	verbose Verifying file destroy -- THIS SHOULD GENERATE 2 ERRORS
 # so scan should get error
 	verbose calling scan_recs $f1 after $f1 is destroyed
 	catch {sm scan_recs $f1} catcherr
-	verbose (EXPECTED) scan_recs error: $catcherr
+	verbose (EXPECTED-5) scan_recs error: $catcherr
+	assert { expr {[error_is $catcherr E_BADSTID] == 1} }
 # and read rec should get error
 	verbose calling read_rec $r(2) after $f1 is destroyed
 	catch {sm read_rec $r(2) 0 0} catcherr
-	verbose (EXPECTED) read_rec error: $catcherr
+	verbose (EXPECTED-6) read_rec error: $catcherr
+	assert { expr {[error_is $catcherr E_BADSTID] == 1} }
 sm commit_xct
-
-# echo CHECK VOLUME AFTER $f1 destroy file aborted
-# sm check_volume $volid
 
 verbose committed last xct
 
@@ -225,6 +265,7 @@ unset pin scan
 unset f1
 unset catcherr
 unset last_few near_end data
+unset kind rid err caught
 }
 
 

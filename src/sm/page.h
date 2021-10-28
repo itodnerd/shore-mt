@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='PAGE_H'>
 
- $Id: page.h,v 1.115 2010/06/15 17:30:07 nhall Exp $
+ $Id: page.h,v 1.122 2010/11/08 15:06:55 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -75,22 +75,14 @@ typedef uint1_t        space_bucket_t;
 class page_p : public smlevel_0 
 {
 
-    friend class dir_vol_m;  // for access to page_p::splice();
-    
-    friend class btree_impl;
-    
+friend class dir_vol_m;  // for access to page_p::splice();
+
 protected:
     typedef page_s::slot_t slot_t;
     typedef page_s::slot_offset_t slot_offset_t;
     typedef page_s::slot_length_t slot_length_t;
 
 public:
-    // -- for page tracing
-    //static pthread_mutex_t _glmutex;
-    //static ofstream _accesses;
-    //static timeval curr_time;
-    // --
-    
     enum {
         data_sz = page_s::data_sz,
         max_slot = data_sz / sizeof(slot_t) + 2
@@ -113,11 +105,9 @@ public:
         t_file_p           = 6,        // file page
         t_rtree_base_p     = 7,        // rtree base class page
         t_rtree_p          = 8,        // rtree page
-        t_lgdata_p         = 9,        // large record data page
+        t_lgdata_p         = 9,       // large record data page
         t_lgindex_p        = 10,       // large record index page
-	t_ranges_p         = 11,       // key-ranges info page
-	t_file_mrbt_p      = 12,       // file page that has an owner
-        t_any_p            = 13        // indifferent
+        t_any_p            = 11        // indifferent
     };
     enum page_flag_t {
         t_virgin        = 0x02,        // newly allocated page
@@ -130,14 +120,19 @@ protected:
         enum { uninit = space_bucket_t(-1) };
     public:
         NORET        page_bucket_info_t() : _old(uninit), _checked(1) { }
-        NORET        ~page_bucket_info_t() { w_assert3(_checked==1); }
+        NORET        ~page_bucket_info_t();
         bool        initialized() const {  return _old != uninit; }
         void        init(space_bucket_t bucket) { 
             _old =  bucket;
             _checked = 0;
+            // This means that  update_bucket_info must be called.
+            // We don't actually look at the _checked field to tell
+            // if is should be called; rather, we croak on 
+            // destruction if it hasn't been called --or--
+            // nochecknecessary() called instead.
         }
         void        nochecknecessary() { _checked=1; }
-        space_bucket_t        old() const { return _old; }
+        space_bucket_t  old() const { return _old; }
             
     private:
         // keep track of old & new
@@ -149,11 +144,11 @@ protected:
     void        init_bucket_info();
 
 public:
-    static space_bucket_t         free_space2bucket(smsize_t free_space);
+    static space_bucket_t       free_space2bucket(smsize_t free_space);
                         // return max free space that could be on a page
-    static smsize_t                 bucket2free_space(space_bucket_t b);
-    space_bucket_t                 bucket() const;
-    smsize_t                         free_space4bucket() const;
+    static smsize_t             bucket2free_space(space_bucket_t b);
+    space_bucket_t              bucket() const;
+    smsize_t                    free_space4bucket() const;
     /* END handling of bucket-management for pages  with rsvd_mode() */
 
 
@@ -191,9 +186,6 @@ public:
     bool                         pinned_by_me() const;
 
     slotid_t                     nslots() const;
- 
-    slotid_t                     nvacant() const;
- 
     smsize_t                     tuple_size(slotid_t idx) const;
     void*                        tuple_addr(slotid_t idx) const;
     bool                         is_tuple_valid(slotid_t idx) const;
@@ -303,7 +295,7 @@ public:
     tag_t                       tag() const;
 
 private:
-    w_rc_t                         _copy(const page_p& p) ;
+    w_rc_t                      _copy(const page_p& p) ;
     void                        _shift_compress(slotid_t from, 
                                     slot_offset_t     from_off, 
                                     slot_length_t     from_len,
@@ -474,6 +466,7 @@ rc_t x::_fix(bool condl, const lpid_t& pid, latch_mode_t mode,                \
                  bool ignore_store_id,                                        \
                  int refbit)                                                  \
 {                                                                             \
+    INC_TSTAT(x ## _fix_cnt);                                                 \
     store_flag_t store_flags_save = store_flags;                              \
     w_assert2((page_flags & ~t_virgin) == 0);                                 \
     W_DO( page_p::_fix(condl, pid, t_ ## x, mode, page_flags, store_flags,    \
@@ -563,14 +556,14 @@ inline smsize_t
 page_p::tuple_size(slotid_t idx) const
 {
     w_assert3(idx >= 0 && idx < _pp->nslots);
-    return _pp->slot(idx).length;
+    return _pp->slot[-idx].length;
 }
 
 inline void*
 page_p::tuple_addr(slotid_t idx) const
 {
     w_assert3(idx >= 0 && idx < _pp->nslots);
-    return (void*) (_pp->data() + _pp->slot(idx).offset);
+    return (void*) (_pp->data + _pp->slot[-idx].offset);
 }
 
 inline bool
@@ -578,7 +571,7 @@ page_p::is_tuple_valid(slotid_t idx) const
 {
     return (idx >= 0) && 
         (idx < _pp->nslots) && 
-        (_pp->slot(idx).offset >=0);
+        (_pp->slot[-idx].offset >=0);
 }
 
 inline w_base_t::w_base_t::uint4_t
@@ -626,7 +619,7 @@ page_p::latch_mode() const
     // if(_pp) w_assert2( ((_mode == LATCH_EX) == mine) || times>1);
     if(_pp) {
         bool mine = is_mine();
-        if(_mode == LATCH_EX || _mode == LATCH_NLX) w_assert2(mine); 
+        if(_mode == LATCH_EX) w_assert2(mine); 
     }
 #endif
     return _pp ? _mode : LATCH_NL;
@@ -661,15 +654,6 @@ page_p::nslots() const
 }
 
 /*--------------------------------------------------------------*
- *  page_p::nvacant()                                           *
- *--------------------------------------------------------------*/
-inline slotid_t
-page_p::nvacant() const
-{
-    return _pp->nvacant;
-}
-
-/*--------------------------------------------------------------*
  *  page_p::lsn()                                                *
  *--------------------------------------------------------------*/
 inline const lsn_t& 
@@ -694,7 +678,7 @@ page_p::set_lsns(const lsn_t& lsn)
 inline smsize_t
 page_p::contig_space()        
 { 
-    return ((char*) &_pp->slot(_pp->nslots-1)) - (_pp->data() + _pp->end); 
+    return ((char*) &_pp->slot[-(_pp->nslots-1)]) - (_pp->data + _pp->end); 
 }
 
 /*--------------------------------------------------------------*
@@ -740,7 +724,7 @@ page_p::discard()
 inline bool
 page_p::rsvd_mode(tag_t t) 
 {
-    if (t == t_file_p || t == t_file_mrbt_p || t == t_ranges_p) {
+    if (t == t_file_p) {
         return true;
     }
     return false;
@@ -762,7 +746,8 @@ page_p::unfix()
     if(_pp) {
         W_COERCE(update_bucket_info());
         bf->unfix(_pp, false, _refbit);
-    }
+        DBGTHRD(<<"page fix " << " pid " << _pp->pid);
+    } 
     _pp = 0;
 }
 
@@ -774,6 +759,14 @@ page_p::unfix_dirty()
 {
     w_assert2(!_pp || bf->is_bf_page(_pp));
     if (_pp)  {
+        if(smlevel_0::logging_enabled == false) {
+            // fake the lsn on the page. This is an attempt to
+            // trick the btree code into being able to tell if
+            // an mt scenario changed the page between fixes.
+            lsn_t mylsn = lsn();
+            mylsn.advance(1);
+            const_cast<page_p*>(this)->set_lsns(mylsn);
+        }
         W_COERCE(update_bucket_info());
         bf->unfix(_pp, true, _refbit);
     }
@@ -787,6 +780,14 @@ inline void
 page_p::set_dirty() const
 {
     if (bf->is_bf_page(_pp))  W_COERCE(bf->set_dirty(_pp));
+    if(smlevel_0::logging_enabled == false) {
+        // fake the lsn on the page. This is an attempt to
+        // trick the btree code into being able to tell if
+        // an mt scenario changed the page between fixes.
+        lsn_t mylsn = lsn();
+        mylsn.advance(1);
+        const_cast<page_p*>(this)->set_lsns(mylsn);
+    }
 }
 
 /*--------------------------------------------------------------*
@@ -833,14 +834,20 @@ public:
     virtual void  check() const = 0 ;
     virtual bool  accepted() const  = 0;
     virtual void  reject()  = 0;
+    virtual w_rc_t  formatit() const = 0; 
+    virtual bool  logit() const = 0; 
 };
 
+/**\brief This class alloc_page_filter_t always votes yea.
+  */ 
 class alloc_page_filter_yes_t: public alloc_page_filter_t {
 public:
     bool  accept(const lpid_t&) { return true; }
     void  check() const {}
     bool  accepted() const  { return true; }
     void  reject() {}
+    bool  logit() const { return true; } 
+    w_rc_t  formatit() const  { return RCOK; }
     NORET ~alloc_page_filter_yes_t() {}
 };
 

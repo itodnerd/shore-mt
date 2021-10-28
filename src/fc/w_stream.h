@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='W_STREAM_H'>
 
- $Id: w_stream.h,v 1.8.2.3 2009/09/14 00:08:45 nhall Exp $
+ $Id: w_stream.h,v 1.9 2010/05/26 01:20:26 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

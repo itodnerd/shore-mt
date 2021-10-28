@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: logstub.cpp,v 1.17.2.3 2010/01/12 02:01:30 nhall Exp $
+ $Id: logstub.cpp,v 1.20 2010/08/23 14:28:18 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -35,6 +35,9 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #define LOGSTUB_C
 #include "sm_int_1.h"
 #include <new>
+#include "logtype_gen.h"
 #include "logdef_gen.cpp"
 #include "logstub_gen.cpp"
 
+extern double logfudge_factors[t_max_logrec];
+#include "logfudge_gen.cpp"

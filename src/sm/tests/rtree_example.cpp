@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: rtree_example.cpp,v 1.1 2010/05/26 01:21:21 nhall Exp $
+ $Id: rtree_example.cpp,v 1.3 2010/09/21 14:26:28 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -33,20 +33,16 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 /**\anchor rtree_example */
 /*
- * This program is a test of file scan and lid performance
+ * This program is a brief example of rtree use
  */
 
-#include <w_stream.h>
-#include <sys/types.h>
-#include <cassert>
 #include "sm_vas.h"
-#include "w_getopt.h"
 ss_m* ssm = 0;
 
 // shorten error code type name
 typedef w_rc_t rc_t;
 
-// this is implemented in options.cpp
+// this is implemented in init_config_options.cpp
 w_rc_t init_config_options(option_group_t& options,
                         const char* prog_type,
                         int& argc, char** argv);
@@ -125,10 +121,10 @@ public:
         w_rc_t find_file_info();
         w_rc_t create_the_file();
         w_rc_t create_the_rtree(stid_t &iid, nbox_t &);
-		// helper for create_the_rtree
-		w_rc_t create_rtree_entry(stid_t iid, rid_t &rid, 
-				nbox_t &universe,
-				int kk, int last);
+        // helper for create_the_rtree
+        w_rc_t create_rtree_entry(stid_t iid, rid_t &rid, 
+                nbox_t &universe,
+                int kk, int last);
         w_rc_t scan_the_rtree(stid_t &iid, nbox_t &);
         w_rc_t do_work();
         w_rc_t do_init();
@@ -138,29 +134,29 @@ public:
 
 w_rc_t
 smthread_user_t::create_rtree_entry(stid_t iid, rid_t &rid, 
-	    nbox_t &universe,
-		int kk, int last)
+        nbox_t &universe,
+        int kk, int last)
 {
-	vec_t    el;
+    vec_t    el;
 
-	// Create a record in a file just to give us a record id
-	// to make an element for the key,elem pair.
-	vec_t oid(&rid, sizeof(rid));
+    // Create a record in a file just to give us a record id
+    // to make an element for the key,elem pair.
+    vec_t oid(&rid, sizeof(rid));
 
-	// Now create a box based on the value kk
-	int    values[4];
-	values[0] = kk;
-	values[1] = kk;
-	values[2] = kk + last;
-	values[3] = kk + 10;
-	last = kk;
+    // Now create a box based on the value kk
+    int    values[4];
+    values[0] = kk;
+    values[1] = kk;
+    values[2] = kk + last;
+    values[3] = kk + 10;
+    last = kk;
 
-	nbox_t    box(2, values);
-	box.canonize();
-	universe += box;
-	el.reset().put(&rid, sizeof(rid));
+    nbox_t    box(2, values);
+    box.canonize();
+    universe += box;
+    el.reset().put(&rid, sizeof(rid));
 
-	W_DO(ssm->create_md_assoc(iid, box, el));
+    W_DO(ssm->create_md_assoc(iid, box, el));
 
     return RCOK;
 }
@@ -170,14 +166,14 @@ smthread_user_t::create_the_rtree(stid_t &iid, nbox_t &universe)
 {
     W_DO(ssm->begin_xct());
 
-	W_DO( ssm->create_md_index(_vid,
+    W_DO( ssm->create_md_index(_vid,
             ssm->t_rtree,  // non-unique
             ss_m::t_load_file, 
             iid
             ) );
     cout << "Scanning file " << _fid 
-	     << " to populate index " << iid 
-	<< endl;
+         << " to populate index " << iid 
+    << endl;
 
     scan_file_i scan(_fid);
     pin_i*      cursor(NULL);
@@ -185,9 +181,9 @@ smthread_user_t::create_the_rtree(stid_t &iid, nbox_t &universe)
     int         i(0);
     int         last=0;
 
-	universe.nullify();
+    universe.nullify();
 
-	const int   n = 100;
+    const int   n = 100;
     /* make the values range run from -n/2 to n/2 */
     const int   h = n/2;
     do {
@@ -200,11 +196,11 @@ smthread_user_t::create_the_rtree(stid_t &iid, nbox_t &universe)
         }
         if(eof) break;
 
-		rid_t rid = cursor->rid();
-		cout << "create box for rid " << rid 
-			<< " kk = " << kk << endl;
-		W_DO(create_rtree_entry(iid, rid, 
-					universe, kk, last));
+        rid_t rid = cursor->rid();
+        cout << "create box for rid " << rid 
+            << " kk = " << kk << endl;
+        W_DO(create_rtree_entry(iid, rid, 
+                    universe, kk, last));
         i++;
     } while (!eof);
     w_assert1(i == _num_rec);
@@ -219,28 +215,28 @@ smthread_user_t::scan_the_rtree(stid_t &iid, nbox_t &universe)
 {
     W_DO(ssm->begin_xct());
 
-	scan_rt_i scan(iid, nbox_t::t_overlap, universe, true);
-	bool eof(false);
-	int i(0);
-	char e[1000]; // buffer
-	smsize_t elen(sizeof(e));
-	nbox_t k(2);
-	w_rc_t rc;
-	for (i = 0; 
+    scan_rt_i scan(iid, nbox_t::t_overlap, universe, true);
+    bool eof(false);
+    int i(0);
+    char e[1000]; // buffer
+    smsize_t elen(sizeof(e));
+    nbox_t k(2);
+    w_rc_t rc;
+    for (i = 0; 
           (!(rc = scan.next(k,e,elen,eof)).is_error() && !eof) ; 
-		  i++)
-	{
-		vec_t v(e,elen);
-		rid_t rid;
-		v.copy_to(&rid, sizeof(rid));
-		cout << "box " << k 
-			<< " rid " << rid << endl;
-	}
+          i++)
+    {
+        vec_t v(e,elen);
+        rid_t rid;
+        v.copy_to(&rid, sizeof(rid));
+        cout << "box " << k 
+            << " rid " << rid << endl;
+    }
 
     cout 
-	     << " Destroying index " << iid 
-	<< endl;
-	W_DO(ssm->destroy_md_index(iid));
+         << " Destroying index " << iid 
+    << endl;
+    W_DO(ssm->destroy_md_index(iid));
     W_DO(ssm->commit_xct());
     return RCOK;
 }
@@ -275,8 +271,8 @@ smthread_user_t::find_file_info()
 
     _start_rid = info.first_rid;
     _fid = info.fid;
-	_rec_size = info.rec_size;
-	_num_rec = info.num_rec;
+    _rec_size = info.rec_size;
+    _num_rec = info.num_rec;
     return RCOK;
 }
 
@@ -389,8 +385,8 @@ smthread_user_t::do_init()
 
     W_DO(create_the_file());
     W_DO(find_file_info());
-	stid_t iid;
-	nbox_t universe(2);
+    stid_t iid;
+    nbox_t universe(2);
     W_DO(create_the_rtree(iid, universe));
     W_DO(scan_the_rtree(iid, universe));
     return RCOK;
@@ -424,8 +420,8 @@ smthread_user_t::no_init()
     delete [] lvid_list;
 
     W_COERCE(find_file_info());
-	stid_t iid;
-	nbox_t universe(2);
+    stid_t iid;
+    nbox_t universe(2);
     W_COERCE(create_the_rtree(iid, universe));
     W_COERCE(scan_the_rtree(iid, universe));
     return RCOK;
@@ -452,13 +448,13 @@ w_rc_t smthread_user_t::handle_options()
     cout << "Processing configuration options ..." << endl;
 
     // Create an option group for my options.
-	// I use a 3-level naming scheme:
-	// executable-name.server.option-name
-	// Thus, the file will contain lines like this:
-	// create_rec.server.device_name : /tmp/example/device
-	// *.server.device_name : /tmp/example/device
-	// create_rec.*.device_name : /tmp/example/device
-	//
+    // I use a 3-level naming scheme:
+    // executable-name.server.option-name
+    // Thus, the file will contain lines like this:
+    // create_rec.server.device_name : /tmp/example/device
+    // *.server.device_name : /tmp/example/device
+    // create_rec.*.device_name : /tmp/example/device
+    //
     const int option_level_cnt = 3; 
 
     _options = new option_group_t (option_level_cnt);

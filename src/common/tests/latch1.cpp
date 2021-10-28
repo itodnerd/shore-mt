@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: latch1.cpp,v 1.1.2.8 2010/03/19 22:19:21 nhall Exp $
+ $Id: latch1.cpp,v 1.3 2010/12/08 17:37:35 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -37,8 +37,8 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include <sthread.h>
 #include <w_getopt.h>
 
-#undef ORIG_SM
-#ifdef ORIG_SM
+#undef ORIG_SM_LATCH_SEMANTICS
+#ifdef ORIG_SM_LATCH_SEMANTICS
 #define join wait
 #endif
 #include <latch.h>
@@ -144,7 +144,7 @@ void latch_thread_t::sync_other(latch_thread_t *r)
 	DO_PTHREAD(pthread_cond_signal(&r->proceed));
 }
 
-#ifdef ORIG_SM
+#ifdef ORIG_SM_LATCH_SEMANTICS
 // We renamed these methods in the new sm
 #define latch_cnt lock_cnt
 #define is_latched is_locked
@@ -374,7 +374,7 @@ void latch_thread_t::test2(int i, latch_mode_t mode1,
         the_latch.latch_acquire(mode2);
         if(is_upgrade) 
         {
-    #ifdef ORIG_SM
+    #ifdef ORIG_SM_LATCH_SEMANTICS
     // In the original sm, the number of holders was not the
     // same as the lock count
             check(__LINE__, 
@@ -404,7 +404,7 @@ void latch_thread_t::test2(int i, latch_mode_t mode1,
         } 
         else 
         {
-    #ifdef ORIG_SM
+    #ifdef ORIG_SM_LATCH_SEMANTICS
             check(__LINE__, 
             " after 2nd acquire (duplicate) ",
             the_latch, 
@@ -444,7 +444,7 @@ void latch_thread_t::test2(int i, latch_mode_t mode1,
         the_latch.latch_release();
         if(is_upgrade)
         {
-    #ifdef ORIG_SM
+    #ifdef ORIG_SM_LATCH_SEMANTICS
             // This is odd... but it seems to be the case
             // that first release doesn't change the mode
             check(__LINE__, 

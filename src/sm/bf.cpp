@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore'>
 
- $Id: bf.cpp,v 1.228.2.32 2010/03/25 18:05:02 nhall Exp $
+ $Id: bf.cpp,v 1.248 2010/12/17 19:36:26 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -75,6 +75,17 @@ template class w_list_i<bf_cleaner_thread_t, queue_based_block_lock_t>;
 // These are here because bf_s.h doesn't know structure of *_frame
 void  bfcb_t::set_storeflags(w_base_t::uint4_t f) { 
     _store_flags = _frame->set_page_storeflags(f); 
+}
+
+w_base_t::uint4_t  bfcb_t::read_page_storeflags() {
+    w_base_t::uint4_t f = _frame->get_page_storeflags(); 
+    _store_flags = f;
+    /* Now this might not be accurate 
+     * just after recovery
+    w_assert1(_store_flags == f || 
+            smlevel_0::operating_mode == smlevel_0::t_in_redo);
+            */
+    return f;
 }
 
 w_base_t::uint4_t  bfcb_t::get_storeflags() const {
@@ -224,10 +235,12 @@ cmp_lpid(const void* x, const void* y)
  */
 
 void
-bfcb_t::update_rec_lsn(latch_mode_t mode)
+bfcb_t::update_rec_lsn(latch_mode_t mode, bool check)
 {
-    DBG(<<"pid " << pid() <<" mode=" 
-                    << int(mode) << " rec_lsn=" << this->curr_rec_lsn());
+    DBGTHRD(<<"update_rec_lsn pid " << pid() <<" mode=" 
+                    << int(mode) << " rec_lsn=" << this->curr_rec_lsn()
+            << "frame " << ::hex << (unsigned long) (frame()) << ::dec
+            << " frame's pid " << frame()->pid);
     // Sanity check:
     w_assert1(latch.mode() >= mode);
     w_assert1(latch.is_latched());
@@ -236,8 +249,7 @@ bfcb_t::update_rec_lsn(latch_mode_t mode)
     // Determine if this page is holding up scavenging of logs by (being 
     // presumably hot, and) having a rec_lsn that's in the oldest open
     // log partition and that oldest partition being sufficiently aged....
-    if((mode == LATCH_EX || mode == LATCH_NLX) &&
-       smlevel_0::log && curr_rec_lsn().valid()) 
+    if(mode == LATCH_EX && smlevel_0::log && curr_rec_lsn().valid()) 
     {
         w_assert1(latch.is_mine()); 
 
@@ -278,8 +290,7 @@ bfcb_t::update_rec_lsn(latch_mode_t mode)
         }
     }
     
-    if ((mode == LATCH_EX || mode == LATCH_NLX) &&
-	this->curr_rec_lsn() == lsn_t::null)  {
+    if (mode == LATCH_EX && this->curr_rec_lsn() == lsn_t::null)  {
         /*
          *  intent to modify
          *  page would be dirty later than this lsn
@@ -292,7 +303,15 @@ bfcb_t::update_rec_lsn(latch_mode_t mode)
             // should be able to change the frame lsn between
             // the time we grabbed the log's curr lsn and the
             // time we set the rec lsn.  
-            w_assert1(frame()->lsn1 <= curr_rec_lsn());
+            // Unfortunately, if we are fixing for the purpose of
+            // a format, all bets are off here. We might not have
+            // a frame lsn yet.
+            if(check) {
+                // leave code in this form to avoid compiler complaint
+                // about unused function argument in level-0-debug build
+                w_assert1(frame()->lsn1 <= curr_rec_lsn());
+            }
+
             // Once we dirty the pages, the rec_lsn() is <= the
             // page/frame lsn until the page is cleaned.
             // The ONLY time the frame lsn1 is < rec_lsn is in these
@@ -305,9 +324,13 @@ bfcb_t::update_rec_lsn(latch_mode_t mode)
             // 2: the frame lsn1 got updated for a non-EX-latched page. ??
             // 3: an update got discarded but we somehow slipped in 
             // and fixed the page before the discard is complete.
+            // 4: We are fixing a frame in the bpool for an uninitialized
+            // page.  The page on the disk is ok per the volume format
+            // but the buffer pool frame is still trash if we didn't
+            // actually read the page.
         } 
     }
-    DBG(<<"pid " << pid() <<" mode=" 
+    DBGTHRD(<<"pid " << pid() <<" mode=" 
                     << int(mode) << " rec_lsn=" << this->curr_rec_lsn());
 }
 
@@ -635,7 +658,7 @@ bf_cleaner_thread_t::run()
 #ifdef W_TRACE
     // for use with DBG()
     sthread_base_t::id_t _id = me()->id;
-    DBG( << " cleaner " << _id << " activated" << endl );
+    DBGTHRD( << " cleaner " << _id << " activated" << endl );
 #endif
 
     int ntimes = 0;
@@ -710,6 +733,7 @@ bf_cleaner_thread_t::run()
                 /* 
                  * Use the refbit as an indicator of how hot it is
                  * Set it before we apply the filter.
+                 * NOTE: this is racy.
                  */
                 if ( (bf_core_m::_buftab[i].set_hotbit(
                             bf_core_m::_buftab[i].refbit())
@@ -758,7 +782,7 @@ bf_cleaner_thread_t::run()
              * pages are flushed below.
              */
             if (smlevel_0::log) { // log manager is running
-                DBG(<< "flushing log");
+                DBGTHRD(<< "flushing log");
                 INC_TSTAT(bf_log_flush_all);
                 W_IGNORE(smlevel_0::log->flush_all());
             }
@@ -773,8 +797,9 @@ bf_cleaner_thread_t::run()
                             pids, WAIT_FOREVER, &_retire);
             if(rc.is_error()
                && rc.err_num() != smlevel_0::eBPFORCEFAILED) {
+                // Unexpected error. Report it and choke.
                 w_ostrstream trouble;
-                trouble << "eBPFORCEFAILED in bf_m::_clean_segment " << rc ;
+                trouble << "in bf_m::_clean_segment " << rc ;
                 fprintf(stderr, "%s\n", trouble.c_str());
                 W_COERCE(rc);
             }
@@ -785,9 +810,9 @@ bf_cleaner_thread_t::run()
     // We exited the loop above because we were told to retire.
 
 #ifdef W_TRACE
-    DBG( << " cleaner " << _id << " retired" << endl
+    DBGTHRD( << " cleaner " << _id << " retired" << endl
          << "\tswept " << ntimes << " times " << endl );
-    DBG( << endl );
+    DBGTHRD( << endl );
 #endif
 
     // clean up page writers
@@ -836,25 +861,33 @@ bf_m::bf_m(uint4_t max, char *bp, uint4_t pg_writer_cnt)
     _core = new bf_core_m(max, bp);
     if (! _core) W_FATAL(eOUTOFMEMORY);
 
+    // If we don't have any page writers, there's no sense in
+    // creating any cleaner threads. They are fired off per-volume
+    // upon mount and stopped on dismount.
+    // If we don't create the list into which to keep track of them,
+    // that's a signal not to fire off a thread in 
+    // enable_background_flushing().
+    //
     // set number of page writers at the cleaner threads
-    if (pg_writer_cnt>0)
+    if (pg_writer_cnt>0) {
       bf_cleaner_thread_t::_page_writer_count = pg_writer_cnt;
 
 
-    _cleaner_threads = new 
+        _cleaner_threads = new 
             cleaner_thread_list_t(W_LIST_ARG(bf_cleaner_thread_t, _link),
                 &_cleaner_threads_list_mutex    );
-    if (! _cleaner_threads) W_FATAL(eOUTOFMEMORY);
+        if (! _cleaner_threads) W_FATAL(eOUTOFMEMORY);
 
-    bf_cleaner_thread_t::_histogram = new int[npages()+1];
-    for(int i=0; i< npages()+1; i++) bf_cleaner_thread_t::_histogram[i]=0;
+        bf_cleaner_thread_t::_histogram = new int[npages()+1];
+        for(int i=0; i< npages()+1; i++) bf_cleaner_thread_t::_histogram[i]=0;
 
-    /* XXXX magic numbers.  The dirty threshold is set to a minimum
-       of 100 pages OR of 1/8th of the buffer pool of pages. */
+        /* XXXX magic numbers.  The dirty threshold is set to a minimum
+           of 100 pages OR of 1/8th of the buffer pool of pages. */
 
-    bf_cleaner_thread_t::_dirty_threshold = npages()/8;
-    if(bf_cleaner_thread_t::_dirty_threshold < 4) {
-        W_FATAL_MSG(OPT_BadValue, << " Buffer pool too small. " << endl);
+        bf_cleaner_thread_t::_dirty_threshold = npages()/8;
+        if(bf_cleaner_thread_t::_dirty_threshold < 4) {
+            W_FATAL_MSG(OPT_BadValue, << " Buffer pool too small. " << endl);
+        }
     }
 }
 
@@ -970,7 +1003,7 @@ bf_m::is_cached(const bfcb_t* b)
 
 /*********************************************************************
  *
- *  bf_m::fix(ret_page, pid, tag, mode, no_read, ret_store_flags, 
+ *  bf_m::_fix(ret_page, pid, tag, mode, no_read, ret_store_flags, 
  *             ignore_store_id, store_flags)
  *
  *  Fix a frame for "pid" in buffer pool in latch "mode". "No_read"
@@ -981,7 +1014,21 @@ bf_m::is_cached(const bfcb_t* b)
  *  The frame is returned in "ret_page".
  *
  *********************************************************************/
-
+extern "C" void bfstophere() {
+}
+#if W_DEBUG_LEVEL > 0
+extern "C" void bfstophere1(int line) {
+    cerr << "PRINT MY LATCHES at line " << line << endl;
+    print_my_latches();
+    cerr << "PRINT ALL LATCHES at line " << line << endl;
+    print_all_latches();
+    bfstophere();
+}
+#else
+extern "C" void bfstophere1(int /*line*/) {
+    bfstophere();
+}
+#endif
 rc_t
 bf_m::_fix(
     timeout_in_ms        timeout,
@@ -995,15 +1042,25 @@ bf_m::_fix(
     store_flag_t         store_flags    // page_t::store_flag_t (for case no_read==true)
   )
 {
-    FUNC(bf_m::fix);
-    DBGTHRD( << "about to fix " << pid << " in mode " <<  int(mode)  );
+    FUNC(bf_m::_fix);
+    DBGTHRD( << "about to fix " << pid 
+            << " mode " <<  int(mode)  );
+
+#if W_DEBUG_LEVEL > 2
+    if(smlevel_0::operating_mode == smlevel_0::t_in_redo) {
+        w_assert3(!no_read);
+        w_assert3(store_flags == st_bad);
+        //Note that in redo, we always read the page.
+        //We need not for formatting, but we don't know whether
+        //to apply the format log record until we know the page's lsn,
+        //so we fix the page first, and at that point, we don't know
+        //the store flags.
+    }
+#endif 
 
     ret_page = 0;
 
     bool         found=false; 
-    // for debugging aid; lets us
-    // know where "found" got set
-    bool         MAYBE_UNUSED easy_find = false; 
     bfcb_t*      b;
     rc_t         rc;
 
@@ -1014,15 +1071,53 @@ bf_m::_fix(
      * until the cleaner has done its job
      */
     {
-        rc = _core->find(b, pid, mode, timeout);
+#if defined(EXPENSIVE_LATCH_COUNTS) && EXPENSIVE_LATCH_COUNTS>0
+        base_stat_t *stat(NULL);
+        switch(tag) {
+        case page_p::t_btree_p: stat = &(GET_TSTAT(bf_hit_wait_btree_p)); break;
+        case page_p::t_file_p: stat = &(GET_TSTAT(bf_hit_wait_file_p)); break;
+        case page_p::t_keyed_p: stat = &(GET_TSTAT(bf_hit_wait_keyed_p)); break;
+        case page_p::t_lgdata_p: stat = &(GET_TSTAT(bf_hit_wait_lgdata_p)); break;
+        case page_p::t_lgindex_p: stat = &(GET_TSTAT(bf_hit_wait_lgindex_p)); break;
+        case page_p::t_rtree_p: stat = &(GET_TSTAT(bf_hit_wait_rtree_p)); break;
+        case page_p::t_rtree_base_p: stat = &(GET_TSTAT(bf_hit_wait_rtree_base_p)); break;
+        case page_p::t_extlink_p: stat = &(GET_TSTAT(bf_hit_wait_extlink_p));break;
+        case page_p::t_stnode_p: stat=&(GET_TSTAT(bf_hit_wait_stnode_p)); break;
+        case page_p::t_zkeyed_p: stat=&(GET_TSTAT(bf_hit_wait_zkeyed_p)); break;
+
+        default:
+        case page_p::t_any_p: stat = & GET_TSTAT(bf_hit_wait_any_p ); break;
+        }
+        int before = *((volatile base_stat_t *volatile) stat);
+
+        rc = _core->find(b, bfpid_t(pid), mode, timeout, 0/*ref_bit*/, stat);
+        int after = *((volatile base_stat_t *volatile) stat);
+        if(after > before && tag == page_p::t_any_p) {
+            bfstophere1(__LINE__);
+        }
+#else
+        rc = _core->find(b, bfpid_t(pid), mode, timeout);
+#endif
+        DBGTHRD( << "fix : find " << pid << " returns " << rc); 
         if(!rc.is_error()) {
             // latch already acquired
             w_assert1(b);
             w_assert1(b->latch.is_mine() || 
                     (mode == LATCH_SH && b->latch.held_by_me())
                     );
-            easy_find = (found=true); //double assignment
-        } else if( ! _cleaner_threads->is_empty() ) {
+            found=true; 
+            DBGTHRD(
+            << "seek pid " << pid
+            << "found frame " << ::hex 
+                << (unsigned long) (b->frame()) << ::dec
+            << " frame's pid " << b->frame()->pid);
+            // NOTE: the store could have changed, so we compare pages here.
+            //
+            w_assert2(no_read || (pid.page == b->frame()->pid.page) 
+             || smlevel_0::operating_mode == t_in_redo);
+
+        } else if( _cleaner_threads && ! _cleaner_threads->is_empty() ) {
+            DBGTHRD( << "fix : kick cleaner " ); 
             // We have at least one cleaner thread -- kick it/them
             if(bf_cleaner_thread_t::_ndirty == npages()) {
                 INC_TSTAT(bf_kick_full);
@@ -1052,6 +1147,7 @@ bf_m::_fix(
         // _replace_out.
         w_assert1(v->latch.is_mine() == true); 
         w_assert1(v->latch.held_by_me() == true); 
+        w_assert1(v->latch.held_by_me() == 1);  // had better not be > 1 at this point
 
         /* No lock held on v.  V is not in the hash table now.
          * It came from the free list (old_pid_valid() == false) 
@@ -1098,6 +1194,7 @@ bf_m::_fix(
                 if(v->old_rec_lsn().valid()) {
                     // grab just long enough to make sure no page 
                     // cleaning is going
+                    INC_TSTAT(bf_awaited_cleaner);
                     CRITICAL_SECTION(cs, page_write_mutex_t::locate(v->pid()));
                 }
                 INC_TSTAT(bf_replaced_clean);
@@ -1108,17 +1205,29 @@ bf_m::_fix(
         } // old_pid_valid
 
         w_assert1(v->latch.is_mine()); // EX-mode.
+        w_assert1(v->latch.held_by_me() == 1);  // had better not be > 1 at this point
 
         b = v;
+        
+        // replacement frame. Its pid is possibly garbage in this debug trace:
+        DBGTHRD( 
+            << " frame " << ::hex << (unsigned long) (b->frame()) << ::dec
+            << " frame pid " << b->frame()->pid 
+            << " is a replacement ");
+
         rc = _core->grab(v, pid, found, mode, timeout); 
         // Grab acquires an EX latch on the frame v;
         // if the replacement (v) is not used, 
         // the EX latch is released and the given-mode-latch is 
-        // acquired on the page that we found in the pool.
+        // acquired on the page that it finds in the pool.
         // On the other hand, if the replacement 
         // is to be used (read into...), the EX latch is still held.
         // Consequently, we may have mode-latch or an EX-latch on the frame v.
-        DBGTHRD( << "middle of fix: grab returns " << rc );
+        DBGTHRD( << "middle of fix: grab " << pid << " returns rc=" << rc 
+                << " found " << found
+            << " frame " << ::hex << (unsigned long) (v->frame()) << ::dec
+            << " frame pid " << v->frame()->pid  );
+
         if (rc.is_error()) {
             return rc.reset();
         }
@@ -1126,19 +1235,22 @@ bf_m::_fix(
          */
         w_assert2( found? (b != v) : (b == v) );
         w_assert2(
-		  found ? (v->latch.mode() == mode) : (b->latch.mode() == LATCH_EX || b->latch.mode() == LATCH_NLX)
-	    );
+            found? (v->latch.mode() == mode) : (b->latch.mode() == LATCH_EX)
+        ); 
         
         if(found) {
             // the victim (the value of v passed to grab())
             // got added back into the freelist and v is the 
             // existing frame in the buffer pool.
-            w_assert2(b != v) ;
-            w_assert2(v->latch.mode() == mode) ;
+            w_assert2( b != v) ;
+            w_assert2( v->latch.mode() == mode) ;
+            w_assert2( v->latch.held_by_me() > 0) ; // could be > 1 :
+            // we have it latched more than once, even if in EX mode.
             b = v;
-        } else  {
+        }
+        else  {
             w_assert0(b == v);
-            w_assert0(b->latch.mode() == LATCH_EX || b->latch.mode() == LATCH_NLX);
+            w_assert0(b->latch.mode() == LATCH_EX);
         }
     }
     /* Whether b is a replacement or came off the
@@ -1154,18 +1266,25 @@ bf_m::_fix(
         /*
          * Page was found.  Store id might not be correct, but
          * page and volume match.
+         * Well, page and volume match in the control block. If the
+         * frame is a replacement, the page itself could contain anything
+         * for a pid, as we might be about to format it.
          */
-        DBG( << "found page " << pid << " b->pid=" << ((lpid_t)b->pid())
+        DBGTHRD( << "found page " << pid << " b->pid=" << ((lpid_t)b->pid())
              << " no_read " << no_read 
              << " store_flags " << store_flags 
              << " operating_mode " << smlevel_0::operating_mode
              << " page lsn1=" << b->frame()->lsn1 << " lsn2=" << b->frame()->lsn2
+            << " found frame " << ::hex << (unsigned long) (b->frame()) << ::dec
+            << " frame pid " << b->frame()->pid 
         );
         /*
-         *  set store flag if volume is local (otherwise, server set it)
+         *  set store flag and perhaps store id.
+         *  
          */
         if( ((lpid_t)b->pid() != pid) || no_read ) {
 
+            // If we're not in redo:
             // Copy the store flags from the store head to the frame
             // 
             // The page could have changed stores. Get the correct store
@@ -1179,77 +1298,125 @@ bf_m::_fix(
             //
             // Use the store_flags given, if any.
             //
-            if (store_flags == st_bad)  // we just "read" a zeroed page
-            {
-                DBG( << "get store flags for pid " << pid);
-                W_DO( io->get_store_flags(pid.stid(), store_flags) );
-            }
+            // NOTE: We cannot trust the store flags in the store node to
+            // be correct in redo. In redo, we have to trust the flags
+            // on the page.
+            //
+            if(smlevel_0::operating_mode != smlevel_0::t_in_redo) {
 
-            w_assert9(store_flags  <= 0xF); // for now -- see page.h
+                if (store_flags == st_bad)  // we just "read" a zeroed page
+                {
+                    DBGTHRD( << "get store flags for pid " << pid);
+                    W_DO( io->get_store_flags(pid.stid(), store_flags) );
+                    if(smlevel_0::operating_mode == t_forward_processing) {
+                        w_assert1(store_flags != st_bad);
+                    }
+                }
 
-            if (store_flags & st_insert_file)  {
-                // WHY ARE WE DOING THIS???
-                /* Because for most page types, there is no such
-                 * thing as st_insert_file.  It only makes sense
-                 * for files, hence for t_file_p and t_lgdata_p
-                 * pages.  For all others, only t_load_file and t_tmp
-                 * and t_regular make sense. Furthermore, insert_file
-                 * pages get converted to st_regular eventually...
-                 * So rather than special-case the page types here
-                 * (where we don't have those types #included), we
-                 * let the page-type-specific fix code make the change.
-                 */
-                b->set_storeflags(st_regular);
-            }  else  {
-                DBG( << "set store flags  to " << store_flags 
-                                    << " on pid " << pid);
-                b->set_storeflags(store_flags);
+                w_assert9(store_flags  <= 0xF); // for now -- see page.h
+
+                if (store_flags & st_insert_file)  {
+                    // WHY ARE WE DOING THIS???
+                    /* Because for most page types, there is no such
+                     * thing as st_insert_file.  It only makes sense
+                     * for files, hence for t_file_p and t_lgdata_p
+                     * pages.  For all others, only t_load_file and t_tmp
+                     * and t_regular make sense. Furthermore, insert_file
+                     * pages get converted to st_regular eventually...
+                     * So rather than special-case the page types here
+                     * (where we don't have those types #included), we
+                     * let the page-type-specific fix code make the change.
+                     */
+                    b->set_storeflags(st_regular);
+                }  else {
+                    DBGTHRD( << "set store flags  to " << store_flags 
+                                        << " on pid " << pid);
+                    b->set_storeflags(store_flags);
+                }
+            } else {
+                // Just trust what's on the page.  Stuff these flags into
+                // the bfcb_t.
+                store_flags =  (store_flag_t)b->read_page_storeflags();
             }
 
             b->set_pid(pid); // to set the store id as well as the page id
+            w_assert2(pid.page != 0); // should never try to fix page 0
         }
     } else {
         /*
          * Page not found, have to read it or get a new frame 
          */
 
-#ifdef W_TRACE
-        DBGTHRD( << "not found " << pid );
-#endif 
-
-        DBGTHRD( << "read page " << pid << " in mode " << int(mode));
+        DBGTHRD( << "not found; read page " << pid << " in mode " << int(mode));
         /*
          *  Read the page and update store_flags. If error occurs,
          *  call _core->publish( .. error) with error flag to inform
          *  bf_core_m that the frame is bad.
          */
         rc = get_page(pid, b, tag, no_read, ignore_store_id);
+        DBGTHRD( << "get_page " << pid << " returns " << rc );
         if (rc.is_error()) {
+            // At this writing, the only error could be eBADVOL
+            w_assert0(rc.err_num() == eBADVOL);
+
             // publish will leave us with the given latch mode 
             // LATCH_NL means it'll be released.
-            _core->publish(b, LATCH_NL, rc.is_error());
+            _core->publish(b, LATCH_NL, rc);
             return rc.reset();
         }
             
-        DBGTHRD( << "got " << pid << " frame pid " << b->frame()->pid );
+        DBGTHRD( << "got " << pid 
+            << "found frame " << ::hex << (unsigned long) (b->frame()) << ::dec
+            << " frame pid " << b->frame()->pid 
+            << " store_flags " << store_flags
+            );
 
+        /*
+         * Deal with store flags.
+         * In redo, the store flags in the stnode_p might be wrong;
+         * it all depends on in what order pages made it to disk.
+         * By the time we are done with redo though, the stnode_p should
+         * be correct
+         */
+        if(smlevel_0::operating_mode != smlevel_0::t_in_redo) 
         {
-            // fixes a page:
-            //
             if (store_flags == st_bad)  // we just "read" a zeroed page
             {
-                DBGTHRD( << "getting store flags for store  " << pid.stid() );
+                DBGTHRD( << "getting store flags for store  " << pid.stid()
+                        << "{");
 
+                // fixes the store node page:
                 rc = io->get_store_flags(pid.stid(), store_flags);
+                DBGTHRD( << "get_store_flags returned " << rc);
                 if (rc.is_error() ) {
+                    // At this writing, the only error could be eBADVOL or
+                    // eBADSTID. The latter can happen if we recently
+                    // remove this page from the store and the page hasn't
+                    // been discarded from the bpool (yet).
+                    // An application could be trying to fix a now-obsolete
+                    // record in the page.  The eBADSTID should propogate
+                    // up to the app.
+                    w_assert0(rc.err_num() == eBADVOL || 
+                              rc.err_num() == eBADSTID);
+
                     // publish will leave us with the given latch mode 
                     // LATCH_NL means it'll be released.
-                    _core->publish(b, LATCH_NL, rc.is_error());
-                    DBGTHRD( << "error " << pid );
+                    // The page remains in the htab.
+                    // Presumably the page will get re-used by a no-read
+                    // fix().
+                    _core->publish(b, LATCH_NL, rc);
+                    DBGTHRD( << "error } " << pid );
                     return rc.reset();
                 }
+                DBGTHRD( << "} store_flag " << store_flags );
+                // NOTE: this page/store node might not even be 
+                // allocated now.
             }
+
             w_assert9(store_flags  <= 0xF); // for now -- see page.h
+            // The following assert does not hold because when we
+            // fix prior to a format, we invariably have st_bad.
+            // w_assert1(store_flags != st_bad);
 
             if (!no_read && store_flags & st_insert_file)  {
                /* Convert to regular because this is !no_read
@@ -1263,17 +1430,25 @@ bf_m::_fix(
                 */
                 store_flags = st_regular;
             }
-            DBG( << "set store flags to " << store_flags << " for pid " << pid);
+            DBGTHRD( 
+                << "set store flags to " << store_flags << " for pid " << pid
+                << "frame " << ::hex << (unsigned long) (b->frame()) << ::dec
+                << " frame's pid " << b->frame()->pid
+                    );
+
             b->set_storeflags(store_flags);
+        } else {
+            store_flags = (store_flag_t)b->read_page_storeflags();
         }
 
         b->set_pid(pid);
+        w_assert2(pid.page != 0); // should never try to fix page 0
         w_assert2(!b->dirty());                 // dirty flag and rec_lsn are
         w_assert2(b->curr_rec_lsn() == lsn_t::null);// cleared inside ::_replace_out
 
         // publish will leave us with the given latch mode,
         // downgrading or releasing the latch as necessary
-        _core->publish(b, mode, false /* no error occurred */);
+        _core->publish(b, mode, RCOK /* no error occurred */);
     }
 
     /*
@@ -1292,19 +1467,22 @@ bf_m::_fix(
      * is probably a format_page.) In this case, ignore_store_id
      * is true.
      */
-    DBGTHRD( << "success " << pid );
+    DBGTHRD( << "success " << pid
+            << " frame " << ::hex << (unsigned long) (b->frame()) << ::dec
+            << " frame's pid " << b->frame()->pid
+            );
 
-    w_assert3(((lpid_t)b->pid()) == pid); // compares stores too
-    w_assert3( (b->frame()->pid == pid) || 
+    w_assert2(((lpid_t)b->pid()) == pid); // compares stores too
+    w_assert2( (b->frame()->pid == pid) || 
             no_read || ignore_store_id); // compares stores too
 
     w_assert1(b->latch.mode() >= mode);
-    b->update_rec_lsn(mode);
+    b->update_rec_lsn(mode, !no_read);
 
-    DBG(<<"pid " << pid <<" mode=" 
+    DBGTHRD(<<"pid " << pid <<" mode=" 
                 << int(mode) << " rec_lsn=" << b->curr_rec_lsn());
 
-    INC_TSTAT(page_fix_cnt);
+    INC_TSTAT(bf_fix_cnt);
 
     ret_page = b->frame_nonconst();
     return_store_flags = (store_flag_t)b->get_storeflags();
@@ -1313,6 +1491,11 @@ bf_m::_fix(
 
     w_assert1(b->pin_cnt() > 0);
 
+    DBGTHRD( << "fixed " << pid 
+            << " noread " << no_read
+            << " frame " << ::hex << (unsigned long) (b->frame()) << ::dec
+            << " frame's pid " << b->frame()->pid
+            << " mode " <<  int(mode)  );
     return RCOK;
 }
 
@@ -1329,7 +1512,9 @@ w_rc_t
 bf_m::refix(const page_s* buf, latch_mode_t mode)
 {
     FUNC(bf_m::refix);
-    DBGTHRD(<<"about to refix " << buf->pid << " in mode" << int(mode));
+    DBGTHRD(<<"about to refix " << buf->pid 
+            << " frame " << ::hex << (unsigned long) (buf) << ::dec
+            << " mode" << int(mode));
 
     bfcb_t* b = get_cb(buf);
     w_assert1(b && b->frame() == buf);
@@ -1338,11 +1523,11 @@ bf_m::refix(const page_s* buf, latch_mode_t mode)
     // fixing it again, pin() should NEVER return eFRAMENOTFOUND
     W_COERCE( _core->pin(b, mode));
 
-    b->update_rec_lsn(mode);
+    b->update_rec_lsn(mode, true);
     w_assert9(_core->latch_mode(b) >= mode);
-    DBG(<<"mode=" <<  int(mode) << " rec_lsn=" << b->curr_rec_lsn());
+    DBGTHRD(<<"mode=" <<  int(mode) << " rec_lsn=" << b->curr_rec_lsn());
 
-    INC_TSTAT(page_refix_cnt);
+    INC_TSTAT(bf_refix_cnt);
     return RCOK;
 }
 
@@ -1372,6 +1557,7 @@ void
 bf_m::upgrade_latch(page_s*& buf, latch_mode_t        m)
 {
     FUNC(bf_m::upgrade_latch);
+    INC_TSTAT(bf_upgrade_latch_unconditional);
     DBGTHRD(<<"about to upgrade latch on " << buf->pid << " to mode " 
             <<  int(m));
 
@@ -1392,13 +1578,15 @@ bf_m::upgrade_latch(page_s*& buf, latch_mode_t        m)
                 
         w_assert9(!b->latch.is_mine());
         const lpid_t&       pid = buf->pid;
-        uint2_t                     tag = buf->tag;
+        uint2_t             tag = buf->tag;
         lsn_t old_page_lsn = buf->lsn1;
         unfix(buf, false, 1);
 
-        // this can actually happen, but we can't safely continue
-        // because it would risk the very deadlock that unfix() was
-        // supposed to avoid...
+        // This can actually happen (we could hold the latch more than once), 
+        // but we can't safely continue because it would risk the very 
+        // deadlock that unfix() was supposed to avoid...
+        // So if we hit this assert, we had better find the source of
+        // the multiple-latching.
         w_assert1(!b->latch.held_by_me());
         
         // possibly block here:
@@ -1419,8 +1607,8 @@ bf_m::upgrade_latch(page_s*& buf, latch_mode_t        m)
     DBGTHRD(<<"core mode of latch on " << buf->pid << " is " 
         <<  int(_core->latch_mode(b)));
 
-    b->update_rec_lsn(m);
-    DBG(<<"mode=" <<  int(m) << " rec_lsn=" << b->curr_rec_lsn());
+    b->update_rec_lsn(m, true);
+    DBGTHRD(<<"mode=" <<  int(m) << " rec_lsn=" << b->curr_rec_lsn());
 }
 /*********************************************************************
  *
@@ -1442,8 +1630,8 @@ bf_m::upgrade_latch_if_not_block(const page_s* buf, bool& would_block)
     // the invariant that if this is an EX lock, the
     // rec_lsn isn't null
     latch_mode_t m = _core->latch_mode(b);
-    if(m == LATCH_EX) {
-        b->update_rec_lsn(m);
+    if(m == LATCH_EX ) {
+        b->update_rec_lsn(m, true);
     }
 }
 
@@ -1509,9 +1697,15 @@ bf_m::unfix(const page_s* buf, bool dirty, int ref_bit)
     bfcb_t* b = get_cb(buf);
     w_assert1(b && b->frame() == buf);
     w_assert1(b->pin_cnt() > 0);
-    w_assert1(b->latch.held_by_me()); //NEH: new to assert1
+    w_assert1(b->latch.held_by_me()); 
 
-    DBGTHRD( << "about to unfix " << b->pid() << " w/lsn " << b->curr_rec_lsn() );
+    DBGTHRD( << "about to unfix " << b->pid() 
+            << " frame " << ::hex << (unsigned long) (buf) << ::dec
+            << " frame's pid " << b->frame()->pid
+            << " dirty arg " << dirty
+            << " refbit arg " << ref_bit
+            << " w/ curr_rec_lsn " << b->curr_rec_lsn() 
+            << " w/frame dirty " << b->dirty() );
 
     // Calling this with dirty==true overrides any notion of whether
     // the page's lsn is recent. We can mark a page as dirty in the
@@ -1570,11 +1764,19 @@ bf_m::unfix(const page_s* buf, bool dirty, int ref_bit)
                 
                 // mark_clean clears the lsn as well as the dirty bit
                 b->mark_clean();
+                DBGTHRD(<<"marked clean "
+                    << " frame " << ::hex << (unsigned long) (buf) << ::dec
+                    << " frame's pid " << b->frame()->pid
+                    );
                 INC_TSTAT(bf_unfix_cleaned);
             }
         }
 
-        if (b->dirty() && !b->frame()->lsn1.valid()) {
+        // See if it's really clean despite what the control block says.
+        // All bets are off if we're not logging b/c the
+        // lsn on the page tells us nothing unless we're logging.
+        if (b->dirty() && (!b->frame()->lsn1.valid())) {
+            if( smlevel_0::log && smlevel_0::logging_enabled ) {
             /*
             * Control block marked dirty but page isn't
             * really dirty. 
@@ -1600,8 +1802,6 @@ bf_m::unfix(const page_s* buf, bool dirty, int ref_bit)
              * And that should probably NEVER be a tmp page.
              */
 
-#define BUG_DOUBTFUL_LSN_FIX 1
-#ifdef BUG_DOUBTFUL_LSN_FIX
             // Temp pages don't get logged (this is enforced in the
             // generated log functions), so their page lsns don't
             // get automagically updated (that happens after the
@@ -1621,20 +1821,7 @@ bf_m::unfix(const page_s* buf, bool dirty, int ref_bit)
                 // If dirty should be fixed in EX mode.
                 { w_assert0(dirty ? b->latch.is_mine(): true); }
             }
-#else
-            // original
-            if( log && b->frame()->lsn1 == lsn_t(0,1) ) {
-                if (b->get_storeflags() & smlevel_0::st_tmp) {
-                    // Don't mark it as dirty
-                    // cerr << "tmp page " << b->pid() << endl;
-                } else {
-                    // cerr << "cleaning page " << b->pid() << endl;
-                    b->mark_clean();
-                }
-            } else {
-                if(log) w_assert9( (b->get_storeflags() & smlevel_0::st_tmp) );
-            }
-#endif
+            } 
         } // b->dirty() but page not really dirty
 
 
@@ -1647,20 +1834,21 @@ bf_m::unfix(const page_s* buf, bool dirty, int ref_bit)
 
     }
 
-    DBGTHRD( << "about to unfix " << b->pid() << " w/lsn " << b->curr_rec_lsn() );
+    DBGTHRD( << "about to unfix " << b->pid() 
+            << " frame " << ::hex << (unsigned long) (buf) << ::dec
+            << " frame's pid " << b->frame()->pid
+            << " w/lsn " << b->curr_rec_lsn() );
     w_assert1(b->pin_cnt() > 0);
 
     vid_t        v = b->pid().vol();
     _core->unpin(b, ref_bit);
     // b is invalid now
-    INC_TSTAT(page_unfix_cnt);
+    INC_TSTAT(bf_unfix_cnt);
 
     buf = 0;
     if (kick_cleaner) {
         activate_background_flushing(&v);
     }
-
-
 }
 
 
@@ -1685,22 +1873,35 @@ bf_m::discard_pinned_page(const page_s* buf)
     // so you don't discard out from under another thread.
     // latch.is_mine() returns true IFF you have an EX latch
     w_assert2(b->latch.is_mine());
+#if W_DEBUG_LEVEL > 0
+    // Let's trash the frame in a recognizable way.
+    // We need to flush out bogus assertions; this will help.
+    (void) memset(const_cast<page_s *>(buf), 'e', SM_PAGESIZE); // 'e' is 0x65
+#endif
     {
         bfcb_t* tmp = b; // so we can check asserts below
+        shpid_t pagenum = b->pid().page;
         w_rc_t rc = _core->remove(tmp);
         if (rc.is_error())  { // releases the latch
+            fprintf(stderr, "page %d remove failed with err num %d\n",
+                    pagenum,
+                    rc.err_num());
+
             /* ignore */ ;
             w_assert0(!b->latch.is_mine());
-            w_assert0(b->pid() == lpid_t::null);
+            // racy w_assert0(b->pid() == lpid_t::null);
         } // there really is no else for this
     }
 }
 
 void page_writer_thread_t::run() 
 {
+    // The largest number of pages I'll claim at any time.
+    // This limits the size of the buffer that I'll need.
+    const int largest_claim = 8*smlevel_0::max_many_pages;
 
     // pbuf is for copies of the buffer pool pages.
-    page_s* pbuf = new page_s[smlevel_0::max_many_pages];
+    page_s* pbuf = new page_s[largest_claim];
 
     w_auto_delete_array_t<page_s> delete_pbuf(pbuf);
 
@@ -1744,14 +1945,14 @@ void page_writer_thread_t::run()
                    goto done;
 
                // Give up the lock and re-acquire it when awakened
-               DO_PTHREAD(pthread_cond_wait(&_pwc->_wake_slaves, &_pwc->_pwc_lock));
+               DO_PTHREAD(pthread_cond_wait(&_pwc->_wake_slaves, 
+                           &_pwc->_pwc_lock));
 
             }
             
             // index <-  starting point of my chunk
             int index = _pwc->pages_claimed; 
-            int end = std::min(_pwc->pages_submitted, 
-                                      index + 8*smlevel_0::max_many_pages);
+            int end = std::min(_pwc->pages_submitted, index + largest_claim);
             // pages_claimed <- end of my chunk
             _pwc->pages_claimed = end;      
             
@@ -1770,7 +1971,8 @@ void page_writer_thread_t::run()
         if(rc.is_error()
            && rc.err_num() == smlevel_0::eBPFORCEFAILED) {
             rc = RCOK; // avoid an error-not-checked when this
-                       // is an eBPFORCEFAILED
+                       // is an eBPFORCEFAILED (GNATS 133)
+                       // Is enough to fix the bug?
         } else {
             // choke here
             w_assert0(!rc.is_error()
@@ -1847,7 +2049,7 @@ bf_m::_clean_buf(
 }
 
 void  bfcb_t::set_rec_lsn(const lsn_t &what) { 
-    // This assert is clearly not always true but I need to 
+    // This assert is clearly not always true but we need to 
     // identify the cases.
     w_assert0(latch.is_mine());
     w_assert0(!what.valid() || !smlevel_0::log
@@ -1857,12 +2059,13 @@ void  bfcb_t::set_rec_lsn(const lsn_t &what) {
 
 void  bfcb_t::mark_clean() {
     // assertions check _dirty first, then _rec_lsn, so update them in
-    // that order! Using 'volatile' forces the compiler to do that
-    // write first, but on machines with weak consistency we still
-    // need a write barrier as well.
+    // that order! 
+    // Using 'volatile' forces the compiler not to reorder these.
+    // On machines with weak consistency we still
+    // need a write barrier as well to force the buffers.
     _dirty =  false;
-    membar_producer();
     _rec_lsn = lsn_t::null;
+    membar_producer();
 }
 
 /*
@@ -1915,11 +2118,10 @@ bf_m::_clean_segment(
     // max_many_pages long and can therefore require span 2 mutexes at most.
     pthread_mutex_t* page_locks[2] = {NULL,NULL};
 
-    // First & 2nd passes : not willing to wait for page latches
-    // Third pass:
-    // At the end of the loop below, you can see how it checks for
-    // last pass and changes the timeout.
+    lsn_t   curr_lsn = lsn_t::null;
+
     bool force_failed = false;
+    w_rc_t ffrc;
 
     {
         int consecutive = 0;
@@ -1934,13 +2136,21 @@ bf_m::_clean_segment(
             bool skipped = true; 
             lpid_t &p = pids[i];
             bfcb_t* bp;
+#if defined(EXPENSIVE_LATCH_COUNTS) && EXPENSIVE_LATCH_COUNTS>0
+            rc_t rc = _core->find(bp, p, LATCH_SH, timeout, 0/*ref_bit*/,
+                    & GET_TSTAT(bf_hit_wait_scan));
+#else
             rc_t rc = _core->find(bp, p, LATCH_SH, timeout);
+#endif
             // latches the page unless it returns with error
 
             if(!rc.is_error()) 
             {
+                // store might be wrong
+                w_assert2(p.page == bp->frame()->pid.page);
                 if( bp->dirty() ) 
                 {
+                    DBGTHRD(<<"_clean_segment dirty page " << bp->pid().page );
                     skipped = false;
                     pthread_mutex_t** lock_acquired = NULL;
 
@@ -2000,11 +2210,14 @@ bf_m::_clean_segment(
                               ||(page_locks_owned == 2));
             
                     // check again for dirty now that we hold the page write mutex
-                    w_assert2(bp->latch.held_by_me() == true); 
+                    // // Note: we could hold the latch more than once if we came
+                    // through force_all.
+                    w_assert2(bp->latch.held_by_me()); 
 
                     if(_core->_in_htab(bp) && bp->dirty()) {
                         // ... copy the whole page
-                        w_assert0(bp->curr_rec_lsn().valid()); // else why are we cleaning?
+                        w_assert0(bp->curr_rec_lsn().valid()
+                                || !smlevel_0::logging_enabled); // else why are we cleaning?
                         w_assert0(!bp->old_rec_lsn().valid()); // never set when mutex is free!
                         w_assert1(consecutive < smlevel_0::max_many_pages);
                         pbuf[consecutive] = *bp->frame();
@@ -2013,6 +2226,13 @@ bf_m::_clean_segment(
                         // save the rec_lsn and mark the page clean
                         bp->save_rec_lsn();
                         bp->mark_clean();
+
+                        // These are the same asserts that we have
+                        // below where you see GNATS 161 note.
+                        w_assert1(pbuf[consecutive].pid.page 
+                                == bp->pid().page);
+                        w_assert1(bp->old_rec_lsn().valid()
+                                || !smlevel_0::logging_enabled);
                         
                         w_assert2 (
                             // st_regular:
@@ -2050,6 +2270,17 @@ bf_m::_clean_segment(
                     INC_TSTAT(bf_already_evicted);
                 }
                 else {
+                    
+                    ffrc = rc;
+                    // can be fcOS when timeout != WAIT_IMMEDIATE
+                    // but keep this assert to catch scenario and debug it
+                    if(ffrc.err_num() == fcOS) {
+                        cerr << "clean_segment PRINT MY LATCHES" << endl;
+                        print_my_latches();
+                        cerr << "clean_segment PRINT ALL LATCHES" << endl;
+                        print_all_latches();
+                    }
+                    w_assert0(ffrc.err_num() == sthread_t::stTIMEOUT);
                     force_failed = true;
                 }
                 w_assert2(skipped);
@@ -2121,7 +2352,7 @@ bf_m::_clean_segment(
                     W_COERCE( _write_out(pbuf, consecutive) );
 
                     // after writing out the copies, we need to
-                    // re-latch so we can clean the pages.
+                    // mark the pages clean.
                     // Free the page locks first, so we don't get 
                     // deadlock.
                     // This allows someone else to race in here
@@ -2131,30 +2362,44 @@ bf_m::_clean_segment(
                     while(consecutive > 0) 
                     {
                         // p points to a copy of the page
-                        // Note that we are acquiring
-                        // latches and cleaning in reverse order. That
+                        // Note that we are cleaning in reverse order. That
                         // probably doesn't matter.
                         //
                         consecutive--;
                         page_s* ps = &pbuf[consecutive];
-                        bfcb_t* bp = bparray[consecutive];
+                        bp = bparray[consecutive];
 
-                        bool   MAYBE_UNUSED both(false);
+#if W_DEBUG_LEVEL > 0
                         pthread_mutex_t* thispagelock = 
                             page_write_mutex_t::locate(ps->pid);
                         if(thispagelock != page_locks[1]) {  
                             w_assert1(thispagelock == page_locks[0]) ;
-                            both = true; 
                         }
-                        // nobody should have been able to evict the page...
+#endif
+                        // nobody should have been 
+                        // able to evict the page...
                         // but its store can change in the meantime.
                         // w_assert0(ps->pid == bp->pid());
-                        w_assert0(ps->pid.page == bp->pid().page);
+                        //
+                        // BUG GNATS 161: an eviction *COULD HAVE*
+                        // happened.
+                        bfpid_t p = ps->pid;
+                        bfcb_t* bfcbp;
+                        if(_core->get_cb(p, bfcbp, true)) {
+                            w_assert0(bfcbp == bp);
+                            w_assert0(ps->pid.page == bp->pid().page);
+                            w_assert0(bp->old_rec_lsn().valid()
+                                || !smlevel_0::logging_enabled);
 
-                        w_assert0(bp->old_rec_lsn().valid());
+                            // mark the page as no longer being written out
+                            bp->clr_old_rec_lsn();
 
-                        // mark the page as no longer being written out
-                        bp->clr_old_rec_lsn();
+                            bp->unpin_frame();
+                        } else {
+                            INC_TSTAT(bf_evicted_while_cleaning);
+                        }
+                        /* else not in the htab anymore, can't clear */ 
+
                     } // while consecutive>0
 
                     // Free the page locks  
@@ -2185,8 +2430,19 @@ bf_m::_clean_segment(
             } // if consecutive > 0
         } 
 
-        w_assert1(timeout == WAIT_IMMEDIATE || !force_failed);
+        if( (timeout == WAIT_IMMEDIATE || !force_failed) == false) {
+            w_ostrstream o;
+            o << "force failed with rc =" << ffrc 
+                << " timeout = " << timeout;
+            fprintf(stderr, "%s\n", o.c_str());
+        }
+        w_assert0(timeout == WAIT_IMMEDIATE || !force_failed);
     }
+    w_assert0(ffrc.is_error() == false
+                || ffrc.err_num() == sthread_t::stTIMEOUT
+                || ffrc.err_num() == fcOS
+                );
+    // alas, could be fcOS (see find() in bf_core.cpp)
     return force_failed?  RC(eBPFORCEFAILED) : RCOK;
 }
 
@@ -2199,9 +2455,10 @@ bf_m::_clean_segment(
 void
 bf_m::activate_background_flushing(vid_t *v)
 {
+    if(!smlevel_0::shutting_down) 
     {
-        CRITICAL_SECTION(cs, _cleaner_threads_list_mutex);
         if (_cleaner_threads)  {
+            CRITICAL_SECTION(cs, _cleaner_threads_list_mutex);
             bf_cleaner_thread_t *t;
             w_list_i<bf_cleaner_thread_t, queue_based_block_lock_t> 
                                                  i(*_cleaner_threads);
@@ -2215,10 +2472,14 @@ bf_m::activate_background_flushing(vid_t *v)
                 }
             }
         }
-        else  if(!smlevel_0::shutting_down) {
-            W_IGNORE(force_all());        // simulate cleaner thread in flushing
+        // else  if(!smlevel_0::shutting_down) {
+            //
+            //This doesn't work when called from
+            //log flush daemon! Then it waits on the condition for which
+            //the daemon is the only signaller!
+            //W_IGNORE(force_all());  // simulate cleaner thread in flushing
             // BUG_BF_SHUTDOWN_FIX
-        }
+        // }
         // else, we are shutting down but the bf cleaners are gone already,
         // and if we had shutdown cleanly, flush_all would already have 
         // happened.
@@ -2381,13 +2642,23 @@ bf_m::get_page(
 {
 
     if (! no_read)  {
+        DBGTHRD(<<"get_page : read");
+
+        // At the time of this writing, the only error we can
+        // get back from sm_io::read_page is eBADVOL (from the
+        // pid).
         W_DO( io->read_page(pid, *b->frame_nonconst()) );
+
+        DBGTHRD(<<"get_page "
+            << "found frame " << ::hex << (unsigned long) (b->frame()) << ::dec
+            << " frame's pid " << b->frame()->pid);
     }
 
     // TODO: if  nothing is to be done for the no_read case,
     // then avoid calling this altogether
     //
     if (! no_read)  {
+        DBGTHRD(<<"get_page : set flags");
         // clear virgin flag, and set written flag
         b->frame_nonconst()->page_flags &= ~page_p::t_virgin;
         b->frame_nonconst()->page_flags |= page_p::t_written;
@@ -2407,7 +2678,8 @@ bf_m::get_page(
          * uninitialized frame would look like that.)
          */
         if (b->frame()->lsn1 == lsn_t::null)  {
-            w_assert3(b->frame()->pid.page == 0);
+            w_assert3(b->frame()->pid.page == 0
+                    || !smlevel_0::logging_enabled);
         } else {
             w_assert3(pid.page == b->frame()->pid.page &&
                       pid.vol() == b->frame()->pid.vol());
@@ -2418,7 +2690,7 @@ bf_m::get_page(
                     << " expected " << pid.store()
                     << "; page tag "  << b->frame()->tag
                     << " expected tag "  << ptag
-                    << "; store flags " << b->get_storeflags()
+                    << "; page store flags " << b->frame()->get_page_storeflags()
                     << "; lsn1 " << b->frame()->lsn1;
                     fprintf(stderr, "On page fix: %s\n", s.c_str());
                 }
@@ -2445,6 +2717,8 @@ bf_m::get_page(
 rc_t
 bf_m::enable_background_flushing(vid_t v)
 {
+    if(!_cleaner_threads) return RCOK;
+
     {
         bool error;
         if (!option_t::str_to_bool(_backgroundflush->value(), error)) {
@@ -2497,26 +2771,33 @@ bf_m::enable_background_flushing(vid_t v)
 rc_t
 bf_m::disable_background_flushing()
 {
-    {
+    if(!_cleaner_threads) return RCOK;
+
+    bf_cleaner_thread_t *t=NULL;
+    do {
         CRITICAL_SECTION(cs, _cleaner_threads_list_mutex);
-        bf_cleaner_thread_t *t;
         w_list_i<bf_cleaner_thread_t, queue_based_block_lock_t> 
                                                 i(*_cleaner_threads);
 
-        // This is one of the few list modifications that is safe in
-        // scope of an iterator:
         while((t = i.next())) {
+            // free up the mutex so we don't deadlock with others,
+            // should someone else simultaneously be trying to activate
+            // background flushing.
+            cs.pause();
             t->retire();
+            cs.resume();
             t->_link.detach();
             delete t;
+            break;
         }
-    }
+    } while(t != NULL);
     return RCOK;
 }
 
 rc_t
 bf_m::disable_background_flushing(vid_t v)
 {
+    if(!_cleaner_threads) return RCOK;
     {
         CRITICAL_SECTION(cs, _cleaner_threads_list_mutex);
         bf_cleaner_thread_t *t;
@@ -2722,6 +3003,7 @@ bf_m::force_store(stid_t stid, bool invalidate)
 rc_t
 bf_m::force_volume(vid_t vid, bool flush)
 {
+    DBGTHRD(<<"force_volume " << vid << " flush " << flush );
     
     // let all _scans do direct, serial
     // scans (don't use page writer threads)
@@ -2848,7 +3130,7 @@ bf_m::_scan(const bf_filter_t& filter, bool write_dirty, bool discard)
          * pages are flushed below.
          */
         if (smlevel_0::log) { // log manager is running
-            DBG(<< "flushing log");
+            DBGTHRD(<< "flushing log");
             INC_TSTAT(bf_log_flush_all);
             W_IGNORE(smlevel_0::log->flush_all());
         }
@@ -2873,6 +3155,7 @@ bf_m::_scan(const bf_filter_t& filter, bool write_dirty, bool discard)
         }
 
         w_assert1(count <= npages());
+        DBGTHRD(<<" _scan calling clean_buf with " << count << " pages ");
         // NOTE: this could return in error if it couldn't
         // clean all the buffers
         W_DO(_clean_buf(NULL,
@@ -2931,8 +3214,13 @@ bf_m::_scan(const bf_filter_t& filter, bool write_dirty, bool discard)
             w_assert2(! b->latch.held_by_me());
             w_assert2(! b->latch.is_mine());
 
-            rc = _core->find(b, _core->_buftab[i].pid(), mode, 
-                    WAIT_FOREVER);
+#if defined(EXPENSIVE_LATCH_COUNTS) && EXPENSIVE_LATCH_COUNTS>0
+            rc = _core->find(b, _core->_buftab[i].pid(), mode, WAIT_FOREVER,
+                    0/*ref_bit*/, 
+                    & GET_TSTAT(bf_hit_wait_scan));
+#else
+            rc = _core->find(b, _core->_buftab[i].pid(), mode, WAIT_FOREVER);
+#endif
             // if find failed, it sets b to NULL
             
             if (rc.is_error()) {
@@ -2995,7 +3283,7 @@ bf_m::_scan(const bf_filter_t& filter, bool write_dirty, bool discard)
 #endif
                 CRITICAL_SECTION(cs, page_write_mutex_t::locate(b->pid())); 
                 w_assert0(!b->old_rec_lsn().valid()); // never set when the mutex is free!
-                rc_t rc = _write_out(b->frame(), 1);
+                rc = _write_out(b->frame(), 1);
                 if(rc.is_error()) {
                     // we should not get here, because
                     // _write_out only returns RCOK;
@@ -3015,7 +3303,7 @@ bf_m::_scan(const bf_filter_t& filter, bool write_dirty, bool discard)
               // FRJ: this is identical to discard() except for the filter check
                 bfcb_t* tmp = b;
                 w_assert2(b->pin_cnt() >= 1);
-                w_rc_t rc = _core->remove(tmp); 
+                rc = _core->remove(tmp); 
                 if (rc.is_error())  { // released the latch already
                     /* ignore */ ;
                     w_assert2(!b->latch.is_mine());
@@ -3049,8 +3337,7 @@ bf_m::_set_dirty(bfcb_t* b)
 {
     if( !b->dirty() ) {
         b->set_dirty_bit();
-        w_assert2(_core->latch_mode(b) == LATCH_EX ||
-		  _core->latch_mode(b) == LATCH_NLX);
+        w_assert2( _core->latch_mode(b) == LATCH_EX );
         /*
          * The following assert should hold because:
          * prior to set_dirty, the page should have
@@ -3068,9 +3355,9 @@ bf_m::_set_dirty(bfcb_t* b)
                 !smlevel_0::in_recovery_redo() 
                 ) 
         {
-            DBG(<< "pid " << b->pid() <<" mode=" 
+            DBGTHRD(<< "pid " << b->pid() <<" mode=" 
             <<  int(_core->latch_mode(b)) << " rec_lsn=" << b->curr_rec_lsn());
-            w_assert3(b->latch.mode() == LATCH_EX || b->latch.mode() == LATCH_NLX);
+            w_assert3(b->latch.mode() == LATCH_EX);
             w_assert3(b->curr_rec_lsn() != lsn_t::null); 
             w_assert3(b->dirty()); // we just set it so it's now dirty
         }
@@ -3226,7 +3513,7 @@ bf_filter_sweep_t::is_good(const bfcb_t& p) const
     if( p.pid()._stid.vol != _vol)  return false;
     if( ! p.pid().page)             return false;
 
-    if( p.hotbit() ) {
+    if( p.hotbit() > 0 ) {
         // skip hot pages even if they are dirty.
         // however, if the pool is too full
         // we'll include the dirty hot pages
@@ -3252,7 +3539,7 @@ bool bf_filter_sweep_old_t::is_good(const bfcb_t& p) const
     if( ! p.pid().page)                  return false;
     if( ! p.curr_rec_lsn().hi() == _segment ) return false;
 
-    if( p.hotbit() ) {
+    if( p.hotbit() > 0 ) {
         // skip hot pages even if they are dirty.
         // however, if the pool is too full
         // we'll include the dirty hot pages

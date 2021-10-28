@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='SM_S_H'>
 
- $Id: lsn.h,v 1.2 2010/05/26 01:20:12 nhall Exp $
+ $Id: lsn.h,v 1.5 2010/12/08 17:37:34 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -59,7 +59,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 #include "w_base.h"
 
-#define LSN_T
 /* FRJ: Major changes to lsn_t
  * Once the database runs long enough we will run out of
  * partition numbers (only 64k possible). 
@@ -255,9 +254,13 @@ public:
 
     bool valid()             const { 
                                     // valid is essentially iff file != 0
-#if W_DEBUG_LEVEL > 2
-                                    bool first = _data > mask();
-                                    bool second = (file() != 0);
+#if W_DEBUG_LEVEL > 1
+                                    w_base_t::uint8_t  copy_of_data =  _data;
+                                    w_base_t::uint8_t  m =  mask();
+                                    bool first = copy_of_data > m;
+                                    w_base_t::uint8_t  f = 
+                                                    to_file(copy_of_data);
+                                    bool second = (f != 0);
                                     w_assert2(first == second);
 #endif
                                    return (_data > mask()); 

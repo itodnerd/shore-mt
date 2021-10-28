@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: pin.3,v 1.13.4.1 2009/10/27 16:44:51 nhall Exp $
+#  $Id: pin.3,v 1.16 2010/06/23 23:44:33 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -29,6 +29,9 @@
 
 #
 #        Test pin latch deadlock
+#
+#        NOTE: this is subject to lock-syncpoint deadlock
+#        esp with update_rec (hdr or not) and pin_repin
 #
 source $script_dir/vol.init
 

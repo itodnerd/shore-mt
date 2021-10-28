@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='XCT_H'>
 
- $Id: xct.h,v 1.144.2.15 2010/03/25 18:05:18 nhall Exp $
+ $Id: xct.h,v 1.161 2010/12/08 17:37:43 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -55,34 +55,29 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 #include "w_defines.h"
 
-// see http://gcc.gnu.org/bugzilla/show_bug.cgi?id=58022
-#include "xct_dependent.h"
-
 /*  -- do not edit anything above this line --   </std-header>*/
 
 #ifdef __GNUG__
 #pragma interface
 #endif
 
-#if W_DEBUG_LEVEL > 4
+#if W_DEBUG_LEVEL > 2
 // You can rebuild with this turned on 
 // if you want comment log records inserted into the log
 // to help with deciphering the log when recovery bugs
 // are nasty.
 #define  X_LOG_COMMENT_ON 1
 #define  ADD_LOG_COMMENT_SIG ,const char *debugmsg
-#define  ADD_LOaG_COMMENT_USE ,debugmsg
-#define  LOG_COMMENT_USE(x)  ,x
+#define  ADD_LOG_COMMENT_USE ,debugmsg
+#define  X_LOG_COMMENT_USE(x)  ,x
 
 #else
 
 #define  X_LOG_COMMENT_ON 0
 #define  ADD_LOG_COMMENT_SIG
 #define  ADD_LOG_COMMENT_USE
-#define  LOG_COMMENT_USE(x) 
+#define  X_LOG_COMMENT_USE(x) 
 #endif
-
-#include "block_alloc.h"
 
 class xct_dependent_t;
 
@@ -118,12 +113,15 @@ class xct_prepare_fi_log; // forward
 class xct_prepare_lk_log; // forward
 class sm_quark_t; // forward
 class smthread_t; // forward
-class xct_list;
-class xct_link;
 
 class logrec_t; // forward
 class page_p; // forward
 
+/**\cond skip
+ * \brief Class used to keep track of stores to be
+ * freed or changed from tmp to regular at the end of
+ * a transaction
+ */
 class stid_list_elem_t  {
     public:
     stid_t        stid;
@@ -142,6 +140,7 @@ class stid_list_elem_t  {
         return W_LIST_ARG(stid_list_elem_t, _link);
     }
 };
+/**\endcond skip */
 
 
 
@@ -158,7 +157,6 @@ class xct_t : public smlevel_1 {
     friend class block_alloc<xct_t>;
 #endif
     friend class xct_i;
-    friend struct xct_list;
     friend class smthread_t;
     friend class restart_m;
     friend class lock_m;
@@ -169,11 +167,9 @@ class xct_t : public smlevel_1 {
     friend class xct_prepare_fi_log; 
     friend class xct_prepare_lk_log; 
     friend class sm_quark_t; 
-    friend class xct_lock_info_t;
-    friend class object_cache_initializing_factory<xct_t>;
 
 protected:
-    enum commit_t { t_normal = 0, t_lazy = 1, t_chain = 2 };
+    enum commit_t { t_normal = 0, t_lazy = 1, t_chain = 2, t_group = 4 };
 /**\endcond skip */
 
 /**\cond skip */
@@ -195,18 +191,24 @@ public:
     static
     void                        destroy_xct(xct_t* xd);
 
-    static void			set_elr_enabled(bool enable);
+    static 
+    rc_t                      group_commit(const xct_t *list[], int number);
+    
+    rc_t                      commit_free_locks();
 
+#if defined(USE_BLOCK_ALLOC_FOR_XCT_IMPL) && (USE_BLOCK_ALLOC_FOR_XCT_IMPL==1)
+public:
+#else
+private:
+#endif
     struct xct_core;            // forward  
 private:
-    NORET                       xct_t();
-    void			init(
+    NORET                        xct_t(
         xct_core*                     core,
         sm_stats_info_t*             stats,  // allocated by caller
         const lsn_t&                 last_lsn,
         const lsn_t&                 undo_nxt);
     NORET                       ~xct_t();
-    void			reset();
 
 public:
 
@@ -268,6 +270,7 @@ public:
                                 }
     const sm_stats_info_t&      const_stats_ref() { return *__stats; }
     rc_t                        commit(bool lazy = false, lsn_t* plastlsn=NULL);
+    rc_t                        commit_as_group_member();
     rc_t                        rollback(const lsn_t &save_pt);
     rc_t                        save_point(lsn_t& lsn);
     rc_t                        chain(bool lazy = false);
@@ -281,6 +284,7 @@ protected:
     void                        set_first_lsn(const lsn_t &) ;
     void                        set_last_lsn(const lsn_t &) ;
     void                        set_undo_nxt(const lsn_t &) ;
+    void                        prepare_restore_log_resv(int, int, int, int);
 /**\endcond skip */
 
 public:
@@ -289,7 +293,6 @@ public:
     const lsn_t&                last_lsn() const;
     const lsn_t&                first_lsn() const;
     const lsn_t&                undo_nxt() const;
-    bool                        is_read_only_sofar() const;
     const logrec_t*             last_log() const;
     fileoff_t                   get_log_space_used() const;
     rc_t                        wait_for_log_space(fileoff_t amt);
@@ -298,6 +301,9 @@ public:
     static xct_t*               look_up(const tid_t& tid);
     static tid_t                oldest_tid();        // with min tid value
     static tid_t                youngest_tid();        // with max tid value
+/**\cond skip */
+    static void                 update_youngest_tid(const tid_t &);
+/**\endcond skip */
 
     // used by sm.cpp:
     static w_base_t::uint4_t    num_active_xcts();
@@ -317,18 +323,22 @@ public:
     // making sure that at most one thread that's in an sm update operation
     // enters the io_m at any time (allowing concurrent read-only activity). 
     //
-    // start_crit grabs the xct's 1thread_log mutex if it doesn't
-    // already hold it.  False means we don't actually grab the
-    // anchor, so it's not really starting a top-level action.
+    // start_crit grabs (used to grab) the xct's 1thread_log mutex if it doesn't
+    // already hold it.  
+    //
+    // NOTE: we might be safe to skip this now that we only allow
+    // one update thread to be in the sm at any one time, cutting the
+    // others off at the point of entering the sm, rather than 
+    // making them wait for the 1thread mutex.  We made this change
+    // so that we could use savepoints for partial rollback to handle
+    // errors at levels above (as well as below) the sm_io level.
+    // See AUTO_ROLLBACK_work, auto_rollback_t , here
 
-    void                        start_crit() { (void) anchor(false); }
-    // stop_crit frees the xct's 1thread_log mutex if the depth of
-    // anchor()/release() calls reaches 0.
-    // False means we don't compensate, 
-    // so it's not really finishing a top-level action.
-
-    void                        stop_crit() {(void) release_anchor(false
-                                            LOG_COMMENT_USE( "stopcrit"));}
+    void                        start_crit() {
+                                    // should not be zero
+                                    w_assert0(update_threads() == 1); 
+    }
+    void                        stop_crit() {}
     // -------------------------------------------------------------
     
     void                        compensate(const lsn_t&, 
@@ -360,7 +370,8 @@ public:
     //        logging functions -- used in logstub_gen.cpp only
     //
     bool                        is_log_on() const;
-    rc_t                        get_logbuf(logrec_t*&, const page_p *p = 0);
+    rc_t                        get_logbuf(logrec_t*&, int t,
+                                                       const page_p *p = 0);
     rc_t                        give_logbuf(logrec_t*, const page_p *p = 0);
 
     //
@@ -392,11 +403,8 @@ protected:
     // doesn't know about the structures
     // and we have changed these to be a per-thread structures.
     static lockid_t*            new_lock_hierarchy();
-    static void			delete_lock_hierarchy(lockid_t* &l);
     static sdesc_cache_t*       new_sdesc_cache_t();
-    static void			delete_sdesc_cache_t(sdesc_cache_t* &sdc);
     static xct_log_t*           new_xct_log_t();
-    static void			delete_xct_log_t(xct_log_t* &l);
     void                        steal(lockid_t*&, sdesc_cache_t*&, xct_log_t*&);
     void                        stash(lockid_t*&, sdesc_cache_t*&, xct_log_t*&);
 
@@ -409,7 +417,7 @@ protected:
                                     return me()->lock_hierarchy();
                                 }
 public:
-    // stored per-thread, used by dir.cpp
+    // stored per-thread or per-xct, used by dir.cpp
     sdesc_cache_t*              sdesc_cache() const;
 
 protected:
@@ -426,7 +434,7 @@ public:
 
     int                          num_threads();          
     rc_t                         check_one_thread_attached() const;   
-    void                         attach_update_thread();
+    int                          attach_update_thread();
     void                         detach_update_thread();
     int                          update_threads() const;
 
@@ -446,6 +454,15 @@ protected:
     xct_lock_info_t*             lock_info() const;
 
 public:
+    // XXX this is only for chkpt::take().  This problem needs to
+    // be fixed correctly.  DO NOT USE THIS.  Really want a
+    // friend that is just a friend on some methods, not the entire class.
+    static w_rc_t                acquire_xlist_mutex();
+    static void                  release_xlist_mutex();
+    static void                  assert_xlist_mutex_not_mine();
+    static void                  assert_xlist_mutex_is_mine();
+    static bool                  xlist_mutex_is_mine();
+
     /* "poisons" the transaction so cannot block on locks (or remain
        blocked if already so), instead aborting the offending lock
        request with eDEADLOCK. We use eDEADLOCK instead of
@@ -466,33 +483,60 @@ public:
 // DATA
 /////////////////////////////////////////////////////////////////
 protected:
-    xct_link*			 _xlink;
-    void 			 join_xlist();
-    enum xct_end_type { xct_end_nolog, xct_end_commit, xct_end_abort };
-    rc_t			 _xct_ended(xct_end_type type);
-    
+    // list of all transactions instances
+    w_link_t                      _xlink;
+    static w_descend_list_t<xct_t, queue_based_lock_t, tid_t> _xlist;
+    void                         put_in_order();
 private:
+    static queue_based_lock_t    _xlist_mutex;
+
     sm_stats_info_t*             __stats; // allocated by user
+    lockid_t*                    __saved_lockid_t;
     sdesc_cache_t*                __saved_sdesc_cache_t;
-    bool 			 __saved_sdesc_owner;
+    xct_log_t*                   __saved_xct_log_t;
+
+    static tid_t                 _nxt_tid;// only safe for pre-emptive 
+                                        // threads on 64-bit platforms
+    static tid_t                 _oldest_tid;
+    
+    // NB: must replicate because _xlist keys off it...
+    // NB: can't be const because we might chain...
+    tid_t                        _tid;
 
 public:
     void                         acquire_1thread_xct_mutex() const; // serialize
     void                         release_1thread_xct_mutex() const; // concurrency ok
-    bool                         is_1thread_log_mutex_mine() const; 
+    bool                         is_1thread_log_mutex_mine() const {
+                                    return 
+                                        me()->is_update_thread()
+                                        ||
+                                        smlevel_0::in_recovery()
+                                        ;
+    }
 /**\endcond skip */
 
 private:
-    void                         acquire_1thread_log_mutex();
-    void                         release_1thread_log_mutex();
-    void                         assert_1thread_log_mutex_free()const;
+    void                         acquire_1thread_log_mutex() {
+        // This is a sanity check: we want to 
+        // remove the 1thread log mutex altogether; given that,
+        // we assert that there is one and only one update thread
+        // and that thread is us.
+        w_assert0(me()->is_update_thread() || smlevel_0::in_recovery());
+    }
+    void                         release_1thread_log_mutex() {
+        // This is a sanity check: we want to 
+        // remove the 1thread log mutex altogether; given that,
+        // we assert that there is one and only one update thread
+        // and that thread is us.
+        w_assert0(me()->is_update_thread() || smlevel_0::in_recovery());
+    }
 private:
     bool                         is_1thread_xct_mutex_mine() const;
     void                         assert_1thread_xct_mutex_free()const;
 
     rc_t                         _abort();
     rc_t                         _commit(w_base_t::uint4_t flags,
-			                                     lsn_t* plastlsn=NULL);
+                                                 lsn_t* plastlsn=NULL);
 
 protected:
     // for xct_log_switch_t:
@@ -525,16 +569,20 @@ private:
     // timeout_in_ms        timeout(); 
 
     static void                 xct_stats(
-									u_long&             begins,
-									u_long&             commits,
-									u_long&             aborts,
-									bool                 reset);
+                                    u_long&             begins,
+                                    u_long&             commits,
+                                    u_long&             aborts,
+                                    bool                 reset);
 
     w_rc_t                     _flush_logbuf();
     w_rc_t                     _sync_logbuf(bool block=true);
     void                       _teardown(bool is_chaining);
 
+#if defined(USE_BLOCK_ALLOC_FOR_XCT_IMPL) && (USE_BLOCK_ALLOC_FOR_XCT_IMPL==1)
 public:
+#else
+private:
+#endif
     /* A nearly-POD struct whose only job is to enable a N:1
        relationship between the log streams of a transaction (xct_t)
        and its core functionality such as locking and 2PC (xct_core).
@@ -548,12 +596,11 @@ public:
      */
     struct xct_core
     {
-        void init(tid_t const &t, state_t s, timeout_in_ms timeout);
-	void reset();
-	xct_core();
+        xct_core(tid_t const &t, state_t s, timeout_in_ms timeout);
         ~xct_core();
 
         //-- from xct.h ----------------------------------------------------
+        tid_t                  _tid;
         timeout_in_ms          _timeout; // default timeout value for lock reqs
         bool                   _warn_on;
         xct_lock_info_t*       _lock_info;
@@ -604,6 +651,8 @@ public:
         w_list_t<stid_list_elem_t,queue_based_lock_t>    _loadStores;
 
         volatile int      _xct_ended; // used for self-checking (assertions) only
+        bool              _xct_aborting; // distinguish abort()ing xct from
+        // commit()ing xct when they are in state xct_freeing_space
     };
     
 private: // all data members private
@@ -641,25 +690,21 @@ private: // all data members private
     fileoff_t                    _log_bytes_rsvd; // reserved for rollback
     fileoff_t                    _log_bytes_ready; // avail for insert/reserv
     fileoff_t                    _log_bytes_used; // total used by the xct
-    bool                         _rolling_back;
-
-
-#if CHECK_NESTING_VARIABLES
-	// for assertions only
-    volatile int                 _acquire_1thread_log_depth;  
-public:
-    void inc_acquire_1thread_log_depth() { _acquire_1thread_log_depth ++; }
-    void dec_acquire_1thread_log_depth() { -- _acquire_1thread_log_depth; }
-    int  acquire_1thread_log_depth() const { return 
-                                               _acquire_1thread_log_depth; }
-#else
-public:
-    void inc_acquire_1thread_log_depth() { }
-    void dec_acquire_1thread_log_depth() { }
-    int  acquire_1thread_log_depth() const { return  0; }
-#endif
+    fileoff_t                    _log_bytes_used_fwd; // used by the xct in
+                                 // forward activity (including partial
+                                 // rollbacks) -- ONLY for assertions/debugging
+    fileoff_t                    _log_bytes_reserved_space;//requested from
+                                 // log -- used ONLY for assertions/debugging
+    bool                         _rolling_back;// true if aborting OR
+                                 // in rollback_work (which does not change
+                                 // the xct state).
+    
+    bool                         should_consume_rollback_resv(int t) const;
+    bool                         should_reserve_for_rollback(int t)
+                                 const {
+                                    return  ! should_consume_rollback_resv(t);
+                                 }
 private:
-
      volatile int                _in_compensated_op; 
         // in the midst of a compensated operation
         // use an int because they can be nested.
@@ -669,35 +714,91 @@ private:
      xct_core*                   _core;
 
 public:
-    tid_t                       tid() const;
+    bool                        rolling_back() const { return _rolling_back; }
+#if W_DEBUG_LEVEL > 2
+private: 
+    bool                        _had_error;
+public:
+    // Tells if we ever did a partial rollback.
+    // This state is only needed for certain assertions.
+    void                        set_error_encountered() { _had_error = true; } 
+    bool                        error_encountered() const { 
+                                               return _had_error; }
+#else
+    void                        set_error_encountered() {}
+    bool                        error_encountered() const {  return false; }
+#endif
+    tid_t                       tid() const { 
+                                    w_assert1(_tid == _core->_tid);
+                                    return _tid; }
 };
 
 /**\cond skip */
+
+// Release anchor on destruction
 class auto_release_anchor_t {
+    bool _compensate;
+    xct_t* _xct;
+public:
+    auto_release_anchor_t (bool and_compensate) : 
+        _compensate(and_compensate), _xct(xct())
+    {}
+    ~auto_release_anchor_t ()  
+    {
+        _xct->release_anchor(_compensate X_LOG_COMMENT_USE("auto_release_anchor_t"));
+    }
+};
+// Cause a rollback to the savepoint on destruction
+// unless ok() is called, in which case, do not.
+class auto_rollback_t {
 private:
     xct_t* _xd;
-    lsn_t _anchor;
-    bool _and_compensate;
-    int    _line; // for debugging
-
-    operator lsn_t const&() const { return _anchor; }
+    lsn_t  _save_pt;
+    bool   _roll;
+    static int _count;
+    int    _test;
+    int    _line; // debugging
+    const char *_file; // debugging
 public:
+    // for testing
+    // every so often we need to fake an eOUTOFLOGSPACE error.
+    w_rc_t test(int x) { _test=x; 
+        if(_test && (_count % _test==0)) 
+             return RC(smlevel_0::eOUTOFLOGSPACE); // will ignore ok() 
+        return RCOK;
+    }
 
-    auto_release_anchor_t(bool and_compensate, int line)
-        : _xd(xct()), _and_compensate(and_compensate), _line(line)
+#define AUTO_ROLLBACK_work auto_rollback_t work(__LINE__, __FILE__);
+    auto_rollback_t(int line, const char *file)
+        : _xd(xct()), _roll(true), _test(0),
+        _line(line), _file(file)
     {
-    if(_xd)
-        _anchor = _xd->anchor(_and_compensate);
+        // we don't care if this faking of error is thread-safe
+        _count++;
+        if(_xd) {
+            // there's no possible error from save_point
+            W_COERCE(_xd->save_point(_save_pt));
+        }
     }
-    void compensate() {
-    if(_xd)
-        _xd->compensate(_anchor, false
-                LOG_COMMENT_USE("auto_release_anchor_t")
-                );
-    _xd = 0; // cancel pending release in destructor
+    void ok() { _roll = false; }
+
+    ~auto_rollback_t() { 
+
+        if(_test && (_count % _test==0)) _roll = true; // ignore ok() 
+        if(_roll && _xd) { 
+            _xd->set_error_encountered();
+            W_COERCE(_xd->rollback(_save_pt)); 
+            INC_TSTAT(internal_rollback_cnt);
+#if 0 && W_DEBUG_LEVEL > 0
+            cerr << "Internal rollback to "  << _save_pt
+                << " from " << _line
+                << " " << _file
+                << endl;
+#endif
+        }
     }
-    ~auto_release_anchor_t(); // in xct.cpp
 };
+
 /**\endcond skip */
 
 /*
@@ -710,7 +811,7 @@ public:
     if (__e.is_error()) {        \
         w_assert3(xct());        \
         W_COERCE(xct()->rollback(anchor));        \
-        xct()->release_anchor(true, line );    \
+        xct()->release_anchor(true X_LOG_COMMENT_USE("X_DO1"));    \
         return RC_AUGMENT(__e); \
     } \
 }
@@ -725,7 +826,7 @@ public:
     if (__e.is_error()) {        \
         w_assert3(xct());        \
         W_COERCE(xct()->rollback(anchor));        \
-        xct()->release_anchor(true);        \
+        xct()->release_anchor(true X_LOG_COMMENT_USE("X_DO"));        \
         return RC_AUGMENT(__e); \
     } \
 }
@@ -736,9 +837,6 @@ class xct_log_switch_t : public smlevel_0 {
     /*
      * NB: use sparingly!!!! EVERYTHING DONE UNDER
      * CONTROL OF ONE OF THESE IS A CRITICAL SECTION
-     * This is necessary to support multi-threaded xcts,
-     * to prevent one thread from turning off the log
-     * while another needs it on, or vice versa.
      */
     switch_t old_state;
 public:
@@ -762,32 +860,138 @@ public:
         }
     }
 };
-/**\endcond skip */
 
 inline
 bool xct_t::is_log_on() const {
     return (me()->xct_log()->xct_log_is_off() == false);
 }
+/**\endcond skip */
+
+/* XXXX This is somewhat hacky becuase I am working on cleaning
+   up the xct_i xct iterator to provide various levels of consistency.
+   Until then, the "locking option" provides enough variance so
+   code need not be duplicated or have deep call graphs. */
+
+/**\brief Iterator over transaction list.
+ *
+ * This is exposed for the purpose of coping with out-of-log-space 
+ * conditions. See \ref LOGSPACE.
+ */
+class xct_i  {
+public:
+    // NB: still not safe, since this does not
+    // lock down the list for the entire iteration.
+    
+    // FRJ: Making it safe -- all non-debug users lock it down
+    // manually right now anyway; the rest *should* to avoid bugs.
+
+    /// True if this thread holds the transaction list mutex.
+    bool locked_by_me() const {
+        if(xct_t::xlist_mutex_is_mine()) {
+            W_IFDEBUG1(if(_may_check) w_assert1(_locked);)
+            return true;
+        }
+        return false;
+    }
+
+    /// Release transaction list mutex if this thread holds it.
+    void never_mind() {
+        // Be careful here: must leave in the
+        // state it was when we constructed this.
+        if(_locked && locked_by_me()) {
+            *(const_cast<bool *>(&_locked)) = false; // grot
+            xct_t::release_xlist_mutex();
+        }
+    }
+    /// Get transaction at cursor.
+    xct_t* curr() const { return unsafe_iterator.curr(); }
+    /// Advance cursor.
+    xct_t* next() { return unsafe_iterator.next(); }
+
+    /**\cond skip */
+    // Note that this is called to INIT the attribute "locked"
+    static bool init_locked(bool lockit) 
+    {
+        if(lockit) {
+            W_COERCE(xct_t::acquire_xlist_mutex());
+        }
+        return lockit;
+    }
+    /**\endcond skip */
+
+    /**\brief Constructor.
+    *
+    * @param[in] locked_accesses Set to true if you want this
+    * iterator to be safe, false if you don't care or if you already
+    * hold the transaction-list mutex.
+    */
+    NORET xct_i(bool locked_accesses)
+        : _locked(init_locked(locked_accesses)),
+        _may_check(locked_accesses),
+        unsafe_iterator(xct_t::_xlist)
+    {
+        w_assert1(_locked == locked_accesses);
+        _check(_locked);
+    }
+
+    /// Desctructor. Calls never_mind() if necessary.
+    NORET ~xct_i() { 
+        if(locked_by_me()) {
+          _check(true);
+          never_mind(); 
+          _check(false);
+        }
+    }
+
+private:
+    void _check(bool b) const  {
+          if(!_may_check) return;
+          if(b) xct_t::assert_xlist_mutex_is_mine(); 
+          else  xct_t::assert_xlist_mutex_not_mine(); 
+    }
+    // FRJ: make sure init_locked runs before we actually create the iterator
+    const bool            _locked;
+    const bool            _may_check;
+    w_list_i<xct_t,queue_based_lock_t> unsafe_iterator;
+
+    // disabled
+    xct_i(const xct_i&);
+    xct_i& operator=(const xct_i&);
+};
+    
 
 /**\cond skip */
+inline
+xct_t::state_t
+xct_t::state() const
+{
+    return _core->_state;
+}
+
 // For use in sm functions that don't allow
 // active xct when entered.  These are functions that
 // apply to local volumes only.
 class xct_auto_abort_t : public smlevel_1 {
 public:
-    xct_auto_abort_t() : _xct(xct_t::new_xct()) {}
+    xct_auto_abort_t() : _xct(xct_t::new_xct()) {
+        (void)  _xct->attach_update_thread(); 
+    }
     ~xct_auto_abort_t() {
         switch(_xct->state()) {
         case smlevel_1::xct_ended:
             // do nothing
             break;
         case smlevel_1::xct_active:
+        case smlevel_1::xct_freeing_space: // we got an error in commit
+        case smlevel_1::xct_committing: // we got an error in commit
             W_COERCE(_xct->abort());
             break;
         default:
+            cerr << "unexpected xct state: " << _xct->state() << endl;
             W_FATAL(eINTERNAL);
         }
-    xct_t::destroy_xct(_xct);
+        (void)  _xct->detach_update_thread(); 
+        xct_t::destroy_xct(_xct);
     }
     rc_t commit() {
         // These are only for local txs
@@ -800,41 +1004,6 @@ public:
 private:
     xct_t*        _xct;
 };
-/**\endcond skip */
-
-
-/* Iterators provide a thread-safe but non-static view of the
-   transaction list. Transactions are free to begin and end while an
-   iterator is active, and garbage collection will be coordinated to
-   avoid invalid pointer accesses.
- */
-struct xct_i {
-    struct maybe_lock {
-	bool _already_locked;
-	maybe_lock(bool already_locked);
-	~maybe_lock();
-    };
-    maybe_lock _lock;
-    xct_link* _end_xd;
-    xct_link* _cur_xd;
-    xct_i(bool already_locked=false);
-    ~xct_i();
-    xct_t* next(bool can_delete=false);
-    xct_t* erase_and_next();
-private:
-    // disabled
-    xct_i(const xct_i&);
-    xct_i& operator=(const xct_i&);
-
-};
-
-
-inline
-xct_t::state_t
-xct_t::state() const
-{
-    return _core->_state;
-}
 
 
 inline
@@ -933,12 +1102,6 @@ xct_t::set_undo_nxt(const lsn_t &l)
 }
 
 inline
-bool xct_t::is_read_only_sofar() const
-{
-    return (_first_lsn == lsn_t::null);
-}
-
-inline
 const logrec_t*
 xct_t::last_log() const
 {
@@ -977,6 +1140,7 @@ xct_t::gtid() const
     return _core->_global_tid;
 }
 
+/**\endcond skip */
 
 /*<std-footer incl-file-exclusion='XCT_H'>  -- do not edit anything below this line -- */
 

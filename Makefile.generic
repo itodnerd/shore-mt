@@ -1,4 +1,3 @@
-# -*- mode:makefile-automake -*-
 # rules, macros generic to all Makefile.am
 AUTOMAKE_OPTIONS = check-news dist-bzip2 readme-alpha
 
@@ -22,23 +21,18 @@ BUILT_SOURCES = $(GENFILES)
 # Initialize  
 #
 # --------------------------------------------------------
-## TODO: remove all but NO_FASTNEW
-## TODO: assume ARCH_LP4 unless hw cannot support it (how to tell?
-## TODO see if later versions of autoconf support this? 
-## TODO get rid of NO_FASTNEW
-
-## TODO REMOVE 
 
 ## _REENTRANT and _POSIX_PTHREAD_SEMANTICS are needed on Solaris to ensure 
 # that the posix-compliant clib interfaces are there (e.g., ctime_r)
 # (Actually, you're supposed to get them both with _POSIX_C_SOURCE > 199506L
 # but I'm not that trusting.)
 
-ALWAYS_FLAGS = -DNO_FASTNEW 
+ALWAYS_FLAGS = \
+	 -D_REENTRANT -D_POSIX_PTHREAD_SEMANTICS
 
 if COMPILER_IS_SUNCC
 ALWAYS_FLAGS +=  -features=extensions,zla -xdebugformat=stabs
-ALWAYS_FLAGS += -DSOLARIS2 -library=stlport4
+ALWAYS_FLAGS += -DSOLARIS2 -library=stlport4  -mt -lpthread
 #  CC turns on inlining based on optimization level.  at O0 it should
 #  do no inlining at less than O3.  There is no way to force inlining to
 #  be off (well, +d does except when the optimization level overrides it); 
@@ -47,18 +41,45 @@ NO_INLINE_FLAGS = +d
 YES_INLINE_FLAGS = 
 else
 if COMPILER_IS_GCC
+if COMPILER_IS_ICC
+ALWAYS_FLAGS += -Wall -Werror-all -pthread -Wno-unknown-pragmas -Wcheck  \
+				-wd981 -wd444  -wd383 \
+				-wd1599 -wd1418 -wd1419 -wd1572 -wd181 -wd2259 -wd128 
+## intel compiler "remarks"
+# 981 : operands are evaluated in unspecified order -- so what? OK
+# 444 : destructor for base class is not virtual: we have a lot of these
+# for base classes that have only static or const/enum members: smlevel*,
+# X_base_t, etc.  OK.
+# 383 : value copied to a temp, ref to temp used. OK 
+# 1599: declaration hides variable X (declared at line Z) ... OK
+# These are unavoidable due to the use of the W_DO and similar idioms.
+# 193 : zero used for undefined preprocessing variable  - fix
+# 1418: external function def with no prior decl
+#  and
+# 1419: external declaration in primary source file
+# used to generate un-mangled names for calling in debugger. OK.
+# 1572: floating point equality and inequality comparisons are unreliable 
+# in rtree and btree code; OK.
+# 181 : argument is incompat with corresponding format : in
+# debugger-callable routines  : fix
+# 2259: non-pointer converssion from X to Y may lose sig bits : TODO: track
+# these down
+# 128 : not reachable (CC complains about not returning values, icc complains
+# about not reachable)
+else
 # -pedantic requires -Wno-long-long
-# TODO: fix this comment
+# 
 # Let's avoid use of long long if possible, and require
 # explicit C++ types based on data model of compiler.  There
 # might be some cases where the underlying library function
 # or system include file uses long long, in which case we will have to.
 #
 #
-ALWAYS_FLAGS += -Wextra -Wall -Wno-long-long
+ALWAYS_FLAGS += -Wextra -Wall -Wno-long-long -Werror -pthread
 # NO_INLINE_FLAGS =  -fno-inline
 NO_INLINE_FLAGS =  
 YES_INLINE_FLAGS =  -finline-functions
+endif
 else
 ALWAYS_FLAGS += UNKNOWN COMPILER
 endif
@@ -87,14 +108,16 @@ if COMPILER_IS_SUNCC
 TARGET_FLAGS = -m64 -DARCH_LP64
 ALWAYS_FLAGS += $(TARGET_FLAGS)
 ## Assembler flags... for atomic_ops
-AM_LDFLAGS =  -m64 -lkstat
+AM_LDFLAGS =  -m64
 TUNE_FLAGS = -xtarget=native
 
 else
-
+TUNE_FLAGS = 
+if COMPILER_IS_ICC
+## ICC/64
+else
 ## GCC/64
-TUNE_FLAGS = -mtune=nocona
-# TUNE_FLAGS = -mtune=generic
+endif
 TARGET_FLAGS = -m64 -DARCH_LP64 
 ALWAYS_FLAGS += $(TARGET_FLAGS) 
 ## Assembler flags... for atomic_ops
@@ -113,11 +136,11 @@ TUNE_FLAGS = -xtarget=native
 else
 # GCC/32
 TARGET_FLAGS = -m32 -UARCH_LP64
-TUNE_FLAGS = -mtune=generic
+TUNE_FLAGS = 
 endif
 
 ALWAYS_FLAGS += $(TARGET_FLAGS) -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 
-AM_LDFLAGS =  -m32 -lkstat
+AM_LDFLAGS =  -m32
 endif
 
 AM_CCASFLAGS += $(TARGET_FLAGS)
@@ -140,13 +163,21 @@ PEDANTIC = -pedantic-errors
 endif
 endif
 
+# create macro for things to be removed with 'make clean'
 LOCALCLEAN = 
+# create macro for dirs to be removed recursively with 'make clean'
+LOCALCLEANDIRS = 
+
 # CXX flags that go on the compiles for pure products
 PURE_CXXFLAGS =
+# This clearing of CXXFLAGS is necessary to override the
+# annoying -g -O2 that autoconf stuffs in there, and which
+# I cannot find any other way to control.
+CXXFLAGS =
 CFLAGS =
 GCC_WARN_FLAGS =
 AM_CXXFLAGS = $(PEDANTIC)  $(TUNE_FLAGS)
-AM_CXXFLAGS += $(DEBUGFLAGS) $(W_WARNINGS) $(OPTFLAGS) $(PURE_CXXFLAGS)
+AM_CXXFLAGS += $(DEBUGFLAGS) $(W_WARNINGS) $(OPTFLAGS) $(PURE_CXXFLAGS) 
 AM_CXXFLAGS += $(ALWAYS_FLAGS) $(TEMPLATEFLAGS) 
 AM_CFLAGS = $(PEDANTIC) $(ALWAYS_FLAGS) $(DEBUG_FLAGS) $(OPTFLAGS)
 
@@ -171,7 +202,10 @@ ALLCLEANFILES = $(DISTCLEANFILES) \
 #    in particular this is for the PURE targets
 #
 # --------------------------------------------------------
-clean-local: 
+clean-local-dirs:  
+	$(RM) -r $(LOCALCLEANDIRS) 
+
+clean-local: clean-local-dirs
 	$(RM) $(LOCALCLEAN) 
 
 if COMPILER_IS_GCC
@@ -185,7 +219,11 @@ if COMPILER_IS_GCC
 # Note: gcc seems to issue a false positive warning about strict aliasing
 # in the new override code, so we have to add -fno-strict-aliasing.
 # --------------------------------------------------------
+if COMPILER_IS_ICC
+GCC_WARN_FLAGS += -Wall -fno-strict-aliasing  -Wpointer-arith -Wwrite-strings
+else
 GCC_WARN_FLAGS += -Wall -fno-strict-aliasing -Wextra -Wpointer-arith -Wwrite-strings
+endif
 
 if GCC_VER_34_WARNINGS
 # /* In adition to the 3.2 warnings, prototype errors for c/objc only */
@@ -213,7 +251,7 @@ GENERIC_YESDEBUG_FLAGS = -UNDEBUG -DDEBUG
 
 # --------------------------------------------------------
 #
-# handle --enable-debug config option
+# handle --enable-dbgsymbols config option
 #
 # --------------------------------------------------------
 if COMPILER_IS_SUNCC
@@ -224,7 +262,8 @@ SYMBOLSFLAGS = -g -xs
 NOSYMBOLSFLAGS = -g0 
 NOOPTFLAGS = -O0 $(NO_INLINE_FLAGS)
 MIDOPTFLAGS = -O2 $(YES_INLINE_FLAGS)
-FULLOPTFLAGS = -xO4
+# FULLOPTFLAGS = -xO4 -xinline=%auto,no%__1cKtatas_lockEspin6M_v_,no%__1cImcs_lockPspin_on_waiting6Mpon0AFqnode__v_,no%__1cImcs_lockMspin_on_next6Mpon0AFqnode__3_,no%__1cLhybrid_lockF_spin6Fpon0AFqnode__l_,no%__1cHmcs_logSspin_while_waiting6Mpn0AFqnode__v_,no%__1cKmcs_rwlockO_spin_on_writer6M_v_,no%__1cKmcs_rwlockP_spin_on_readers6M_v_,no%lock_mutex_acquire,no%returning_eINTRANS,no%__1cKtpmcs_lockMspin_on_next6Mpon0AFqnode__v_,no%__1cKtpmcs_lockPspin_on_waiting6Mpon0AFqnode__v_
+FULLOPTFLAGS = -xO4 -xinline=%auto
 
 else
 #----------------- GCC  -----------------------------------
@@ -234,7 +273,11 @@ SYMBOLSFLAGS = -ggdb
 NOSYMBOLSFLAGS = 
 NOOPTFLAGS = -O0 $(NO_INLINE_FLAGS) 
 MIDOPTFLAGS = -O2 $(YES_INLINE_FLAGS)
+if COMPILER_IS_ICC
+FULLOPTFLAGS = -O3 $(YES_INLINE_FLAGS)
+else
 FULLOPTFLAGS = -O3 -fexpensive-optimizations $(YES_INLINE_FLAGS)
+endif
 
 endif
 
@@ -275,12 +318,10 @@ endif
 endif
 endif
 
-if DISABLE_OPTIMIZATIONS
-OPTFLAGS = $(NOOPTFLAGS)
-endif
-
 if DEBUGGERSYMBOLS
 DEBUGFLAGS  += $(SYMBOLSFLAGS)
+# override optimization flags for debugger symbols because with gcc, optimization level trumps.
+OPTFLAGS    = $(MIDOPTFLAGS)
 else
 DEBUGFLAGS  += $(NOSYMBOLSFLAGS)
 endif
@@ -301,8 +342,9 @@ endif
 
 # Initialize LOCALLDADD 
 # Note: on solaris -lnsl may be needed for gethostbyname()
-FRJ: if -lnsl is really necessary, add a proper configure check
-LOCALLDADD = $(top_srcdir)/src/atomic_ops/libatomic_ops.a
+# and -lsocket may be needed for getaddrinfo
+# Those are handled by configure.ac AC_CHECK_LIB macros
+LOCALLDADD = $(top_srcdir)/src/atomic_ops/libatomic_ops.a 
 
 # --------------------------------------------------------
 #
@@ -346,7 +388,7 @@ if QUANTIFY
 # QUANTIFY_BIN = $(PURE_DIR)/bin
 QUANTIFY_INCLUDE = $(PURE_DIR)/releases/quantify.i386_linux2.7.0
 # yes, libs are in the same place as is the header file
-QUANTIFY_LIBS = $(QUANTIFY_INCLUDE)/libquantify_stubs.a
+QUANTIFY_LIBS = $(QUANTIFY_INCLUDE)/lib64/libquantify_stubs.a
 QUANTIFY_BIN = $(PURE_DIR)/bin
 # QUANTIFY_COLLECTOR = -collector=/usr/bin/ld
 LOCALLDADD += $(QUANTIFY_LIBS)

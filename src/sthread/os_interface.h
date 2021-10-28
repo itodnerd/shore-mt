@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='OS_INTERFACE_H'>
 
- $Id: os_interface.h,v 1.15.2.5 2010/03/19 22:20:01 nhall Exp $
+ $Id: os_interface.h,v 1.16 2010/05/26 01:21:27 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

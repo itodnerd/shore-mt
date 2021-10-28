@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='HISTO_H'>
 
- $Id: histo.h,v 1.8.2.6 2010/03/19 22:20:23 nhall Exp $
+ $Id: histo.h,v 1.13 2010/12/08 17:37:42 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -59,10 +59,11 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 
 /*
+ * OVERVIEW
  * This file describes the classes that keep histograms describing
  * space utilization in a file.  The SM keeps a single transient, fixed-
- * size hash table, keyed on store ID.  In the table are elements that
- * contain
+ * size hash table, keyed on store ID.  In the table are elements (histoid_t)
+ * that are thread-protected and contain
  *   1) a histogram for the space utilization for that store
  *   2) a heap of pages recently used for that store.
  * 
@@ -167,6 +168,36 @@ class histoid_remove_t;
 class histoid_update_t;
 class sdesc_t; // so sdesc_t method can delete a histoid_t ptr
 
+/**\brief 
+ *
+ * Space-utilization for a store: this is a (transient) cache.
+ * For each store in use, we create a histoid_t.  The class
+ * has a static hash table mapping store id to its histoid_t.
+ * A pointer to the histoid_t for the store is cached in the store descriptor
+ * (sdesc_t).
+ * The histoid_t is reference-counted so we know how many sdesc_t have
+ * these pointers.
+ * Access to the hash table is protected by a lock.
+ *
+ * The histoid_t contains :
+ * A heap to find recently-used pages with adequate space.
+ * A histogram to tell if it's worth doing a linear search to find pages. 
+ * 
+ * Access to the histoid_t is protected by a lock (mutex).
+ *
+ * The heap contains:
+ *   pginfo_t: {space-left-in-bytes, page#} (see page_h.h)
+ *   Pages with more free space drifts to the top, so  it's easy to
+ *   peel off the top the recently-used page with the most space.
+ *   But the heap is searchable for the page with smallest adequate
+ *   amt of space; this is used by class methods that find a suitable
+ *   page for a record insertion.
+ * A histogram (store_histo_t) keeps track of how many pages
+ *   of a each bucket (amt of free space) exist in the file. This is 
+ *   to avoid linear searches of the file when t_compact policy is used.
+ *
+ * See also comments at "OVERVIEW" above.
+ */
 class histoid_t: public smlevel_0 
 {
     friend class histoid_remove_t ;
@@ -190,12 +221,13 @@ protected:
 
 
         // called from class histoid_update_t 
-    void        install(const pginfo_t& info);
+    void        _install(const pginfo_t& info);
 
         // called from class histoid_update_t 
-    void        update_page(const shpid_t& p, smsize_t amt);
+    void        _update_page(const shpid_t& p, smsize_t amt);
 
 public:
+    smsize_t size_threshhold() const { return file_p::min_rec_size; }
     /*
      * constructor/destructor -called when file mgr is initialized
      */
@@ -203,9 +235,9 @@ public:
     static void     destroy_table();
     /*
      * When a tx first encounters a store (dir_m::access)
-     * it puts the store in the hash table and keeps a (ref-counted)
-     * pointer to the histoid_t in the store descriptor;  when the
-     * store descriptor returned by dir_m::access is 
+     * it puts the store in the hash table and keeps a 
+     * pointer to the (ref-counted) histoid_t in the store descriptor;  
+     * when the store descriptor returned by dir_m::access is 
      * invalidated, the histoid_t is released.
      */
     histoid_t*       copy() const;
@@ -217,33 +249,36 @@ public:
      */
     static void     destroyed_store(const stid_t&s, sdesc_t *sd);
 
-    void        bucket_change(smsize_t old_space,
-                    smsize_t new_space);
+    void            bucket_change(smsize_t old_space, smsize_t new_space);
 
     // according to histogram 
     w_rc_t        exists_page(smsize_t space_needed, bool& found) const; 
 
     //for space allocation:
     w_rc_t        find_page(
-                    smsize_t     space_needed,
-                    bool&        found,
-                    pginfo_t&    info, 
-                    file_p*      pagep,
-                    slotid_t&    idx,   // output iff found
-                    const bool bIgnoreParents = false
-            ) const;
+                        smsize_t     space_needed,
+                        bool&        found,
+                        pginfo_t&    info, 
+                        file_p*      pagep,
+                        slotid_t&    idx    // output iff found
+#ifdef SM_DORA
+                        , const bool bIgnoreParents = false
+#endif
+                        ) const;
     w_rc_t        latch_lock_get_slot(
-                    shpid_t&    shpid,
-                    file_p*     pg, 
-                    smsize_t    space_needed,
-                    bool        append_only,
-                    bool&       success, // output
-                    slotid_t&   idx, // output
-                    const bool bIgnoreParents = false
-            ) const;
+                        const shpid_t&    shpid,
+                        file_p*     pg, 
+                        smsize_t    space_needed,
+                        bool        append_only,
+                        bool&       success, // output
+                        slotid_t&   idx // output
+#ifdef SM_DORA
+                        , const bool bIgnoreParents = false
+#endif
+                        ) const;
 
-    ostream            &print(ostream &) const;
-    static ostream    &print_cache(ostream &, bool locked = false);
+    ostream&           print(ostream &) const;
+    static ostream&    print_cache(ostream &, bool locked = false);
 
 private:
     // these mutex methods violate const-ness:
@@ -278,13 +313,18 @@ private:
 
     /* static stuff */
 
+    // _htab_mutex_rw protects the hash table index to the
+    // histoids.  
+    // (Each histoid is protected by the _histoid_mutex above.)
     // htab_mutex protects multiple readers from single writer.
     // Multiple writers have to be prevented by other means,
     // since occ_rwlock isn't safe for multiple writers.
-    static occ_rwlock        htab_mutex;
+    static occ_rwlock        _htab_mutex_rw;
     // htab_mutex_writer prevents multiple writers.
-    static queue_based_block_lock_t   htab_mutex_writer;
+    static queue_based_block_lock_t   _htab_mutex_writer;
 
+    // hash table: key is store id ; protected by rwlock; 
+    // elements are histoid_t*
     static w_hash_t<histoid_t, occ_rwlock, stid_t> *    htab;
     static int               initialized;
 
@@ -305,8 +345,8 @@ class histoid_remove_t
      */
 private:
     bool        _found_in_table;
-    file_p*        _page;
-    histoid_t*    _h;
+    file_p*     _page;
+    histoid_t*  _h;
     pginfo_t    _info;
 public:
     NORET histoid_remove_t(file_p& pg);
@@ -323,8 +363,8 @@ class histoid_update_t
      */
 private:
     bool        _found_in_table;
-    file_p*        _page;
-    histoid_t*    _h;
+    file_p*     _page;
+    histoid_t*  _h;
     pginfo_t    _info;
     smsize_t    _old_space;
 

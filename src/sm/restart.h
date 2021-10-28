@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='RESTART_H'>
 
- $Id: restart.h,v 1.24.2.5 2010/01/28 04:54:10 nhall Exp $
+ $Id: restart.h,v 1.27 2010/07/01 00:08:22 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -82,17 +82,20 @@ public:
 
 
 class AutoTurnOffLogging {
+         bool _original_value;
     public:
         AutoTurnOffLogging()
         {
             w_assert1(smlevel_0::logging_enabled);
+            _original_value = smlevel_0::logging_enabled;
             smlevel_0::logging_enabled = false;
         };
 
         ~AutoTurnOffLogging()
         {
             w_assert1(!smlevel_0::logging_enabled);
-            smlevel_0::logging_enabled = true;
+            // restore original value
+            smlevel_0::logging_enabled = _original_value;
         };
     private:
         AutoTurnOffLogging& operator=(const AutoTurnOffLogging&);

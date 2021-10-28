@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='DIR_H'>
 
- $Id: dir.h,v 1.42 2010/05/26 01:20:39 nhall Exp $
+ $Id: dir.h,v 1.43 2010/11/08 15:06:52 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -155,7 +155,7 @@ public:
 
     rc_t        insert(const stid_t& stpgid, const sinfo_s& sinfo);
     rc_t        remove(const stid_t& stpgid);
-    rc_t         access(const stid_t& stpgid, sdesc_t*& sd, lock_mode_t lock_mode,
+    rc_t        access(enum store_t kind, const stid_t& stpgid, sdesc_t*& sd, lock_mode_t lock_mode,
                 bool lklarge=false);
    
     rc_t        remove_n_swap(

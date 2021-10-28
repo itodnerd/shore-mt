@@ -1,6 +1,6 @@
 # <std-header style='data' orig-src='shore'>
 #
-#  $Id: sthread_stats.dat,v 1.19.2.4 2010/03/19 22:20:01 nhall Exp $
+#  $Id: sthread_stats.dat,v 1.22 2010/11/08 15:07:28 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -29,17 +29,15 @@
 
 
 sthread Threads = 0x00050000 sthread_stats {
-	// NB: keep floating point stuff at the top for
-	// alignment reasons
-	int     num_io		Number of I/Os
-
-	// I/O types
-	int	read		Number of read system calls
-	int	write		Number of write system calls
-	int	sync		Number of sync system calls
-	int	truncate	Number of truncate system calls
-
-	int	writev		Number of writev system calls
-	int	readv		Number of readv system calls
+	u_long	rwlock_r_wait		Number waits for read lock on srwlock
+	u_long	rwlock_w_wait		Number waits for write lock on srwlock
+	u_long	needs_latch_condl	Conditional latch requests
+	u_long	needs_latch_uncondl	Unconditional latch requests
+	u_long	latch_condl_nowait	Conditional requests satisfied immediately
+	// NOTE: latch_uncondl_nowait is not counted unless you
+	// #define EXPENSIVE_LATCH_COUNTS in latch.cpp
+	// There's a bit of a heisen-watch syndrome here, nevertheless, this
+	// could be useful
+	u_long	latch_uncondl_nowait	Unconditional requests satisfied immediately
 };
 

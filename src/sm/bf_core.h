@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore' incl-file-exclusion='BF_CORE_H'>
 
- $Id: bf_core.h,v 1.28 2010/06/08 22:28:55 nhall Exp $
+ $Id: bf_core.h,v 1.32 2010/12/17 19:36:26 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -120,7 +120,8 @@ public:
 
     static int                   collect(vtable_t&, bool names_too);
 
-    bool                         get_cb(const bfpid_t& p, bfcb_t*& ret) const;
+    bool                         get_cb(const bfpid_t& p, bfcb_t*& ret,
+			                           bool keep_pinned=false) const;
 
     bfcb_t*                      replacement();
     w_rc_t                       grab(
@@ -136,6 +137,10 @@ public:
         latch_mode_t                  mode = LATCH_EX,
         timeout_in_ms                 timeout = sthread_base_t::WAIT_FOREVER,
         w_base_t::int4_t              ref_bit = 0
+#if defined(EXPENSIVE_LATCH_COUNTS) && EXPENSIVE_LATCH_COUNTS>0
+        ,
+        base_stat_t*                  wait_stat = NULL
+#endif
         );
 
     void                         publish_partial(bfcb_t* p);
@@ -149,7 +154,7 @@ public:
     void                         publish(
         bfcb_t*                       p,
         latch_mode_t                  mode,
-        bool                          error_occured);
+        const w_rc_t &                error_occured);
     
     bool                         is_mine(const bfcb_t* p) const;
     const latch_t*               my_latch(const bfcb_t* p) const;
@@ -228,7 +233,7 @@ extern ostream&         operator<<(ostream& out, const bf_core_m& mgr);
  */
 class page_write_mutex_t {
 private:
-    pthread_mutex_t _page_mutex; //initiazlied by constructor
+    pthread_mutex_t _page_mutex; //initialized by constructor
     operator pthread_mutex_t*() { return &_page_mutex; }
     static int const PWM_COUNT = 64;
     static page_write_mutex_t page_write_mutex[PWM_COUNT];

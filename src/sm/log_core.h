@@ -24,7 +24,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='SRV_LOG_H'>
 
- $Id: log_core.h,v 1.3 2010/06/08 22:28:55 nhall Exp $
+ $Id: log_core.h,v 1.11 2010/09/21 14:26:19 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -72,7 +72,6 @@ typedef    int    partition_index_t;
 
 #define CHKPT_META_BUF 512
 
-// DEAD class log_buf; //forward
 class skip_log; // forward
 
 #include <partition.h>
@@ -80,32 +79,29 @@ class skip_log; // forward
 
 class log_core : public log_m 
 {
-	struct waiting_xct {
-		fileoff_t* needed;
-		pthread_cond_t* cond;
-		NORET waiting_xct(fileoff_t *amt, pthread_cond_t* c)
-			: needed(amt), cond(c)
-		{
-		}
-	};
-	static std::deque<log_core::waiting_xct*> _log_space_waiters;
-public:
-    struct insert_info;
-    struct insert_info_array;    
-    
+    struct waiting_xct {
+        fileoff_t* needed;
+        pthread_cond_t* cond;
+        NORET waiting_xct(fileoff_t *amt, pthread_cond_t* c)
+            : needed(amt), cond(c)
+        {
+        }
+    };
+    static std::deque<log_core::waiting_xct*> _log_space_waiters;
 private:
     static bool          _initialized;
     bool                 _reservations_active;
 
+    long volatile        _waiting_for_resv; 
+
     long volatile        _waiting_for_space; 
     long volatile        _waiting_for_flush;
     long volatile        _start; // byte number of oldest unwritten byte
-    long        start_byte() const { return _start; } 
+    long                 start_byte() const { return _start; } 
 
     long volatile        _end; // byte number of insertion point
-    long        end_byte() const { return _end; } 
+    long                 end_byte() const { return _end; } 
 
-    long volatile _needs_flushed;
     long                 _segsize; // log buffer size
     long                 segsize() const { return _segsize; }
     // long                 _blocksize; uses constant BLOCK_SIZE
@@ -132,10 +128,8 @@ private:
             : base_lsn(l), base(b), start(s), end(e)
         {
         }
-	epoch volatile* vthis() { return this; }	
     };
 
-    epoch		 _buf_epoch;
     epoch                _cur_epoch;
     epoch                _old_epoch;
     /*
@@ -188,56 +182,48 @@ private:
     lsn_t                _flush_lsn;
 
     tatas_lock           _flush_lock;
-    long _padding2[16];
     tatas_lock           _comp_lock;
-    long _padding3[16];
     queue_based_lock_t   _insert_lock; // synchronize concurrent log inserts
-    long _padding4[16];
-    mcs_lock		 _expose_lock;
-    long _padding5[16];    
 
-    // paired with _wait_cond, _flush_cond
+    // paired with _space_cond, _flush_cond
     pthread_mutex_t      _wait_flush_lock; 
-    pthread_cond_t       _wait_cond;  // paired with _wait_flush_lock
+    pthread_cond_t       _space_cond;  // paired with _wait_flush_lock
     pthread_cond_t       _flush_cond;  // paird with _wait_flush_lock
 
     sthread_t*           _flush_daemon;
     bool volatile        _shutting_down;
     bool volatile        _flush_daemon_running; // for asserts only
 
-    // c-array stuff
-    insert_info_array* _slot_array;
-    long _active_slots;
-    insert_info* volatile* _slots;
-
-    
     // Data members:
     partition_index_t   _curr_index; // index of partition
     partition_number_t  _curr_num;   // partition number
     char*               _readbuf;
 
     skip_log*           _skip_log;
-	pthread_mutex_t     _scavenge_lock;
-	pthread_cond_t      _scavenge_cond;
+    pthread_mutex_t     _scavenge_lock;
+    pthread_cond_t      _scavenge_cond;
     partition_t         _part[PARTITION_COUNT];
 public:
     enum { BLOCK_SIZE=partition_t::XFERSIZE };
-    enum { PAGE_IN_BLOCKS= SM_PAGESIZE/BLOCK_SIZE };
-    // DO NOT MAKE SEGMENT_SIZE smaller than 3!  Since we need to
+    // DO NOT MAKE SEGMENT_SIZE smaller than 3 pages!  Since we need to
     // fit at least a single max-sized log record in a segment.
     // It would make no sense whatsoever to make it that small.
-	// TODO: we need a better way to parameterize this; if a page
-	// is large, we don't necessarily want to force writes to be
-	// large; but we do need to make the segment size some reasonable
-	// number of pages. If they are 64K, then 128 blocks is only
-	// two pages, which will accommodate most log records but not
-	// the largest possible log record.
-#if SM_PAGESIZE <= 32768
-    enum { SEGMENT_SIZE= 128 * BLOCK_SIZE };
-#elif SM_PAGESIZE <= 65536
+    // TODO: we need a better way to parameterize this; if a page
+    // is large, we don't necessarily want to force writes to be
+    // large; but we do need to make the segment size some reasonable
+    // number of pages. If pages are 32K, then 128 blocks is only
+    // four pages, which will accommodate all log records .
+    //
+    // NOTE: we have to fit two checkpoints into a segment, and
+    // the checkpoint size is a function of the number of buffers in
+    // the buffer pool among other things; so a maximum-sized checkpoint
+    // is pretty big and the smaller the page size, the bigger it is.
+    // 128 pages is 32 32-K pages, which is room enough for
+    // 10+ max-sized log records.
+#if SM_PAGESIZE < 8192
     enum { SEGMENT_SIZE= 256 * BLOCK_SIZE };
 #else
-#error SM_PAGESIZE is too big.  SEGMENT_SIZE must accommodate page size. 
+    enum { SEGMENT_SIZE= 128 * BLOCK_SIZE };
 #endif
     
     // CONSTRUCTOR 
@@ -271,17 +257,17 @@ public:
 
     // returns lsn where data were written 
     rc_t            insert(logrec_t &r, lsn_t* l); 
-    rc_t            flush(lsn_t lsn, bool block=true);
-    rc_t            compensate(lsn_t orig_lsn, lsn_t undo_lsn);
+    rc_t            flush(const lsn_t &lsn, bool block=true);
+    rc_t            compensate(const lsn_t &orig_lsn, const lsn_t& undo_lsn);
     void            start_flush_daemon();
     rc_t            fetch(lsn_t &lsn, logrec_t* &rec, lsn_t* nxt);
-    rc_t            scavenge(lsn_t min_rec_lsn, lsn_t min_xct_lsn);
+    rc_t            scavenge(const lsn_t &min_rec_lsn, const lsn_t&min_xct_lsn);
     void            release_space(fileoff_t howmuch);
-	void            activate_reservations() ;
+    void            activate_reservations() ;
     fileoff_t       consume_chkpt_reservation(fileoff_t howmuch);
     rc_t            wait_for_space(fileoff_t &amt, timeout_in_ms timeout);
-	bool            reservations_active() const { return _reservations_active; }
-	rc_t            file_was_archived(const char * /*file*/);
+    bool            reservations_active() const { return _reservations_active; }
+    rc_t            file_was_archived(const char * /*file*/);
 
     /* Q: how much reservable space does scavenging pcount partitions
           give back?
@@ -290,18 +276,19 @@ public:
           can always be flushed.
      */
     size_t              recoverable_space(int pcount) const {
-		// NEH: substituted BLOCK_SIZE for writebufsize()/PARTITION_COUNT
-		// just a guess; writebufsize is no more...
-							   return pcount*(_partition_data_size - BLOCK_SIZE);
-							}
+        // NEH: substituted BLOCK_SIZE for writebufsize()/PARTITION_COUNT
+        // just a guess; writebufsize is no more...
+                               return pcount*(_partition_data_size - BLOCK_SIZE);
+                            }
 
     // for flush_daemon_thread_t
     void            flush_daemon();
     lsn_t           flush_daemon_work(lsn_t old_mark);
 
 private:
-    void            _flushX(lsn_t base_lsn, long start1, long end1, long start2, long end2);
-    void            _set_size(fileoff_t psize);
+    void            _flushX(lsn_t base_lsn, long start1, 
+                              long end1, long start2, long end2);
+    w_rc_t          _set_size(fileoff_t psize);
     fileoff_t       _get_min_size() const {
                         // Return minimum log size as a function of the
                         // log buffer size and the partition count
@@ -309,17 +296,6 @@ private:
                     }
     partition_t *   _partition(partition_index_t i) const;
 
-    void _acquire_buffer_space(insert_info* info, long size);
-    lsn_t _copy_to_buffer(logrec_t &rec, long pos, long size, insert_info* info);
-    bool _update_epochs(insert_info* info, bool attempt_abort);
-    bool _wait_for_expose(insert_info* info, bool attempt_abort);
-    void _spin_on_epoch(long old_end); // sm-no-inline.cpp
-    long _spin_on_count(long volatile* count, long bound); // sm-no-inline.cpp
-    
-  
-    insert_info* _join_slot(long &idx, long &count, long size);
-    void _allocate_slot(long idx);	
-  
 public:
     // for partition_t
     void                unset_current(); 

@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore'>
 
- $Id: bf_htab_test.cpp,v 1.1.2.6 2010/03/25 18:05:06 nhall Exp $
+ $Id: bf_htab_test.cpp,v 1.3 2010/06/08 22:28:55 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

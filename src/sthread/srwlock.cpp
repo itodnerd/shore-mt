@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore'>
 
- $Id: srwlock.cpp,v 1.1.2.7 2010/03/19 22:20:01 nhall Exp $
+ $Id: srwlock.cpp,v 1.7 2010/12/08 17:37:50 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -63,13 +63,33 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  * mcs_rwlock implementation; cheaper but problematic when we get os preemptions
  */
 
+// CC mangles this as __1cKmcs_rwlockOspin_on_writer6M_v_
+// private
+int mcs_rwlock::_spin_on_writer() 
+{
+    int cnt=0;
+    while(has_writer()) cnt=1;
+    // callers do membar_enter
+    return cnt;
+}
+// CC mangles this as __1cKmcs_rwlockPspin_on_readers6M_v_
+// private
+void mcs_rwlock::_spin_on_readers() 
+{
+    while(has_reader());
+    // callers do membar_enter
+}
+
 // private
 void mcs_rwlock::_add_when_writer_leaves(int delta) 
 {
     // we always have the parent lock to do this
-    _spin_on_writer();
+    int cnt = _spin_on_writer();
     atomic_add_32(&_holders, delta);
     // callers do membar_enter
+    if(cnt  && (delta == WRITER)) {
+        INC_STH_STATS(rwlock_w_wait);
+    }
 }
 
 bool mcs_rwlock::attempt_read() 
@@ -89,6 +109,7 @@ void mcs_rwlock::acquire_read()
      * add'l readers, we're done
      */
     if(!attempt_read()) {
+        INC_STH_STATS(rwlock_r_wait);
         /* There seem to be writers around, or other readers intervened in our
          * attempt_read() above.
          * Join the queue and wait for them to leave 
@@ -114,15 +135,27 @@ bool mcs_rwlock::_attempt_write(unsigned int expected)
     /* succeeds iff we are the only reader (if expected==READER)
      * or if there are no readers or writers (if expected==0)
      *
-     * How do we know there's the only reader is us?
-     * A:  we rely on these facts: this is called with expected==READER only
-     * from attempt_upgrade(), which is called from latch only in the case
-     * in which we hold the latch in LATCH_SH mode and are requesting it in LATCH_EX mode.
+     * How do we know if the only reader is us?
+     * A:  we rely on these facts: 
+     * this is called with expected==READER only from attempt_upgrade(), 
+     *   which is called from latch only in the case
+     *   in which we hold the latch in LATCH_SH mode and 
+     *   are requesting it in LATCH_EX mode.
+     *
+     * If there is a writer waiting we have to get in line 
+     * like everyone else.
+     * No need for a membar because we already hold the latch
+     */
 
-       If there is a writer waiting we have to get in line like everyone else.
-       No need for a membar because we already hold the latch
-    */
+// USE_PTHREAD_MUTEX is determined by configure option and
+// thus defined in config/shore-config.h
+#if defined(USE_PTHREAD_MUTEX) && USE_PTHREAD_MUTEX==1
     ext_qnode me = QUEUE_EXT_QNODE_INITIALIZER;
+#else
+    ext_qnode me;
+    QUEUE_EXT_QNODE_INITIALIZE(me);
+#endif
+
     if(*&_holders != expected || !attempt(&me))
         return false;
     // at this point, we've called mcs_lock::attempt(&me), and
@@ -157,7 +190,10 @@ void mcs_rwlock::acquire_write()
     w_assert1(has_writer()); // me!
 
     // now wait for existing readers to clear out
-    if(has_reader()) _spin_on_readers();
+    if(has_reader()) {
+        INC_STH_STATS(rwlock_w_wait);
+        _spin_on_readers();
+    }
 
     // done!
     membar_enter();

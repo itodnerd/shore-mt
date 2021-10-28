@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: crash.cpp,v 1.16 2010/05/26 01:20:38 nhall Exp $
+ $Id: crash.cpp,v 1.19 2010/12/08 17:37:42 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -106,15 +106,28 @@ void
 getdebuginfo( 
     /*
      * from environment:  Take 3 environment variables:
+     *
      * The 1st environment variable indicates what
      * kind of test this is: delay, crash, etc.
+     * Values:  "crash", "abort", "yield", "delay"
+     * Used with "SSMTEST_KIND" environment variable.
+     * Causes the debuginfo.kind to be set to an enum value 
+     * representing these choices:
+     * debug_none, debug_crash, debug_abort, debug_yield, debug_delay
      *
      * The 2nd environment variable is a string that 
-     * matches some string in a CRASHTEST call in the code.  
+     * matches some string in a SSMTEST call in the code.  
+     * Used with "SSMTEST" environment variable.
+     * The debuginfo.name is set to the given string.
      *
-     * The 3rd is an integer that indicates a what pass
-     * over that CRASHTEST call this delay/crash/abort/yield should 
-     * take effect.  
+     * The 3rd is an integer that indicates a value to put into
+     * debuginfo.value.
+     * Used to effect the given event on the n'th encounter in 
+     * the code; this way we can have the crash/abort/delay/yield happen
+     * not every time it's called, but only on the n'th time.
+     *
+     * Only one test can be run in any process, because once initialized,
+     * the debug info is never reset.
      */
     struct debuginfo &_d, 
         const char *K, 
@@ -160,6 +173,7 @@ setdebuginfo(
 }
 
 
+/* Flush the log and then crash via ::_exit(44) */
 static void
 crashtest(
     log_m *   log,
@@ -182,16 +196,19 @@ crashtest(
          */
         if(log) {
            W_COERCE(log->flush(log->curr_lsn()));
-           w_assert3(log->durable_lsn() == log->curr_lsn());
-            DBG( << "Crashtest " << c
-                << " durable_lsn is " << log->durable_lsn() );
+           w_assert0(log->durable_lsn() == log->curr_lsn());
+           w_ostrstream out;
+           out << "Crashtest " 
+               W_IFTRACE( << c)
+                << " durable_lsn is " << log->durable_lsn();
+           fprintf(stderr, "%s\n", out.c_str());
         }
         // Just to be sure that everything's sent, flushed, etc.
         me()->yield();
 
         /* skip destructors */
-        fprintf(stderr, "CRASH %d at %s from %s %d\n",
-                _debuginfo.value, _debuginfo.name, file, line);
+        fprintf(stderr, "CRASH %d at %s from %s %d exiting with %d\n",
+                _debuginfo.value, _debuginfo.name, file, line, 44);
         _exit(44); // unclean shutdown/crash
     }
 }
@@ -241,9 +258,13 @@ ssmtest(
     int line
 ) 
 {
-#undef LOCATING
-#ifdef LOCATING
-    smlevel_0::errlog->clog << emerg_prio << c << flushl;
+#undef LOCATING_SSMTEST_CALL
+#ifdef LOCATING_SSMTEST_CALL
+    smlevel_0::errlog->clog << emerg_prio 
+        << "ssmtest c=" << c 
+        << "file " << file 
+        << "line " << line 
+        << flushl;
 #endif
 
     w_assert3(strlen(c)>0);
@@ -253,21 +274,52 @@ ssmtest(
     if(! _debuginfo.valid)  return RCOK;
     if(::strcmp(_debuginfo.name,c) != 0) return RCOK;
     ++_debuginfo.matches;
-    fprintf(stderr, "Ssh test %s #%d value=%d kind=%d\n", 
+
+    fprintf(stderr, "ssmtest %s #%d value=%d kind=%s\n", 
             c, _debuginfo.matches, 
-            _debuginfo.value, int(_debuginfo.kind) );
+            _debuginfo.value, 
+            (const char *)(_debuginfo.kind == debug_none ? "none" :
+            _debuginfo.kind == debug_yield ? "yield" :
+            _debuginfo.kind == debug_abort ? "abort" :
+            _debuginfo.kind == debug_crash ? "crash" :
+            _debuginfo.kind == debug_delay ? "delay" :
+            "unknown")
+            );
 
     switch(_debuginfo.kind) {
         case debug_delay:
+            /* put the thread to sleep  
+             * using sthread_t::sleep(debuginfo.value) 
+             * In theory we should be able to let other threads
+             * run in this case.
+             */
                 delaytest(file, line);
                 break;
         case debug_crash:
+                /* Flush the log and then crash via ::_exit(44),
+                 * never returning from crashtest
+                 * SSMTEST_KIND crash
+                 * SSMTEST <string in code>
+                 * SSMTEST_ITER <iteration#>
+                 */
                 crashtest(log, c, file, line);
                 break;
         case debug_yield:
                 yieldtest();
                 break;
         case debug_abort:
+                /* returns RC(eUSERABORT) 
+                 * if _debuginfo.matches == _debuginfo.value
+                 * which is to say on the _debuginfo.matches'th time
+                 * we called this.
+                 * If you want it to happen on the first try, then
+                 * you have to set SSMTEST_ITER to 1
+                 *
+                 * To use:
+                 * SSMTEST_KIND abort
+                 * SSMTEST <string in code>
+                 * SSMTEST_ITER <iteration#>
+                 */
                 return aborttest();
                 break;
         default:

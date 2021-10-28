@@ -1,6 +1,6 @@
 /*<std-header orig-src='regex' no-incl-file-exclusion='true'>
 
- $Id: regex_engine_i.h,v 1.8.2.4 2010/03/19 22:19:19 nhall Exp $
+ $Id: regex_engine_i.h,v 1.9 2010/05/26 01:20:12 nhall Exp $
 
 
 */

@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='W_H'>
 
- $Id: w.h,v 1.20 2010/05/26 01:20:23 nhall Exp $
+ $Id: w.h,v 1.22 2010/12/08 17:37:37 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -34,13 +34,11 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 /*  -- do not edit anything above this line --   </std-header>*/
 
 #include <w_base.h>
+#include <w_error.h>
+#include <w_rc.h>
 #include <w_minmax.h>
 #include <w_list.h>
 #include <w_hash.h>
-
-#ifdef W_INCL_BITMAP
-#include <w_bitmap.h>
-#endif
 
 /*<std-footer incl-file-exclusion='W_H'>  -- do not edit anything below this line -- */
 

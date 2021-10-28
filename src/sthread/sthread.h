@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore' incl-file-exclusion='STHREAD_H'>
 
- $Id: sthread.h,v 1.191.2.33 2010/03/25 18:04:43 nhall Exp $
+ $Id: sthread.h,v 1.209 2012/01/02 17:02:22 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -89,14 +89,15 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include "w_defines.h"
 #include "w_rc.h"
 #include "atomic_templates.h"
+#include "w_strstream.h"
 #include "stime.h"
 #include "gethrtime.h"
 #include <vtable.h>
 #include <w_list.h>
-#include "w_rand.h"
 
 // this #include reflects the fact that sthreads is now just a pthreads wrapper
-#include <pthread.h>
+#include <w_pthread.h>
+#include <sthread_stats.h>
 
 class sthread_t;
 class smthread_t;
@@ -109,8 +110,6 @@ class smthread_t;
 #ifndef SDISK_H
 #include <sdisk.h>
 #endif
-
-#define LOCKHACK
 
 class vtable_row_t;
 class vtable_t;
@@ -283,10 +282,6 @@ class ThreadFunc
 
 
 class sthread_init_t;
-#define LATCH_CAN_BLOCK_LONG 0
-#if LATCH_CAN_BLOCK_LONG 
-class sthread_priority_list_t;
-#endif
 class sthread_main_t;
 
 // these macros allow us to notify the SunStudio race detector about lock acquires/releases
@@ -333,7 +328,7 @@ struct tatas_lock {
 private:
     // CC mangles this as __1cKtatas_lockEspin6M_v_
     /// spin until lock is free
-    void spin(); // no-inline.cpp
+    void spin() { while(*&(_holder.handle)) ; }
 
 public:
     /// Try to acquire the lock immediately.
@@ -366,12 +361,14 @@ public:
     /// Release the lock
     void release() {
         membar_exit();
-        w_assert1(is_mine()); // moved after the membar_enter 
+        w_assert1(is_mine()); // moved after the membar
         _holder.bits= NOBODY;
+#if W_DEBUG_LEVEL > 0
         {
             membar_enter(); // needed for the assert?
             w_assert1(!is_mine());
         }
+#endif
     }
 
     /// True if this thread is the lock holder
@@ -382,14 +379,26 @@ public:
 
 /**\brief Wrapper for pthread mutexes, with a queue-based lock API.
  *
- * This lock uses a Pthreads mutex for the lock.
- *
- * This is not a true queue-based lock, since
+ * When the storage manager is configured with the default,
+ * --enable-pthread-mutex, this lock uses a Pthreads mutex for the lock.
+ * In this case, it is not a true queue-based lock, since
  * release doesn't inform the next node in the queue, and in fact the
  * nodes aren't kept in a queue.
  * It just gives pthread mutexes the same API as the other
  * queue-based locks so that we use the same idioms for
  * critical sections based on different kinds of locks.
+ * By configuring with pthreads mutexes implementing this class, the
+ * server can spawn any number of threads, regardless of the number
+ * of hardware contexts available; threads will block as necessary.
+ *
+ * When the storage manager is configured with 
+ * --disable-pthread-mutex, this lock uses an MCS (\ref MCS1) queue-based
+ * lock for the lock.
+ * In this case, it is a true queue-based lock.
+ * By configuring with MCS locks implementing this class, if the
+ * server spawn many more threads than hardware contexts, time can be wasted
+ * spinning; threads will not block until the operating system (or underlying 
+ * thread scheduler) determines to block the thread.
  *
  * The idiom for using these locks is
  * that the qnode is on a threads's stack, so the qnode
@@ -399,7 +408,7 @@ public:
  * the pthread mutexen don't have.
  *
  * Finally, using this class ensures that the pthread_mutex_init/destroy
- * is done.
+ * is done (in the --enable-pthread-mutex case).
  *
  *  See also: \ref REFSYNC
  *
@@ -410,9 +419,8 @@ struct w_pthread_lock_t
     struct ext_qnode {
         w_pthread_lock_t* _held;
     };
-
-    //#define EXT_QNODE_INITIALIZER { NULL }
-#define PTHREAD_EXT_QNODE_INITIALIZER { 0 }
+#define PTHREAD_EXT_QNODE_INITIALIZER { NULL }
+#define PTHREAD_EXT_QNODE_INITIALIZE(x) (x)._held =  NULL
 
     typedef ext_qnode volatile* ext_qnode_ptr;
     /**\endcond skip */
@@ -455,10 +463,12 @@ public:
         pthread_mutex_lock(&_mutex);
         me->_held = this;
         _holder = this;
+#if W_DEBUG_LEVEL > 0
         {
             membar_enter(); // needed for the assert
             w_assert1(is_mine(me)); // TODO: change to assert2
         }
+#endif
         return 0;
     }
 
@@ -473,7 +483,10 @@ public:
          me->_held = 0; 
         _holder = 0;
         pthread_mutex_unlock(&_mutex); 
-#if W_DEBUG_LEVEL > 0
+#if W_DEBUG_LEVEL > 10
+        // This is racy since the containing structure could
+        // have been freed by the time we do this check.  Thus,
+        // we'll remove it.
         {
             membar_enter(); // needed for the assertions?
             w_pthread_lock_t *h =  _holder;
@@ -505,20 +518,16 @@ public:
 };
 
 /**\def USE_PTHREAD_MUTEX
- * \brief Determines that we use pthread-based mutex for queue_based_lock_t
+ * \brief If defined and value is 1, use pthread-based mutex for queue_based_lock_t
  *
- * \bug Must remove mcs_lock.h or make it build w/o USE_PTHREAD_MUTEX
  * \details
  * The Shore-MT release contained alternatives for scalable locks in
  * certain places in the storage manager; it was released with
  * these locks replaced by pthreads-based mutexes.
- * The alternatives were described in \ref JPHAF1, but have not been
- * tested for the Shore 6.0 release. The code for these
- * alternatives is distributed for further experimentation, but it is not
- * not compiled in.  
+ *
+ * You can disable the use of pthreads-based mutexes and use the
+ * mcs-based locks by configuring with --disable-pthread-mutex.
  */
-//#define USE_PTHREAD_MUTEX
-#undef USE_PTHREAD_MUTEX
 
 /**\defgroup SYNCPRIM Synchronization Primitives
  *\ingroup UNUSED 
@@ -541,18 +550,24 @@ public:
 
 typedef w_pthread_lock_t queue_based_block_lock_t; // blocking impl always ok
 #define QUEUE_BLOCK_EXT_QNODE_INITIALIZER PTHREAD_EXT_QNODE_INITIALIZER
+// non-static initialize:
+#define QUEUE_BLOCK_EXT_QNODE_INITIALIZE(x) x._held = NULL
 
-#ifdef USE_PTHREAD_MUTEX
+#if defined(USE_PTHREAD_MUTEX) && USE_PTHREAD_MUTEX==1
 typedef w_pthread_lock_t queue_based_spin_lock_t; // spin impl preferred
-#define QUEUE_SPIN_EXT_QNODE_INITIALIZER PTHREAD_EXT_QNODE_INITIALIZER
 typedef w_pthread_lock_t queue_based_lock_t; // might want to use spin impl
-#define QUEUE_EXT_QNODE_INITIALIZER PTHREAD_EXT_QNODE_INITIALIZER
+#define QUEUE_SPIN_EXT_QNODE_INITIALIZER PTHREAD_EXT_QNODE_INITIALIZER
+#define QUEUE_EXT_QNODE_INITIALIZER      PTHREAD_EXT_QNODE_INITIALIZER
+// non-static initialize:
+#define QUEUE_EXT_QNODE_INITIALIZE(x) x._held = NULL;
 #else
 #include <mcs_lock.h>
 typedef mcs_lock queue_based_spin_lock_t; // spin preferred
-#define QUEUE_SPIN_EXT_QNODE_INITIALIZER MCS_EXT_QNODE_INITIALIZER
 typedef mcs_lock queue_based_lock_t;
-#define QUEUE_EXT_QNODE_INITIALIZER MCS_EXT_QNODE_INITIALIZER
+#define QUEUE_SPIN_EXT_QNODE_INITIALIZER MCS_EXT_QNODE_INITIALIZER
+#define QUEUE_EXT_QNODE_INITIALIZER      MCS_EXT_QNODE_INITIALIZER
+// non-static initialize:
+#define QUEUE_EXT_QNODE_INITIALIZE(x) MCS_EXT_QNODE_INITIALIZE(x)
 #endif
 
 #ifndef SRWLOCK_H
@@ -581,11 +596,11 @@ struct occ_rwlock {
     occ_rwlock();
     ~occ_rwlock();
     /// The normal way to acquire a read lock.
-    void acquire_read(); // no-inline.cpp
+    void acquire_read();
     /// The normal way to release a read lock.
     void release_read();
     /// The normal way to acquire a write lock.
-    void acquire_write(); // no-inline.cpp
+    void acquire_write();
     /// The normal way to release a write lock.
     void release_write();
 
@@ -619,13 +634,7 @@ private:
     pthread_cond_t _write_cond; // paired w/ _read_write_mutex
 };
 
-#ifdef LOCKHACK
-typedef w_list_t<sthread_t, pthread_mutex_t> sthread_list_t;
-typedef w_list_i<sthread_t, pthread_mutex_t> sthread_list_i;
-#else
-typedef w_list_t<sthread_t, queue_based_lock_t> sthread_list_t;
-typedef w_list_i<sthread_t, queue_based_lock_t> sthread_list_i;
-#endif
+typedef w_list_t<sthread_t, queue_based_lock_t>        sthread_list_t;
 
 
 /**\brief Thread class for all threads that use the Shore Storage Manager.
@@ -648,12 +657,10 @@ class sthread_t : public sthread_named_base_t
 {
     friend class sthread_init_t;
     friend class sthread_main_t;
-#if LATCH_CAN_BLOCK_LONG 
-    friend class sthread_priority_list_t;
-#endif
     /* For access to block() and unblock() */
     friend class latch_t;
     /* For access to I/O stats */
+
 
 public:
     static void  initialize_sthreads_package();
@@ -759,6 +766,7 @@ public:
 
 private:
 
+// WITHOUT_MMAP is controlled by configure
 #ifdef WITHOUT_MMAP
     static w_rc_t     set_bufsize_memalign(size_t size, 
                         char *&buf_start /* in/out*/, long system_page_size);
@@ -832,26 +840,30 @@ public:
     /*
      *  Misc
      */
-    // NOTE: this returns a REFERENCE
-    static sthread_t*    &me_lval() ;
+private:
+    // NOTE: this returns a REFERENCE to a pointer
+    /* #\fn static sthread_t*& sthread_t::me_lval()
+     ** \brief Returns a (writable) reference to the a 
+     * pointer to the running sthread_t.
+     * \ingroup TLS
+     */
+    inline static sthread_t*& me_lval() {
+        /**\var sthread_t* _me;
+         * \brief A pointer to the running sthread_t.
+         * \ingroup TLS
+         */
+        static __thread sthread_t* _TLSme(NULL);
+        return _TLSme;
+    }
+public:
     // NOTE: this returns a POINTER
     static sthread_t*    me() { return me_lval(); }
                          // for debugging:
-    pthread_t            myself(); // pthread_t associated with this
-    static w_rand        *tls_rng() { return &me()->_rng; }
-    w_rand               *rng() { return &_rng; }
+    pthread_t            myself(); // pthread_t associated with this 
+    static int           rand(); // returns an int in [0, 2**31)
+    static double        drand(); // returns a double in [0.0, 1)
+    static int           randn(int max); // returns an int in [0, max)
 
-    static unsigned int  rand() { return tls_rng()->rand(); }
-    static double        drand() {return tls_rng()->drand(); }
-    static unsigned int  randn(unsigned int max) {
-        return tls_rng()->randn(max);
-    }
-    
-    // return an int in [lo, hi]
-    static unsigned int  randn(unsigned int lo, unsigned int hi) {
-        return tls_rng()->randn(lo, hi);
-    }
-    
     /* XXX  sleep, fork, and wait exit overlap the unix version. */
 
     // sleep for timeout milliseconds
@@ -877,6 +889,8 @@ public:
     // should be removed when RTTI is supported
     virtual smthread_t*        dynamic_cast_to_smthread();
     virtual const smthread_t*  dynamic_cast_to_const_smthread() const;
+
+    w_rc_t::errcode_t    error_code() const { return _rce;}
 
 protected:
     sthread_t(
@@ -919,17 +933,10 @@ private:
     w_link_t                    _link;        // protected by _wait_lock
 
     w_link_t                    _class_link;    // used in _class_list,
+                                 // protected by _class_list_lock
+    static sthread_list_t*      _class_list;
+    static queue_based_lock_t   _class_list_lock; // for protecting _class_list
 
-    w_rand                      _rng;
-    
-    // protected by _class_list_lock
-    static sthread_list_t* _class_list;
-
-#ifdef LOCKHACK
-    static pthread_mutex_t _class_list_lock; // for protecting _class_list
-#else
-    static queue_based_lock_t _class_list_lock; // for protecting _class_list
-#endif
 
     /* XXX alignment probs in derived thread classes.  Sigh */
     // fill4                       _ex_fill;
@@ -955,6 +962,9 @@ private:
     static int           _disk_buffer_disalignment;
     static size_t        _disk_buffer_size;
     static char *        _disk_buffer;
+public:
+    // export so smthread can read it and so latch/srwlock can write it:
+    sthread_stats        SthreadStats;
 };
 
 extern ostream &operator<<(ostream &o, const sthread_t &t);
@@ -981,121 +991,14 @@ protected:
 
 
 /**\cond skip */
-#if LATCH_CAN_BLOCK_LONG 
-// TODO: Get rid of the prioritized list.
-// It is used by latches if LATCH_CAN_BLOCK_LONG. 
-// See if there are ever different priority threads that are 
-// ever waiting on the same condition. If not
-// you can use a regular list.
-class sthread_priority_list_t 
-    : public w_descend_list_t<sthread_t, queue_based_lock_t, sthread_t::priority_t>  {
-public:
-    NORET            sthread_priority_list_t(); 
-    
-    NORET            ~sthread_priority_list_t()   {};
-private:
-    // disabled
-    NORET            sthread_priority_list_t(
-    const sthread_priority_list_t&);
-    sthread_priority_list_t&    operator=(const sthread_priority_list_t&);
-};
-/**\endcond skip */
-#endif
 
-#define MUTEX_ACQUIRE(mutex)    W_COERCE((mutex).acquire())
-#define MUTEX_RELEASE(mutex)    (mutex).release()
+#define MUTEX_ACQUIRE(mutex)    W_COERCE((mutex).acquire());
+#define MUTEX_RELEASE(mutex)    (mutex).release();
 #define MUTEX_IS_MINE(mutex)    (mutex).is_mine()
 
-/**\def CRITICAL_SECTION(name, lock)
- *
- * This macro starts a critical section protected by the given lock
- * (2nd argument).  The critical_section structure it creates is
- * named by the 1st argument.
- * The rest of the scope (in which this macro is used) becomes the
- * scope of the critical section, since it is the destruction of this
- * critical_section structure that releases the lock.
- *
- * The programmer can release the lock early by calling \<name\>.pause()
- * or \<name\>.exit().
- * The programmer can reacquire the lock by calling \<name\>.resume() if
- * \<name\>.pause() was called, but not after \<name\>.exit().
- *
- * \sa critical_section
- */
-#define CRITICAL_SECTION(name, lock) critical_section<__typeof__(lock)&> name(lock)
-
-template<class Lock>
-struct critical_section;
-
-/**\brief Helper class for CRITICAL_SECTION idiom (macro).
- *
- * This templated class does nothing; its various specializations 
- * do the work of acquiring the given lock upon construction and
- * releasing it upon destruction. 
- * See the macros:
- * - SPECIALIZE_CS(Lock, Extra, ExtraInit, Acquire, Release)  
- * - CRITICAL_SECTION(name, lock) 
- */
-template<class Lock>
-struct critical_section<Lock*&> : critical_section<Lock&> {
-    critical_section<Lock*&>(Lock* mutex) : critical_section<Lock&>(*mutex) { }
-};
-
-/*
- * NOTE: I added ExtraInit to make the initialization happen so that
- * assertions about holding the mutex don't fail.
- * At the same time, I added a holder to the w_pthread_lock_t
- * implementation so I could make assertions about the holder outside
- * the lock implementation itself.  This might seem like doubly
- * asserting, but in the cases where the critical section isn't
- * based on a pthread mutex, we really should have this clean
- * initialization and the check the assertions.
- */
-
-/**\def SPECIALIZE_CS(Lock, Extra, ExtraInit, Acquire, Release) 
- * \brief Macro that enables use of CRITICAL_SECTION(name,lock)
- *\addindex SPECIALIZE_CS
- * 
- * \details
- * Create a templated class that holds 
- *   - a reference to the given lock and
- *   - the Extra (2nd macro argument)
- *
- *  and it
- *   - applies the ExtraInit and Acquire commands upon construction,
- *   - applies the Release command upon destruction.
- *
- */
-#define SPECIALIZE_CS(Lock,Extra,ExtraInit,Acquire,Release) \
-template<>  struct critical_section<Lock&> { \
-critical_section(Lock &mutex) \
-    : _mutex(&mutex)          \
-    {   ExtraInit; Acquire; } \
-    ~critical_section() {     \
-        if(_mutex)            \
-            Release;          \
-            _mutex = NULL;    \
-        }                     \
-    void pause() { Release; } \
-    void resume() { Acquire; }\
-    void exit() { Release; _mutex = NULL; } \
-    Lock &hand_off() {        \
-        Lock* rval = _mutex;  \
-        _mutex = NULL;        \
-        return *rval;         \
-    }                         \
-private:                      \
-    Lock* _mutex;             \
-    Extra;                    \
-    void operator=(critical_section const &);   \
-    critical_section(critical_section const &); \
-}
-
-
-// I undef-ed this and found all occurrances of CRITICAL_SECTION with this.
-// and hand-checked them.
-SPECIALIZE_CS(pthread_mutex_t, int _dummy,  (_dummy=0), 
-    pthread_mutex_lock(_mutex), pthread_mutex_unlock(_mutex));
+// critical_section.h contains the macros needed for the following
+// SPECIALIZE_CS
+#include "critical_section.h"
 
 // tatas_lock doesn't have is_mine, but I changed its release()
 // to Release and through compiling saw everywhere that uses release,
@@ -1104,11 +1007,9 @@ SPECIALIZE_CS(tatas_lock, int _dummy, (_dummy=0),
     _mutex->acquire(), _mutex->release());
 
 // queue_based_lock_t asserts is_mine() in release()
-// SPECIALIZE_CS(queue_based_lock_t, queue_based_lock_t::ext_qnode _me, (_me._held=0), 
 SPECIALIZE_CS(w_pthread_lock_t, w_pthread_lock_t::ext_qnode _me, (_me._held=0), 
     _mutex->acquire(&_me), _mutex->release(&_me));
-
-#ifndef USE_PTHREAD_MUTEX
+#if !defined(USE_PTHREAD_MUTEX) || USE_PTHREAD_MUTEX==0
 SPECIALIZE_CS(mcs_lock, mcs_lock::ext_qnode _me, (_me._held=0), 
     _mutex->acquire(&_me), _mutex->release(&_me));
 #endif
@@ -1118,8 +1019,6 @@ SPECIALIZE_CS(occ_rwlock::occ_rlock, int _dummy, (_dummy=0),
 
 SPECIALIZE_CS(occ_rwlock::occ_wlock, int _dummy, (_dummy=0), 
     _mutex->acquire(), _mutex->release());
-
-
 
 inline sthread_t::priority_t
 sthread_t::priority() const
@@ -1136,36 +1035,8 @@ sthread_t::status() const
 #include <w_strstream.h>
 // Need string.h to get strerror_r 
 #include <string.h>
+/**\endcond skip */
 
-#define DO_PTHREAD_BARRIER(x) \
-{   int res = x; \
-    if(res && res != PTHREAD_BARRIER_SERIAL_THREAD) { \
-       w_ostrstream S; \
-       S << "Unexpected result from " << #x << " " << res << " "; \
-       char buf[100]; \
-       (void) strerror_r(res, &buf[0], sizeof(buf)); \
-       S << buf << ends; \
-       W_FATAL_MSG(fcINTERNAL, << S.c_str()); \
-    }  \
-}
-#define DO_PTHREAD(x) \
-{   int res = x; \
-    if(res) { \
-       w_ostrstream S; \
-       S << "Unexpected result from " << #x << " " << res << " "; \
-       char buf[100]; \
-       (void) strerror_r(res, &buf[0], sizeof(buf)); \
-       S << buf << ends; \
-       W_FATAL_MSG(fcINTERNAL, << S.c_str()); \
-    }  \
-}
-#define DO_PTHREAD_TIMED(x) \
-{   int res = x; \
-    if(res && res != ETIMEDOUT) { \
-        W_FATAL_MSG(fcINTERNAL, \
-                <<"Unexpected result from " << #x << " " << res); \
-    } \
-}
 
 /*<std-footer incl-file-exclusion='STHREAD_H'>  -- do not edit anything below this line -- */
 

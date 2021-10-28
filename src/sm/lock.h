@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='LOCK_H'>
 
- $Id: lock.h,v 1.65 2010/06/08 22:28:55 nhall Exp $
+ $Id: lock.h,v 1.67 2010/10/27 17:04:23 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -70,8 +70,6 @@ class lock_core_m;
 class lock_m : public lock_base_t {
 public:
 
-    friend class xct_lock_info_t;
-    friend class lock_head_t;
     typedef lock_base_t::lmode_t lmode_t;
     typedef lock_base_t::duration_t duration_t;
     typedef lock_base_t::status_t status_t;
@@ -108,12 +106,15 @@ public:
         timeout_in_ms               timeout = WAIT_SPECIFIED_BY_XCT,
         lmode_t*                    prev_mode = 0,
         lmode_t*                    prev_pgmode = 0,
-        lockid_t**                  nameInLockHead = 0,
-        const bool                  bIgnoreParents = false);
+        lockid_t**                  nameInLockHead = 0
+#ifdef SM_DORA
+        , const bool                bIgnoreParents = false
+#endif
+        );
      
-	/* force the core to acquire a lock, regardless of 
-	 * subsuming  parent locks
-	 */
+    /* force the core to acquire a lock, regardless of 
+     * subsuming  parent locks
+     */
     rc_t                        lock_force(
         const lockid_t&             n,
         lmode_t                     m,
@@ -121,22 +122,21 @@ public:
         timeout_in_ms               timeout = WAIT_SPECIFIED_BY_XCT,
         lmode_t*                    prev_mode = 0,
         lmode_t*                    prev_pgmode = 0,
-        lockid_t**                  nameInLockHead = 0,
-        const bool                  bIgnoreParents = false);
+        lockid_t**                  nameInLockHead = 0
+#ifdef SM_DORA
+        , const bool                bIgnoreParents = false
+#endif
+        );
 
     rc_t                        unlock(const lockid_t& n);
 
-    rc_t                        unlock_duration(
-        duration_t                  duration,
-        bool                        all_less_than,
-        bool                        dont_clean_exts);
+    rc_t                        unlock_duration(duration_t duration);
+    rc_t                        free_extents(duration_t duration);
     
     rc_t                        dont_escalate(
         const lockid_t&              n,
         bool                         passOnToDescendants = true);
 
-    bool			sli_query(lockid_t const &n);
-    
     rc_t                        query(
         const lockid_t&              n, 
         lmode_t&                     m, 
@@ -155,9 +155,6 @@ public:
     static rc_t                 open_quark();
     static rc_t                 close_quark(bool release_locks);
 
-    static void			set_sli_enabled(bool enable);
-    void 			disable_sli(xct_lock_info_t* theLockInfo);
-
 private:
     lock_core_m*                core() const { return _core; }
 
@@ -169,8 +166,11 @@ private:
         duration_t                   duration,
         timeout_in_ms                timeout,
         bool                         force,
-        lockid_t**                   nameInLockHead,
-        const bool                   bIgnoreParents = false);
+        lockid_t**                   nameInLockHead
+#ifdef SM_DORA
+        , const bool                bIgnoreParents = false
+#endif
+        );
 
     rc_t                        _query_implicit(
         const lockid_t&              n,

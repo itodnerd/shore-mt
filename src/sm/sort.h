@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='SORT_H'>
 
- $Id: sort.h,v 1.30 2010/05/26 01:20:45 nhall Exp $
+ $Id: sort.h,v 1.31 2010/08/23 14:28:18 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -118,7 +118,7 @@ class run_scan_t;
  * - sorting on one or more keys
  * - key types may be 
  *    - fundamental (predefined) or user-defined
- *    - derived or embedded
+ *    - derived or embedded (subject to certain limitations - see \ref SORTKEYS )
  * - records being sorted may require marshalling when read from disk 
  *   to memory and unmarshalling when written back to disk
  * - the result of the sort can be 
@@ -332,6 +332,11 @@ class run_scan_t;
  * Sort keys may be located in the input records or derived from 
  * the input records.
  * Index keys that are different from the sort key are derived.
+ * \note Keys that are located in the input records may not span pages.
+ * The complexity to do key-comparisons (in parts, across pages) is 
+ * not implemented. To get around this, you may 
+ * put the keys in the record headers
+ * or use marshalling to collect the keys from the records.
  *
  * When the output is to be a sorted copy of the input file, the
  * keys do not appear in the output file except inasmuch as they

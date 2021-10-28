@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: mmap.cpp,v 1.1.2.3 2010/01/28 04:53:42 nhall Exp $
+ $Id: mmap.cpp,v 1.4 2010/08/03 14:24:53 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -42,7 +42,7 @@ char * trymap(
 ) 
 {
 #ifdef HAVE_HUGETLBFS
-    w_rc_t	e;
+    w_rc_t    e;
     e = sthread_t::set_hugetlbfs_path(HUGETLBFS_PATH);
     if (e.is_error()) W_COERCE(e);
 #endif
@@ -62,16 +62,20 @@ void test_write(char *b, size_t s)
      // Make sure we can write each address
      // Since it's SM_PAGESIZE-aligned, we should be able
      // to write as integers
-     int numpages = s/SM_PAGESIZE;
-     int intsperpage = SM_PAGESIZE/sizeof(int);
+     long sz = s;
+     long numpages = sz/SM_PAGESIZE;
+     int intsperpage = int(SM_PAGESIZE/sizeof(int));
      for (int p=0; p< numpages; p++)
      {
-	 for (int i=0; i< intsperpage; i++)
-	 {
-	 	int  off = p*SM_PAGESIZE + i*sizeof(int);
-		int *target = (int *)(b+off);
-		*target = 0;
-	 }
+         // to catch some bug:
+         w_assert0(numpages == long(s)/SM_PAGESIZE);
+         w_assert0(p < int(s/SM_PAGESIZE));
+         for (int i=0; i< intsperpage; i++)
+         {
+            int  off = p*SM_PAGESIZE + i*sizeof(int);
+            int *target = (int *)(b+off);
+            *target = 0;
+         }
      }
      cerr << "test_write size= " << s << " success" << endl;
 }

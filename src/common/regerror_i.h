@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='REGERROR_I_H'>
 
- $Id: regerror_i.h,v 1.8.2.3 2010/01/28 04:53:23 nhall Exp $
+ $Id: regerror_i.h,v 1.9 2010/05/26 01:20:12 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

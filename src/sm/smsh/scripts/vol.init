@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: vol.init,v 1.36.2.10 2010-05-20 05:43:28 nhall Exp $
+#  $Id: vol.init,v 1.41 2010/12/08 17:37:46 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -51,7 +51,7 @@ if {$volid == 0} {
     # establish default volume id
     set volid [lindex [lindex $smsh_device_list 0] 2]
 
-    verbose volid = $volid
+    verbose default volid = $volid
 
     verbose creating devices
 	foreach i $smsh_device_list {
@@ -65,16 +65,17 @@ if {$volid == 0} {
 		set existing 0
 
 		if [ is_set dont_force_reformat ] {
+		    verbose no force noforce
 			set force_arg noforce
 
 			set err 0
 			catch {sm mount_dev $dev $vol} err
-			if {$err == 1} {
-			set force_arg noforce
-			verbose Result of mount: $err ...
-			set existing 1
-			} else  {
-			set force_arg force
+				if {$err == 1} {
+				set force_arg noforce
+				verbose Result of mount: $err ...
+				set existing 1
+				} else  {
+				set force_arg force
 			}
 			verbose "dismounting " $dev "..."
 			catch {sm dismount_dev $dev} err

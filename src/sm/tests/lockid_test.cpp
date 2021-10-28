@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: lockid_test.cpp,v 1.2 2010/06/15 17:30:11 nhall Exp $
+ $Id: lockid_test.cpp,v 1.5 2010/12/08 17:37:49 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -30,10 +30,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include "w_defines.h"
 
 /*  -- do not edit anything above this line --   </std-header>*/
-
-#include <w_stream.h>
-#include <sys/types.h>
-#include <cassert>
 #include "sm_vas.h"
 
 // To get the extid_t:
@@ -43,7 +39,7 @@ vid_t    vol(1000);
 stid_t   stor(vol,900);
 lpid_t   page(stor, 50);
 rid_t    rec(page, 6);
-extid_t  _extent;
+extid_t  extent;
 kvl_t    kvl;
 typedef lockid_t::user1_t user1_t;
 typedef lockid_t::user2_t user2_t;
@@ -77,7 +73,7 @@ void dump(lockid_t &l)
     l.extract_extent(extent);
     cout << "\t extent()=" << l.extent() << " (extid_t=" << extent << ")" << endl;
 
-#if 0
+#if  defined(DEBUG_DESPERATE)
     // Removed b/c it's hash-based and makes the -out files differ
     // and I do want to compare...
     kvl_t kvl;
@@ -101,7 +97,7 @@ void dump(lockid_t &l)
     l.extract_user4(u4);
     cout << "\t u4()=" << l.u4() << " ( user4_t=" << u4 << ")" << endl;
 
-#if 0
+#if defined(DEBUG_DESPERATE)
     // debugging
     {
     cout << "hex/dec dump - b" << endl;
@@ -139,8 +135,8 @@ void dump(lockid_t &l)
 int
 main(int /*argc*/, char* /*argv*/[])
 {
-    _extent.vol = vol;
-    _extent.ext = 33;
+    extent.vol = vol;
+    extent.ext = 33;
 
     const char     *keybuf = "Admiral Richard E. Byrd";
     const char     *elembuf= "Most of the confusion in the world comes from not knowing how little we need.";
@@ -153,12 +149,8 @@ main(int /*argc*/, char* /*argv*/[])
         <<  "\t store " << stor << endl
         <<  "\t page " << page << endl
         <<  "\t rec " << rec << endl
-#if 0
-      // Removed b/c it's hash-based and makes the -out files differ
-      // and I do want to compare...
-	 <<  "\t kvl " << kvl << endl
-#endif
-	<<  "\t extent " << _extent << endl
+        <<  "\t kvl " << kvl << endl
+        <<  "\t extent " << extent << endl
         <<  "\t u1 " << u1 << endl
         <<  "\t u2 " << u2 << endl
         <<  "\t u3 " << u3 << endl
@@ -189,17 +181,13 @@ main(int /*argc*/, char* /*argv*/[])
         dump(l);
         cout << "}" << endl;
     }
-#if 0
-    // Removed b/c it's hash-based and makes the -out files differ
-    // and I do want to compare...
     {
         lockid_t l(kvl);
         cout << "Kvl lock " << l << endl;
         cout << "}" << endl;
     }
-#endif    
     {
-        lockid_t l(_extent);
+        lockid_t l(extent);
         cout << "Extent lock " << l << endl;
         dump(l);
         cout << "}" << endl;

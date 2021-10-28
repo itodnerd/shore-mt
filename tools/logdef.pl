@@ -2,7 +2,7 @@
 
 # <std-header style='perl' orig-src='shore'>
 #
-#  $Id: logdef.pl,v 1.15 2010/06/08 22:29:23 nhall Exp $
+#  $Id: logdef.pl,v 1.17 2010/10/27 17:04:32 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -66,6 +66,7 @@ open FUNC,  ">logfunc_gen.h"	or die "cannot open logfunc_gen.h\n";
 open TYPE,  ">logtype_gen.h"	or die "cannot open logtype_gen.h\n";
 open DEF,   ">logdef_gen.cpp"	or die "cannot open logdef_gen.cpp\n";
 open STUB,  ">logstub_gen.cpp"	or die "cannot open logstub_gen.cpp\n";
+open FUDGE,  ">logfudge_gen.cpp"	or die "cannot open logfudge_gen.cpp\n";
 open REDO,  ">redo_gen.cpp"	or die "cannot open redo_gen.cpp\n";
 open UNDO,  ">undo_gen.cpp"	or die "cannot open undo_gen.cpp\n";
 open STR,   ">logstr_gen.cpp"	or die "cannot open logstr_gen.cpp\n";
@@ -115,6 +116,8 @@ print FUNC $header;
 print TYPE $header;
 print DEF $header;
 print STUB $header;
+print FUDGE $header;
+print FUDGE "\n\n double logfudge_factors[] = {\n";
 print REDO $header;
 print UNDO $header;
 print STR $header;
@@ -136,14 +139,14 @@ while (<INPUT>) {
 	chop;
     }
     s/\s+/ /g;
-    my ($type, $attr, $arg) = split(/[ \t\n]+/, $_, 3);
+    my ($type, $attr, $fudge, $arg) = split(/[ \t\n]+/, $_, 4);
     chop $arg;
 
     my ($xflag, $sync, $redo, $undo, $format, $aflag, $logical) = split(//, $attr);
     my $cat = &get_cat($redo, $undo, $format, $logical);
     
     printf(TYPE "\tt_$type = %d,\n", $unique++);
-    &def_rec($type, $xflag, $aflag, $sync, $redo, $undo, $cat, $arg);
+    &def_rec($type, $xflag, $aflag, $sync, $redo, $undo, $cat, $fudge, $arg);
 				# 
     print REDO "\tcase t_$type : \n";
     if ($redo) {
@@ -168,6 +171,7 @@ printf(TYPE "\tt_max_logrec = %d\n", $unique);
 print TYPE "};\n";
 
 print FUNC "\n\n#endif\n";
+print FUDGE "\n\n 0.0 }; \n";
 
 exit(0);
 
@@ -184,7 +188,7 @@ sub get_cat {
 }
 
 sub def_rec {
-    my ($type, $xflag, $aflag, $sync, $redo, $undo, $cat, $arg) = @_;
+    my ($type, $xflag, $aflag, $sync, $redo, $undo, $cat, $fudge, $arg) = @_;
     my ($class) = $type . "_log";
     my ($has_idx);
 
@@ -212,8 +216,8 @@ CLASSDEF
     # see if arg contains "int idx"
     $arg =~ /int\s+idx/ && do { $has_idx=1; };
     my $real = join(', ', grep(s/^.*\s+(\w+)$/$1/, split(/, /, $arg)));
-    # print "arg = $arg\n";
-    # print "real = $real\n";
+	# print "arg = $arg\n";
+	# print "real = $real\n";
     print "$type: cat = $cat\n";
 
     if ($xflag)  {
@@ -235,10 +239,13 @@ CLASSDEF
 	print STUB ";\n";
 	print STUB "    if (should_log)  {\n";
 	print STUB "        logrec_t* logrec;\n";
+	print FUDGE " $fudge, \n";
 	if ($page eq "page") {
-	    print STUB "        W_DO(xd->get_logbuf(logrec, &page));\n";
+	    print STUB " // fudge $fudge \n";
+	    print STUB "        W_DO(xd->get_logbuf(logrec, t_$type, &page));\n";
 	} else {
-	    print STUB "        W_DO(xd->get_logbuf(logrec));\n";
+	    print STUB " // fudge $fudge \n";
+	    print STUB "        W_DO(xd->get_logbuf(logrec, t_$type));\n";
 	}
         print STUB "        new (logrec) $class($real);\n";	   
 	if ($page eq "page") {

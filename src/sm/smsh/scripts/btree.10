@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: btree.10,v 1.9 1999/06/07 19:05:12 kupsch Exp $
+#  $Id: btree.10,v 1.10 2010/08/03 14:24:48 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -31,11 +31,13 @@
 #  Load a btree, and verify its content
 #  Like btree.1 but it uses a very long key 
 #
+#
 
 set save_short_form_len $short_form_len
-set short_form_len 1000
+source $script_dir/vol.init
+set short_form_len $max_btree_entry_size 
 echo
-echo RUNNING: btree.1 from btree.10
+echo RUNNING: btree.1 from btree.10 with $short_form_len
 source $script_dir/btree.1
 set short_form_len $save_short_form_len
 unset save_short_form_len

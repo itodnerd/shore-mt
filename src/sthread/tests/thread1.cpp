@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: thread1.cpp,v 1.51.2.11 2010/03/19 22:20:03 nhall Exp $
+ $Id: thread1.cpp,v 1.55 2010/12/08 17:37:55 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -515,9 +515,7 @@ void overflow_thread_t::recurse(unsigned overflow, char *sp0, char *last)
 	/* XXX This is supposed to be a huge stack allocation, don't
 	   get rid of it */
 	char	on_stack[overflowFrameSize];
-#ifdef PURIFY
-        memset(on_stack, '\0', overflowFrameSize);
-#endif
+	memset(on_stack, '\0', overflowFrameSize);
 
 	last = last;	/* create variable use so compilers don't complain */
 
@@ -551,21 +549,8 @@ void overflow_thread_t::recurse(unsigned overflow, char *sp0, char *last)
 
 void overflow_thread_t::run()
 {
-#if 0 && defined(__GNUG__)
-	/* XXX This is supposed to be a huge stack allocation, don't
-	   get rid of it */
-	char	on_stack[StackOverflow];
-	int	i;
-
-	i = on_stack[0];	// save it from the optimizer
-	
-	/* make sure the context switch checks can catch it */
-	for (i = 0; i < 100; i++)
-		yield();
-#else
 	char	sp0;
 	recurse(StackOverflow, &sp0, &sp0);
-#endif
 }
 
 

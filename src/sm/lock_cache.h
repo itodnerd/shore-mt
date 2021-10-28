@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore' incl-file-exclusion='LOCK_X_H'>
 
- $Id: lock_cache.h,v 1.1 2010/06/15 17:30:07 nhall Exp $
+ $Id: lock_cache.h,v 1.8 2010/10/27 17:04:23 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -58,33 +58,61 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 /*  -- do not edit anything above this line --   </std-header>*/
 
-struct lock_cache_elem_t : public w_base_t {
+class lock_cache_elem_t : public w_base_t {
+private:
+    lock_base_t::lmode_t     _mode; // sometimes the lock mgr needs a ref
+    // to a mode. Arg.
+public:
     lockid_t                lock_id;
-    lock_base_t::lmode_t    mode;
+    bool                    valid;
     lock_request_t*         req;
 
     lock_cache_elem_t()
-    : mode(NL),
+    : _mode(NL),
+      valid(false),
       req(0)
     {
     }
+
+    lock_base_t::lmode_t mode() const { return req? req->mode() : NL; }
+    lock_base_t::lmode_t &cache_mode() { _mode = mode(); return _mode; } 
 
 
     const lock_cache_elem_t &operator=(const lock_cache_elem_t &r)
     {
         lock_id = r.lock_id;
-        mode = r.mode;
+        valid = r.valid;
         req = r.req;
         return *this;
     }
 
     void clear() {
-        mode = NL; // NL == invalid
+        _mode = NL;
+        valid = false;
+        req = NULL;
+        lock_id.zero();
     }
 
-    void dump() const {
-        if(mode != NL) {
-            cout << "\tlock_id " << lock_id << " mode " << mode << endl;
+    void dump(ostream &out) const {
+        if(valid) 
+        {
+            out << "\tlock_id " << lock_id 
+                << " _mode " << _mode 
+                << endl;
+            if(req) {
+                out << " request: ";
+                out << *req;
+            } 
+            cout << endl;
+        }
+        if(req && (_mode != req->mode())) {
+            // I'm printing this just to show that the
+            // modes aren't always correct. The caller has
+            // to use cache_mode to get a handle on
+            // the mode, and that will ensure that it's
+            // current.
+            // smsh script lock.upgrade.release demonstrates this.
+            out << " ***** MODE MISMATCH IN LOCK CACHE " << endl;
         }
     }
 
@@ -97,29 +125,25 @@ private:
 template <int S, int L>
 class lock_cache_t : public w_base_t {
     lock_cache_elem_t        buf[S][L];
+    // First index is the bucket; 
+    // Second index is the lock level (granularity/lspace)
+    // We segregate the items by granularity to make
+    // it easy to purge the cache of all locks of a given
+    // granularity (or higher or lower).
 public:
-    void dump() const {
-        for(int j=0; j < L; j++) 
-        for(int i=0; i < S; i++) buf[i][j].dump();
-    }
     void reset() {
-        // for(int i=0; i < S; i++) buf[i].lock_id.zero();
-        // zeroing out the lock id doesn't change the mode and
-        // thereby make the slot available!
         for(int j=0; j < L; j++) 
         for(int i=0; i < S; i++) buf[i][j].clear();
     }
     lock_cache_elem_t* probe(const lockid_t& id, int l) {
         // probe a single bucket. Caller should verify its contents
-        uint4_t idx = w_hash(id);
+        uint4_t idx = id.hash();
         return  &buf[idx % S][l];
     }
     lock_cache_elem_t* search(const lockid_t& id) {
         // probe a single bucket. If it fails, oh well.
         lock_cache_elem_t* p = probe(id, id.lspace());
-        return (p->lock_id == id && p->mode != NL)? p : NULL;
-        //If probe finds one with a different (presumably higher-in
-        //hierarcy) lspace, we return NULL.
+        return (p->lock_id == id && p->valid)? p : NULL;
     }
 
     // Remove from the table all locks subsumed by this one.
@@ -131,12 +155,19 @@ public:
         {
             for(int i=0; i < S; i++) {
                 lock_cache_elem_t *p = &buf[i][k];
-                if(p->mode == NL) continue;
+                if(! p->valid ) continue;
+
+                // make a copy
                 lockid_t l(p->lock_id);
-                l.truncate(_l.lspace());
-                if(l == _l) {
+                // truncate to the lspace of the incoming argument
+                w_rc_t rc = l.truncate(_l.lspace());
+                // if that makes a lockid that matches the argument,
+                // then the argument is a parent.
+                //
+                if (!rc.is_error() && (l == _l)) {
                     p->clear(); // make it available
                 }
+                // else, ignore it.
             }
         }
     }
@@ -145,34 +176,57 @@ public:
         for(int j=0; j < L; j++) 
         for(int i=0; i < S; i++) compact(buf[i][j].lock_id);
     }
-    bool put(const lockid_t& id, lock_base_t::lmode_t m, 
+
+    // Used by unit tests only, to verify that a parent lock
+    // has no children in the cache after a compact is done.
+    bool find_child(const lockid_t &parent, lockid_t &found ) const {
+        // Look only at the entries whose lspace is > than
+        // the parent's. Some will make no sense because they
+        // aren't in the hierarchy.
+        int j = parent.lspace()+1;
+        for(; j < L; j++)  {
+            for(int i=0; i < S; i++) {
+               lockid_t tmp =     buf[i][j].lock_id;
+               w_rc_t rc=tmp.truncate(parent.lspace());
+               if(!rc.is_error()) {
+                   // now see if the parent matches this 
+                   // truncated  lockid
+                   if(parent == tmp) {
+                      found = buf[i][j].lock_id;
+                      return true;
+                   }
+               }
+            }
+        }
+        return false;
+    }
+    void dump(ostream &out) const {
+        for(int j=0; j < L; j++) 
+        for(int i=0; i < S; i++) {
+                if(buf[i][j].valid)  {
+                    out << "L " << j << " i "  << i ;
+                    buf[i][j].dump(out);
+                }
+            }
+    }
+
+    // Return true iff a lock in the table was evicted.
+    bool put(const lockid_t& id, lock_base_t::lmode_t /*m*/, 
                 lock_request_t* req, lock_cache_elem_t &victim) 
     {
-        lock_cache_elem_t* p = probe(id, id.lspace());
         bool evicted = true;
-        // mode is NL means it's an empty slot.
-        if(p->mode != NL) {
+        lock_cache_elem_t* p = probe(id, id.lspace());
+        // p->valid means the bucket is in use, i.e., contains an entry
+        if(p->valid) 
+        {
             // don't replace entries that are higher in the hierarchy!
-            // Hash *might* take us to an that which happens to
-            // subsume our lock.
-            if(p->lock_id.lspace() >= id.lspace())
-            {
-                // Element in table has equal or higher granularity.
-                // Replace it.
-                victim = *p;
-            } else {
-                // item we're trying to insert has
-                // higher granularity.  Don't insert.
-                victim.lock_id = id;
-                victim.req = req;
-                victim.mode = m;
-                return true; // never mind...
-                // make it look like the one we requested was
-                // evicted b/c it's subsumed by the entry found
-                // in the table, although the modes might differ.
-                // OR it's a hash collision and the
-                // lower-granularity lock wins.
-            }
+            // Hash *might* take us to an entry that happens to
+            // subsume our lock. (no longer the case?)
+            w_assert0(p->lock_id.lspace() == id.lspace());
+
+            // Element in table has equal or higher granularity.
+            // Replace it.
+            victim = *p;
         } else {
             // empty slot. Use it. Didn't evict anyone.
             evicted = false;
@@ -180,7 +234,7 @@ public:
     
         p->lock_id = id;
         p->req = req;
-        p->mode = m;
+        p->valid = true;
         return evicted;
     }
 };

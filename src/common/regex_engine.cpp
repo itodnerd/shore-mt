@@ -1,6 +1,6 @@
 /*<std-header orig-src='regex'>
 
- $Id: regex_engine.cpp,v 1.12.2.3 2010/03/19 22:19:19 nhall Exp $
+ $Id: regex_engine.cpp,v 1.14 2010/07/29 21:22:41 nhall Exp $
 
 
 */
@@ -290,7 +290,9 @@ dissect(struct match *m, char *start, char *stop, sopno startst, sopno stopst)
     register char *ssp;    /* start of string matched by subsubRE */
     register char *sep;    /* end of string matched by subsubRE */
     register char *oldssp;    /* previous ssp */
-    register char * MAYBE_UNUSED dp;
+#ifdef REDEBUG
+    register char *dp;
+#endif
 
     AT("diss", start, stop, startst, stopst);
     sp = start;
@@ -349,8 +351,12 @@ dissect(struct match *m, char *start, char *stop, sopno startst, sopno stopst)
             esub = es - 1;
             /* did innards match? */
             if (slow(m, sp, rest, ssub, esub) != NULL) {
+#ifdef REDEBUG
                 dp = dissect(m, sp, rest, ssub, esub);
                 re_assert(dp == rest);
+#else 
+                (void) dissect(m, sp, rest, ssub, esub);
+#endif
             } else        /* no */
                 re_assert(sp == rest);
             sp = rest;
@@ -387,8 +393,12 @@ dissect(struct match *m, char *start, char *stop, sopno startst, sopno stopst)
             }
             re_assert(sep == rest);    /* must exhaust substring */
             re_assert(slow(m, ssp, sep, ssub, esub) == rest);
+#ifdef REDEBUG
             dp = dissect(m, ssp, sep, ssub, esub);
             re_assert(dp == sep);
+#else
+            (void) dissect(m, ssp, sep, ssub, esub);
+#endif
             sp = rest;
             break;
         case OCH_:
@@ -422,8 +432,12 @@ dissect(struct match *m, char *start, char *stop, sopno startst, sopno stopst)
                 else
                     re_assert(OP(m->g->strip[esub]) == O_CH);
             }
+#ifdef REDEBUG
             dp = dissect(m, sp, rest, ssub, esub);
             re_assert(dp == rest);
+#else
+            (void) dissect(m, sp, rest, ssub, esub);
+#endif
             sp = rest;
             break;
         case O_PLUS:

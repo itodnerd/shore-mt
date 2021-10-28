@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='SYSDEFS_H'>
 
- $Id: sysdefs.h,v 1.40.2.4 2010/01/12 02:01:40 nhall Exp $
+ $Id: sysdefs.h,v 1.42 2010/12/08 17:37:43 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -37,14 +37,8 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
-
 #include <climits>
-#ifdef Decstation
-#include <sysent.h>
-#endif
-
 #include <w_stream.h>
-
 #include <w.h>
 #include <sthread.h>
 

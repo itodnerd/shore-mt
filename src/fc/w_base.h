@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='W_BASE_H'>
 
- $Id: w_base.h,v 1.80 2010/06/15 17:24:25 nhall Exp $
+ $Id: w_base.h,v 1.83 2012/01/02 17:02:13 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -78,9 +78,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #endif
 /* end configuration definitions                       */
 /*******************************************************/
-
-
-#define W_UNIX
 
 #ifdef __GNUG__
 #pragma interface
@@ -172,17 +169,9 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #define    W_IFNTRACE(x)    x
 #endif
 
-#if defined(W_DEBUG_SPACE)
-void     w_space(int line, const char *file);
-#define W_SPACE w_space(__LINE__,__FILE__)
-#else
-#define W_SPACE
-#endif
-
 /// Default assert/debug level is 0.
 #define w_assert0(x)    do {                        \
     if (!(x)) w_base_t::assert_failed(#x, __FILE__, __LINE__);    \
-    W_SPACE;                            \
 } while(0)
 
 #ifndef W_DEBUG_LEVEL
@@ -270,12 +259,7 @@ public:
      */
     typedef unsigned char    u_char;
     typedef unsigned short    u_short;
-#ifdef FC_COMPAT_32BIT_ULONG
-    /* keep u_long 32 bits on a 64 bit platform; see shore.def */
-    typedef unsigned        u_long;
-#else
     typedef unsigned long    u_long;
-#endif
     // typedef w_rc_t        rc_t;
 
     /*
@@ -298,6 +282,10 @@ public:
 #error int8_t Not supported for this compiler.
 #endif
 
+
+    /* for bitmap population counts */
+    static size_t pop_count(w_base_t::uint8_t bm);
+
     /* 
      * For statistics that are always 64-bit numbers
      */
@@ -307,11 +295,13 @@ public:
      * For statistics that are 64-bit numbers 
      * only when #defined LARGEFILE_AWARE
      */
+// ARCH_LP64 and LARGEFILE_AWARE are determined by configure
+// and set isn config/shore-config.h
 #if defined(LARGEFILE_AWARE) || defined(ARCH_LP64)
-    typedef uint8_t         base_stat_t;
+    typedef int8_t          base_stat_t;
     typedef double          base_float_t;
 #else
-    typedef uint4_t         base_stat_t;
+    typedef int4_t          base_stat_t;
     typedef float           base_float_t;
 #endif
 
@@ -328,6 +318,27 @@ public:
     static const uint4_t    uint4_max, uint4_min;
     static const uint8_t    uint8_max, uint8_min;
 
+    /*
+     *  miscellaneous
+     */
+
+/// helper for alignon
+#define alignonarg(a) (((ptrdiff_t)(a))-1)
+/// aligns a pointer p on a size a
+#define alignon(p,a) (((ptrdiff_t)((ptrdiff_t)(p) + alignonarg(a))) & ~alignonarg(a))
+
+    /*
+     * turned into a macro for the purpose of folding
+     * static uint4_t        align(uint4_t sz);
+     *
+     * Align to 8-byte boundary.
+     * We now support *only* 8-byte alignment of records
+     */
+#    ifndef align
+#    define ALIGNON 0x8
+#    define ALIGNON1 (ALIGNON-1)
+#    define align(sz) ((size_t)((sz + ALIGNON1) & ~ALIGNON1))
+#    endif /* align */
     static bool        is_aligned(size_t sz);
     static bool        is_aligned(const void* s);
 

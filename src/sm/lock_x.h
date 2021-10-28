@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore' incl-file-exclusion='LOCK_X_H'>
 
- $Id: lock_x.h,v 1.65 2010/06/15 17:30:07 nhall Exp $
+ $Id: lock_x.h,v 1.74 2012/01/02 21:52:23 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -107,28 +107,6 @@ class lock_head_t;
 class xct_impl; // forward
 class xct_lock_info_t; // forward
 
-/* SLI status types
-
-   NOTE: it *is* possible to invalidate and abandon a request
-   simultaneously; the final state will be sli_invalid or
-   sli_abandoned depending on who finishes first.
- */
-enum sli_status_t {
-    sli_not_inherited,
-    sli_active,
-    // those above must stay above
-    sli_inactive,
-    // those below must stay below
-    sli_invalidating,
-    sli_invalid,
-    sli_abandoned,
-};
-
-// typedef     w_list_t<lock_request_t,queue_based_lock_t> request_list_t;
-#define request_list_t w_list_t<lock_request_t,queue_based_lock_t> 
-// typedef     w_list_i<lock_request_t,queue_based_lock_t> request_list_i;
-#define request_list_i w_list_i<lock_request_t,queue_based_lock_t> 
-
 /**\brief Structure representing a lock request
  * \details
  *
@@ -146,7 +124,6 @@ enum sli_status_t {
  */
 class lock_request_t : public w_base_t {
 public:
-    friend class lock_core_m;
     typedef lock_base_t::lmode_t lmode_t; // common/basics.h: lock_mode_t
     typedef lock_base_t::duration_t duration_t; // in common/basics.h
     typedef lock_base_t::status_t status_t; // lock_s.h
@@ -193,66 +170,7 @@ public:
     void              set_num_children(int4_t n) { _num_children=n;}    
     int4_t            inc_num_children() { return ++_num_children; }    
 
-    /* Speculative lock inheritance rules:
-
-       Every request must be either in a transaction list or else in
-       an agent's SLI list.
-
-       If an agent needs to release a lock (perhaps it is dying) it
-       should mark the requests "abandoned" and let other transactions
-       clean up when they find it..
-
-       When a transaction ends, any locks it decides to pass on will
-       be marked "inactive" and the next transaction must (atomically)
-       change the state back to "active" before it can inherit the request.
-
-       An inherited request is really only useful if it's in the lock
-       cache (and we don't have to grab hte lock mutex to figure out
-       we have it)
-
-       When a transaction inherits a lock, it must check whether the
-       lock's parent is properly held, potentially inheriting it as
-       well. It does this by checking the lock cache; if not there SLI
-       isn't helping anyway and the request can be dropped on the
-       floor. For the same reason, a request which gets evicted from
-       the cache makes no effort to notify its inactive descendants
-       that they are no longer valid.
-       
-     */
-    /* SLI state protocol:
-
-       A --> B means a normal transition. A ==> B means the transition is racy and requires CAS
-
-       sli_not_inherited --> sli_inactive	A transaction initiates SLI during lock release
-       
-       sli_inactive ==> sli_active		A transaction successfully reclaims the request
-       sli_inactive ==> sli_invalidating	The lock manager decides to stop SLI
-       sli_inactive ==> sli_abandoning		The agent thread decides to stop SLI
-       
-       sli_invalidating ==> sli_invalid		The lock manager finished stopping SLI first
-       sli_invalidating ==> sli_abandoned	The agent thread raced ahead and finished first
-
-       sli_abandoning ==> sli_abandoned		The agent thread finished stopping SLI first
-       sli_abandoned ==> sli_invalid		The lock manager raced ahead and finished first
-
-       Once the request is successfully abandoned or invalidated it
-       must not be accessed again; the other thread could free it
-       at any time and leave a dangling pointer.
-     */
-    sli_status_t		_sli_status;
-    bool keep_me;
-
     lock_request_t volatile* vthis() { return this; }
-
-    /* perform a CAS on the sli status variable. WARNING: this
-       function doesn't behave like a normal CAS because, on success,
-       it returns what the *new* value is rather than the old
-       one. This is useful for the sli protocols and is safe because
-       no two threads ever try to set the status to the same value.
-     */
-    sli_status_t cas_sli_status(sli_status_t expect, sli_status_t assign) {
-	return (sli_status_t) atomic_cas_32((unsigned*)&_sli_status, expect, assign);
-    }
 
     // convert_mode used when we hold lock head mutex
     lmode_t           convert_mode() const { return _convert_mode; } 
@@ -284,12 +202,12 @@ public:
 
     NORET             lock_request_t();
     
-    lock_request_t*   init(
+    void              init(
                           xct_t*        x,
                           lmode_t        m,
                           duration_t    d);
 
-    lock_request_t*   init(
+    void              init(
                           xct_t*        x,
                           bool        is_quark_marker);
 
@@ -302,13 +220,6 @@ public:
 
     lock_head_t*     get_lock_head() const;
     xct_lock_info_t* get_lock_info() const { return _lock_info; }
-    
-    static bool	     is_reclaimed(sli_status_t s) {
-        return s < sli_inactive;
-    }
-    bool	     is_reclaimed() {
-        return is_reclaimed(vthis()->_sli_status);
-    }
 
     bool             is_quark_marker() const;
 
@@ -319,6 +230,8 @@ private:
     lock_request_t(const lock_request_t &);
     lock_request_t &operator=(const lock_request_t &);
 };
+typedef     w_list_t<lock_request_t,queue_based_lock_t> request_list_t;
+typedef     w_list_i<lock_request_t,queue_based_lock_t> request_list_i;
 
 #include "lock_cache.h"
 
@@ -368,13 +281,12 @@ public:
     /// Prepare this structure for use by a new transaction.
     /// Used by the TLS agent when recycling a structure after the
     /// xct that used it goes away.
-    void	     init(tid_t const &t, lockid_t::name_space_t l); 
-    void 	     reset();
+    xct_lock_info_t* reset_for_reuse(); 
 
     /// Non-null indicates a thread is trying to satisfy this
     /// request for this xct, and is either blocked or is in the middle
     /// of deadlock detection.
-    lock_request_t *  waiting_request() const { return _wait_request; }
+    lock_request_t * waiting_request() const { return _wait_request; }
 
     /// See above.
     void             set_waiting_request(lock_request_t*r) { _wait_request=r; }
@@ -406,13 +318,19 @@ public:
                         int    & total_SIX, 
                         int & total_extent ) const;
 
-    enum { lock_cache_size = 25};
+#ifdef SM_DORA
+    // IP: We use a reduced lock cache size in DORA since locks are not being used
+    enum { lock_cache_size = 3};
+#else
+    enum { lock_cache_size = 23}; // use a prime number 
+#endif
 
     /// ID of the transaction that owns this structure.
     tid_t            tid() const { return _tid; }
     /// See above.
     void             set_tid(const tid_t &t) { _tid=t; }
     
+
     /// Each thread has a wait_map
     //\todo explain per transaction wait map?
     atomic_thread_map_t const &get_wait_map() const { return _wait_map; }
@@ -452,12 +370,12 @@ public:
     void            compact_cache(const lockid_t &name) {
                         _lock_cache.compact(name);
                     }
+    void            dump_cache(ostream &out) const { _lock_cache.dump(out); }
 
 
     void            set_nonblocking();
     bool            is_nonblocking() const { return _noblock; }
 
-    void print_sli_list();
 private:
     lock_cache_t<lock_cache_size,(lockid_t::cached_granularity+1)>    _lock_cache;
     DEF_LOCK_X_TYPE(2);                // declare & define lock_x type
@@ -475,7 +393,6 @@ public:
      * Public for lock_core_m
      */
     request_list_t  my_req_list[t_num_durations];
-    request_list_t  sli_list;
 
 private:
 
@@ -486,14 +403,35 @@ private:
     bool            _blocking;      // the thread trying to satisfy
                                      // _wait_request is blocking, rather than
                                      // in the deadlock detector but running.
+                                     
+    /**
+     * \brief Means if this _wait_map seems old and unreliable.
+     * \details
+     * This flag was added to avoid too many false deadlocks. see ticket:97
+     * 
+     * If this flag is ON, the wait map is suspected to be based on 
+     * outdated information as a result of other threads' lock release etc.
+     * Seeing this flag ON, other thread will not take OR with this
+     * request.
+     * 
+     * This flag is turn on when another thread releases locks
+     * on the same lock chain.
+     * This flag is turn off when this thread makes another round of
+     * dreadlock propagation, resetting its wait map first.
+     * 
+     * Note that there will be still both false positives and (tentative) negatives.
+     * 
+     * False positive (false deadlock): The committing thread only turns ON
+     * this flags on the same lock, not recursively, to avoid mutex deadlocks
+     * accessing multiple lock heads.
+     * 
+     * (only tentative) false negative: Seeing the flag ON, the thread resets
+     * its wait_map and starts over, so it might need a few rounds of propagation
+     * to recursively reconstruct the bitmap to find a real deadlock.
+     */
+    
     atomic_thread_map_t  _wait_map; // for dreadlocks DLD
 
-public:
-    bool			_sli_enabled; // does the user want to use sli?
-    bool			_sli_purged;
-    sdesc_cache_t*		_sli_sdesc_cache;
-    
-private:
     // now this is in the thread :
     // lockid_t     hierarchy[lockid_t::NUMLEVELS];
     lockid_t::name_space_t _lock_level;
@@ -533,8 +471,9 @@ public:
     lockid_t         name;        // the name of this lock
                      // requests for this lock 
     lmode_t          granted_mode;    // the mode of the granted group
-    bool             waiting;    // flag indicates
-                     // nonempty wait group
+    bool             waiting;    // flag indicates a non-empty wait group
+    // so that we need not search the list to find out if some request is waiting
+    
     /* # threads trying to acquire this lock's head_mutex.
        In order to avoid acquiring the (expensive, blocking)
        lock->head_mutex during the (contended, otherwise short) bucket lock
@@ -546,11 +485,11 @@ public:
        This lock can only be deallocated safely if request _queue is
        empty (as before) *AND* the pin_cnt is zero while a thread
        holds the bucket mutex -- any thread caught trying to add
-       itself to the lock's _queue will have the lock pinned; any
-       thread that has already added itself will have unpinned the
+       the request to the lock head's _queue will have the lock pinned; any
+       thread that has already added the request will have unpinned the
        lock.
 
-       Note that the lock's chain is protected by the bucket the lock
+       Note that the lock head's chain is protected by the bucket the lock
        lives in, not the lock->head_mutex (because it's logically part of
        the bucket rather than the lock head)
     */
@@ -563,7 +502,13 @@ public:
         int              total_acquires;
         int              contended_acquires;
         bool             _contended;
+
+#if W_DEBUG_LEVEL > 1
+#define MY_LOCK_DEBUG 1
+#else
 #define MY_LOCK_DEBUG 0
+#endif
+
 #if MY_LOCK_DEBUG
         sthread_t*         _holder;
 #endif
@@ -613,7 +558,7 @@ public:
 #endif
         { }
     };
-    my_lock             head_mutex;        // serialize access to lock_head_t
+    my_lock          head_mutex;        // serialize access to lock_head_t
 
     NORET            lock_head_t(
         const lockid_t&         name, 
@@ -622,10 +567,6 @@ public:
     NORET            ~lock_head_t()   { chain.detach(); }
 
     lmode_t          granted_mode_other(const lock_request_t* exclude);
-    
-    // Invalidate all inactive SLI requests, returning true if any were found
-    bool             invalidate_sli();
-    
     lock_request_t*  find_lock_request(const xct_lock_info_t*  xdli);
     int              queue_length() const { 
 #if MY_LOCK_DEBUG
@@ -704,24 +645,9 @@ inline lock_head_t*
 lock_request_t::get_lock_head() const
 {
     // XXX perhaps this should be an "associated list"??
-    union {
-	w_list_base_t* list;
-	long n;
-	lock_head_t* head;
-    } u = {rlink.member_of()};
-    if (u.list) 
-	u.n-= w_offsetof(lock_head_t, _queue);
-    return u.head;
-}
-
-inline NORET            
-lock_request_t::~lock_request_t() 
-{
-    w_assert1(rlink.member_of() == 0 
-        /* no is_mine() in the lock head mutex */);
-    w_assert1(xlink.member_of() == 0 || 
-        MUTEX_IS_MINE(get_lock_info()->lock_info_mutex));
-    set_thread(NULL);
+    return (lock_head_t*) (
+            ((char*)rlink.member_of()) -
+                   w_offsetof(lock_head_t, _queue));
 }
 
 /*<std-footer incl-file-exclusion='LOCK_X_H'>  -- do not edit anything below this line -- */

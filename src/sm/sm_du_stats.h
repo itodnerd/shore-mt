@@ -34,7 +34,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 /*  -- do not edit anything above this line --   </std-header>*/
 
-#include "stid_t.h"
 
 /*
  *  Storage Manager disk utilization (du) statistics.

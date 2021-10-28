@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='SORT_S_H'>
 
- $Id: sort_s.h,v 1.32 2010/05/26 01:20:45 nhall Exp $
+ $Id: sort_s.h,v 1.36 2010/08/23 14:28:18 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -835,6 +835,8 @@ struct generic_CSKF_cookie
     smsize_t   offset;
     /// Key length.
     smsize_t   length;
+
+    void clear() { length = 0; offset = 0; in_hdr = false; func = NULL ; }
 };
 
 /**\brief Parameter to control behavior of sort_file. 
@@ -955,9 +957,12 @@ public:
      * Default comparision functions for in-buffer-pool
      * comparisons.  No byte-swapping is done; alignment
      * requirements must already be met before calling these.
+     *
+     * Template is instantiated for {uint,int}[8421]_t.
      */
     static int string_cmp(w_base_t::uint4_t , const void* , 
             w_base_t::uint4_t , const void*);
+
     static int uint8_cmp(w_base_t::uint4_t , const void* , 
             w_base_t::uint4_t , const void* );
     static int int8_cmp(w_base_t::uint4_t , const void* , 
@@ -1578,6 +1583,7 @@ ssm_sort::sort_keys_t::set_sortkey_fixed(
     CF   cfunc
 ) 
 {
+	DBG(<<"set_sortkey_fixed " << key);
     if(is_for_index() && key > 0) {
         return 1;
     }
@@ -1599,6 +1605,7 @@ ssm_sort::sort_keys_t::set_sortkey_derived(
     CF   cfunc
 )
 {
+	DBG(<<"set_sortkey_derived " << key);
     if(is_for_index() && key > 0) {
         return 1;
     }
@@ -1609,6 +1616,7 @@ ssm_sort::sort_keys_t::set_sortkey_derived(
         cookie);
     return 0;
 }
+
 
 /*<std-footer incl-file-exclusion='SORT_S_H'>  -- do not edit anything below this line -- */
 

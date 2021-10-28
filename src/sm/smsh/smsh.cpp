@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: smsh.cpp,v 1.1.2.15 2010/03/19 22:20:31 nhall Exp $
+ $Id: smsh.cpp,v 1.5 2012/01/02 21:52:24 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -55,23 +55,19 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include "w_debug.h"
 #include "shell.h"
 
-#ifndef __GNU_LIBRARY__
-#define __GNU_LIBRARY__
-#endif
 #include "w_getopt.h"
-// DEAD #include <unix_stats.h>
+#include <w_rusage.h>
 
 /* tcl */
-#ifdef EXTERN
-#undef EXTERN
-#endif
 #include <tcl.h>
 #include "tcl_workaround.h"
 #include "tcl_thread.h"
 #include "smsh.h"
 #include <sthread_stats.h>
 
+#if DEAD
 const char* tcl_init_cmd = 0; // DEAD?
+#endif
 
 bool instrument = true;
 bool verbose = false;
@@ -133,39 +129,17 @@ void print_usage(ostream& err_stream, const char* prog_name,
 }
 
 
-// DEAD unix_stats U;
-#ifndef SOLARIS2
-// DEAD unix_stats C(RUSAGE_CHILDREN);
-#endif
+unix_stats U;
 
 int main(int argc, const char** argv)
 {
     argv0 = argv[0];
 
-#if 0        /* Can't use with tools that want smsh output */
-#if defined(W_TRACE)
-    char *c = getenv("DEBUG_FLAGS");
-    if(c!=NULL) cout << "DEBUG_FLAGS =|" << c << "|" << endl;
-    else cout << "DEBUG_FLAGS is not set. " <<endl;
-    c = getenv("DEBUG_FILE");
-    if(c!=NULL) cout << "DEBUG_FILE =|" << c << "|" << endl;
-    else cout << "DEBUG_FILE is not set. " <<endl;
-
-    const char *cc = _w_fname_debug__;
-    if(cc!=NULL) cout << "_w_fname_debug__ =|" << cc << "|" << endl;
-    else cout << "_w_fname_debug__ is not set. " <<endl;
-#else
-    cout << "Debugging not configured." << endl;
-#endif
-#endif
 
     bool print_stats = false;
 
 
-    // DEAD U.start();
-#ifndef SOLARIS2
-    // DEAD C.start();
-#endif
+    U.start();
 
     // Set up smsh related error codes
     if (! (w_error_t::insert(
@@ -391,13 +365,6 @@ int main(int argc, const char** argv)
      * the program.  The ssm will be started by a tcl_thread.
      */
 
-#if 0
-    char* merged_args = Tcl_Merge(argc, (char **) argv);
-    if(!merged_args) {
-        cerr << "Tcl_Merge failed." <<endl; exit(1); 
-        goto errordone;
-    }
-#endif
 
     // setup table of sm commands - doesn't involve the Tcl_Interp
     dispatch_init();
@@ -437,12 +404,6 @@ int main(int argc, const char** argv)
                 av[0] = TCL_AV1 "source";
                 av[1] = f_arg;
                 // smsh -f <file>
-#if 0
-            cerr << __func__ << " " << __LINE__ << " " << __FILE__
-                << " libdir " << smsh_libdir->value()
-                << " msshrc " << smsh_smshrc->value()
-                << endl;
-#endif
                 tcl_thread = new tcl_thread_t(2, av, 
                                 smsh_libdir->value(),
                                 smsh_smshrc->value()
@@ -461,21 +422,9 @@ int main(int argc, const char** argv)
                                 );
             }
             assert(tcl_thread);
-#if 0
-            fprintf(stderr, 
-                "Forking main (interactive=%s) tcl thread @ 0x%p id %d ... \n",
-                (const char *)(f_arg ? "false" : "true"),
-                ((void*)tcl_thread), tcl_thread->id);
-#endif
 
             W_COERCE( tcl_thread->fork() );
             W_COERCE( tcl_thread->join() );
-#if 0
-            fprintf(stderr, 
-                "Joined main (interactive=%s) tcl thread @ 0x%p id %d ... \n",
-                (const char *)(f_arg ? "false" : "true"),
-                ((void*)tcl_thread), tcl_thread->id);
-#endif
 
             delete tcl_thread;
         }
@@ -485,10 +434,7 @@ int main(int argc, const char** argv)
     // Shutdown TCL and have it deallocate resources still held!
     Tcl_Finalize();
 
-    // DEAD U.stop(1); // 1 iteration
-#ifndef SOLARIS2
-    // DEAD C.stop(1); // 1 iteration
-#endif
+    U.stop(1); // 1 iteration
 
     if(print_stats) 
     {
@@ -496,13 +442,9 @@ int main(int argc, const char** argv)
         sthread_t::dump_stats(cout);
         cout << endl;
 
-        // DEAD cout << "Unix stats for parent:" <<endl;
-        // DEAD cout << U << endl << endl;
+        cout << "Unix stats for parent:" <<endl;
+        cout << U << endl << endl;
 
-#ifndef SOLARIS2
-        // DEAD cout << "Unix stats for children:" <<endl;
-        // DEAD cout << C << endl << endl;
-#endif
     }
     cout << flush;
 

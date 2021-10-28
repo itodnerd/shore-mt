@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='BF_S_H'>
 
- $Id: bf_s.h,v 1.45 2010/06/18 21:22:50 nhall Exp $
+ $Id: bf_s.h,v 1.50 2012/01/02 17:02:16 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -65,9 +65,16 @@ class bfpid_t : public lpid_t {
 public:
     NORET            bfpid_t();
     NORET            bfpid_t(const lpid_t& p);
-    bfpid_t&             operator=(const lpid_t& p);
-    bool                 operator==(const bfpid_t& p) const;
+    bfpid_t&         operator=(const lpid_t& p);
+    bool             operator==(const bfpid_t& p) const;
     static const bfpid_t    null;
+
+    // This hash function is used for the dirty_pages_tab_t in restart.
+private:
+    static w_hashing::hash2  _hash;
+public:
+    w_base_t::uint4_t hash() const { return  
+                                     w_base_t::uint4_t(_hash(vol() + (page<<5))); }
 };
 
 inline NORET
@@ -107,18 +114,21 @@ private:
     bool        _old_pid_valid;  // is the previous page in-transit-out?
     page_s*     _frame;          // pointer to the frame
 
-    bool        _dirty;          // true if page is dirty
+    bool        _dirty;  // true if page is dirty
     lsn_t       _rec_lsn;        // recovery lsn
-    lsn_t        _old_rec_lsn;     // valid if the page is being cleaned
+    lsn_t        _old_rec_lsn;   // valid if the page is being cleaned
 
     bfcb_t*     _next_free;    // used by the (singly-linked) freelist
 
-    int4_t      _refbit;// ref count (for strict clock algorithm)
+    int4_t      volatile _refbit;// ref count (for strict clock algorithm)
                 // for replacement policy only
 
-    int4_t      _hotbit;// copy of refbit for use by the cleaner algorithm
+    int4_t volatile      _hotbit;// copy of refbit 
+                // for use by the cleaner algorithm
                 // without interfering with clock (replacement)
                 // algorithm.
+                // Volatile just to keep the compiler's optimizations from
+                // making things even more racy than we are allowing for... 
 
     int4_t       _hash_func; // which hash function was this frame placed with?
     int4_t       volatile    _hash;        // and what was the hash value?
@@ -132,11 +142,12 @@ public:
     void           vtable_collect(vtable_row_t &t);
     static void    vtable_collect_names(vtable_row_t&);
 
-    inline void    clear();
+    inline void    clear_bfcb();
 
     const page_s *frame() const { return _frame; }
     page_s *frame_nonconst() { return _frame; }
     void  set_storeflags(w_base_t::uint4_t f);
+    w_base_t::uint4_t  read_page_storeflags();
     w_base_t::uint4_t  get_storeflags() const;
     w_base_t::uint4_t  get_storeflags_nocheck() const { return _store_flags; }
 
@@ -179,13 +190,17 @@ public:
 
     int4_t      refbit() const { return _refbit; }
     void        set_refbit(uint4_t b) { _refbit=b; }
-    void        decr_refbit() { _refbit--; }
+    void        decr_refbit() { if(--_refbit < 0) _refbit = 0; }
 
+    // NOTE: hotbit is an approximation so we don't want to use
+    // atomic operations.  Let's just allow these operations to be
+    // racy and try to cope with the bit going < 0 via two cleaners
+    // decrementing simulatneously.
     int4_t      hotbit() const { return _hotbit; }
     uint4_t     set_hotbit(int4_t b) { return (_hotbit = b); }
-    void        decr_hotbit() { _hotbit--; }
+    void        decr_hotbit() { if(--_hotbit < 0) _hotbit = 0; }
 
-    void        update_rec_lsn(latch_mode_t);
+    void        update_rec_lsn(latch_mode_t, bool check);
 
     void        initialize(const char *const _name,
                         page_s*           _bufpool,
@@ -193,7 +208,6 @@ public:
                         );
     int4_t       hash_func() const { return _hash_func; }
     void         set_hash_func(int4_t h) { _hash_func=h; }
-    
     int4_t       hash() const { return _hash;}
     void         set_hash(int4_t h) { _hash=h;}
 
@@ -228,16 +242,15 @@ private:
 };
 
 inline void
-bfcb_t::clear() 
+bfcb_t::clear_bfcb() 
 {
     _pid = lpid_t::null;
     _old_pid = lpid_t::null;
     _old_pid_valid = false;
-    _dirty = false;
-    _rec_lsn = lsn_t::null;
     _hotbit = 0;
     _refbit = 0;
-    w_assert3(pin_cnt() == 0);
+    mark_clean();
+    w_assert1(pin_cnt() == 0);
     w_assert3(latch.num_holders() <= 1);
 }
 

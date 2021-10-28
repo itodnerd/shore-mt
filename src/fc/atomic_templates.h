@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore'>
 
- $Id: atomic_templates.h,v 1.4 2010/06/15 17:24:24 nhall Exp $
+ $Id: atomic_templates.h,v 1.5 2010/12/17 19:36:26 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -94,9 +94,16 @@ template<>
 inline void atomic_inc(unsigned long volatile &val)
 { atomic_add_long(&val, 1); }
 
+#if defined(ARCH_LP64)
+// long and long long are same size
+#elif defined(__GNUG__)
+// Needed for int8_t and uint8_t (see the w_base.h)
 template<>
 inline void atomic_inc(unsigned long long volatile &val)
 { atomic_add_64((volatile uint64_t *)&val, 1); }
+#else
+#error int8_t Not supported for this compiler.
+#endif
 
 template<>
 inline void atomic_dec(int volatile &val)
@@ -111,10 +118,16 @@ template<>
 inline void atomic_dec(unsigned long volatile &val)
 { atomic_add_long(&val, -1); }
 
+#if defined(ARCH_LP64)
+// long and long long are same size
+#elif defined(__GNUG__)
+// Needed for int8_t and uint8_t (see the w_base.h)
 template<>
 inline void atomic_dec(unsigned long long volatile &val)
 { atomic_add_64((volatile uint64_t *)&val, -1); }
-
+#else
+#error int8_t Not supported for this compiler.
+#endif
 
 template<class T>
 T atomic_inc_nv(T volatile &val);
@@ -130,9 +143,14 @@ inline unsigned int atomic_inc_nv(unsigned int volatile &val)
 template<>
 inline unsigned long atomic_inc_nv(unsigned long volatile &val)
 { return atomic_add_long_nv(&val, 1); }
-#ifndef ARCH_LP64
+#if defined(ARCH_LP64)
+// long and long long are same size
+#elif defined(__GNUG__)
+// Needed for int8_t and uint8_t (see the w_base.h)
 inline unsigned long long atomic_inc_nv(unsigned long long volatile &val)
 { return atomic_add_64_nv(&val, 1); }
+#else
+#error int8_t Not supported for this compiler.
 #endif
 
 template<>
@@ -144,9 +162,15 @@ inline unsigned int atomic_dec_nv(unsigned int volatile &val)
 template<>
 inline unsigned long atomic_dec_nv(unsigned long volatile &val)
 { return atomic_add_long_nv(&val, -1); }
-#ifndef ARCH_LP64
+
+#if defined(ARCH_LP64)
+// long and long long are same size
+#elif defined(__GNUG__)
+// Needed for int8_t and uint8_t (see the w_base.h)
 inline unsigned long long atomic_dec_nv(unsigned long long volatile &val)
 { return atomic_add_64_nv(&val, -1); }
+#else
+#error int8_t Not supported for this compiler.
 #endif
 
 
@@ -171,8 +195,10 @@ template<>
 inline void atomic_add_int_delta(long volatile &val, int delta) 
 { atomic_add_long((unsigned long volatile*)&val, delta); }
 
-#ifndef ARCH_LP64
-// Needed when building for 32 bits:
+#if defined(ARCH_LP64)
+// long and long long are same size
+#elif defined(__GNUG__)
+// Needed for int8_t and uint8_t (see the w_base.h)
 template<>
 inline void atomic_add_int_delta(unsigned long long volatile &val, int delta) 
 { 
@@ -186,6 +212,8 @@ inline void atomic_add_int_delta(long long volatile &val, int delta)
     int64_t  deltalg=delta;
     atomic_add_64((unsigned long long volatile *)&val, deltalg); 
 }
+#else
+#error int8_t Not supported for this compiler.
 #endif
 
 /* atomic_add_nv variants */
@@ -209,8 +237,10 @@ template<>
 inline long atomic_add_nv_int_delta(long volatile &val, int delta) 
 { return atomic_add_long_nv((unsigned long*) &val, delta); }
 
-#ifndef ARCH_LP64
-
+#if defined(ARCH_LP64)
+// long and long long are same size
+#elif defined(__GNUG__)
+// Needed for int8_t and uint8_t (see the w_base.h)
 template<>
 inline unsigned long long atomic_add_nv_int_delta(unsigned long long volatile &val, int delta) 
 { return atomic_add_64_nv(&val, delta); }
@@ -218,11 +248,11 @@ inline unsigned long long atomic_add_nv_int_delta(unsigned long long volatile &v
 template<>
 inline long long atomic_add_nv_int_delta(long long volatile &val, int delta) 
 { return atomic_add_64_nv((unsigned long long *)&val, delta); }
-
+#else
+#error int8_t Not supported for this compiler.
 #endif
 
 /* The following templates take a long delta */
-
 template<class T>
 void atomic_add_long_delta(T volatile &val, long delta);
 
@@ -242,7 +272,10 @@ template<>
 inline void atomic_add_long_delta(long volatile &val, long delta) 
 { atomic_add_long((unsigned long volatile*)&val, delta); }
 
-#ifndef ARCH_LP64
+#if defined(ARCH_LP64)
+// long and long long are same size
+#elif defined(__GNUG__)
+// Needed for int8_t and uint8_t (see the w_base.h)
 // Needed when building for 32 bits:
 template<>
 inline void atomic_add_long_delta(unsigned long long volatile &val, long delta) 
@@ -257,6 +290,8 @@ inline void atomic_add_long_delta(long long volatile &val, long delta)
     int64_t  deltalg=delta;
     atomic_add_64((unsigned long long volatile *)&val, deltalg); 
 }
+#else
+#error int8_t Not supported for this compiler.
 #endif
 
 /* atomic_add_nv variants */
@@ -280,8 +315,10 @@ template<>
 inline long atomic_add_nv_long_delta(long volatile &val, long delta) 
 { return atomic_add_long_nv((unsigned long*) &val, delta); }
 
-#ifndef ARCH_LP64
-
+#if defined(ARCH_LP64)
+// long and long long are same size
+#elif defined(__GNUG__)
+// Needed for int8_t and uint8_t (see the w_base.h)
 template<>
 inline unsigned long long atomic_add_nv_long_delta(unsigned long long volatile &val, long delta) 
 { return atomic_add_64_nv(&val, delta); }
@@ -289,6 +326,8 @@ inline unsigned long long atomic_add_nv_long_delta(unsigned long long volatile &
 template<>
 inline long long atomic_add_nv_long_delta(long long volatile &val, long delta) 
 { return atomic_add_64_nv((unsigned long long *)&val, delta); }
+#else
+#error int8_t Not supported for this compiler.
+#endif
 
-#endif
-#endif
+#endif          /*</std-footer>*/

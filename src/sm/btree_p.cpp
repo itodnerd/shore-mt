@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: btree_p.cpp,v 1.36 2010/06/08 22:28:55 nhall Exp $
+ $Id: btree_p.cpp,v 1.42 2010/12/08 17:37:42 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -88,13 +88,13 @@ btree_p::distribute(
     bool&     left_heavy,    // O-  true if insert should go to left
     slotid_t&     snum,        // IO- slot of insertion after split
     smsize_t    addition,    // I-  # bytes intended to insert
-    int     factor,        // I-  % that should remain
-    const bool bIgnoreLatches)
+    int     factor)        // I-  % that should remain
 {
     w_assert3(is_fixed());
+    w_assert3(latch_mode() == LATCH_EX);
     w_assert3(rsib.is_fixed());
-    w_assert3(latch_mode() == LATCH_EX || latch_mode() == LATCH_NLX);
-    w_assert3(rsib.latch_mode() == LATCH_EX || rsib.latch_mode() == LATCH_NLX);
+    w_assert3(rsib.latch_mode() == LATCH_EX);
+
     w_assert1(snum >= 0 && snum <= nrecs());
     /*
      *  Assume we have already inserted the tuple into slot snum
@@ -180,17 +180,17 @@ btree_p::distribute(
  *
  *********************************************************************/
 rc_t
-btree_p::_unlink(btree_p &rsib, const bool bIgnoreLatches)
+btree_p::_unlink(btree_p &rsib)
 {
     DBG(<<" unlinking page: "  << pid()
     << " nrecs " << nrecs()
     );
     w_assert3(is_fixed());
-    w_assert3(latch_mode() == LATCH_EX || latch_mode() == LATCH_NLX);
+    w_assert3(latch_mode() == LATCH_EX);
     if(rsib.is_fixed()) {
         // might not have a right sibling
         w_assert3(rsib.is_fixed());
-	w_assert3(rsib.latch_mode() == LATCH_EX || rsib.latch_mode() == LATCH_NLX);
+        w_assert3(rsib.latch_mode() == LATCH_EX);
     }
     lpid_t  lsib_pid = pid(); // get vol, store
     lsib_pid.page = prev();
@@ -216,8 +216,7 @@ btree_p::_unlink(btree_p &rsib, const bool bIgnoreLatches)
         btree_p lsib;
         if(lsib_pid.page) {
             INC_TSTAT(bt_links);
-	    latch_mode_t mode = bIgnoreLatches ? LATCH_NLX : LATCH_EX;
-            W_DO( lsib.fix(lsib_pid, mode) ); 
+            W_DO( lsib.fix(lsib_pid, LATCH_EX) ); 
             SSMTEST("btree.unlink.3");
             W_DO( lsib.link_up(lsib.prev(), rsib_page) );
         }
@@ -235,10 +234,10 @@ btree_p::unlink_and_propagate(
     const cvec_t&     elem,
     btree_p&          rsib,
     lpid_t&           parent_pid,
-    lpid_t const&     root_pid,
-    const bool bIgnoreLatches)
+    lpid_t const&     root_pid
+)
 {
-#if W_DEBUG_LEVEL > 2
+#if W_DEBUG_LEVEL > 4
     W_DO(log_comment("start unlink_and_propagate"));
 #endif 
     w_assert3(this->is_fixed());
@@ -261,7 +260,7 @@ btree_p::unlink_and_propagate(
          * remove this page if it's not the root
          */
 
-        X_DO(_unlink(rsib, bIgnoreLatches), anchor);
+        X_DO(_unlink(rsib), anchor);
         w_assert3( !rsib.is_fixed());
         w_assert3( !is_fixed());
 
@@ -281,8 +280,8 @@ btree_p::unlink_and_propagate(
 
             w_assert3( ! is_fixed());
 
-	    latch_mode_t mode = bIgnoreLatches ? LATCH_NLX : LATCH_EX;
-            X_DO(parent.fix(parent_pid, mode), anchor);
+
+            X_DO(parent.fix(parent_pid, LATCH_EX), anchor);
             X_DO(parent.search(key, elem, found_key, total_match, slot), anchor)
 
             // might, might not:w_assert3(found_key);
@@ -295,19 +294,19 @@ btree_p::unlink_and_propagate(
                 w_assert3(parent.child(slot) == child_pid.page);
             }
 
-            X_DO(btree_impl::_propagate(root_pid, key, elem, child_pid, lev, true,
-					bIgnoreLatches), anchor);
+            X_DO(btree_impl::_propagate(root_pid, key, elem, 
+                        child_pid, lev, true), anchor);
             parent.unfix();
         }
         SSMTEST("btree.propagate.d.1");
 
         if (xd)  {
-            xd->compensate(anchor,false/*not undoable*/LOG_COMMENT_USE("btree.prop.3"));
+            xd->compensate(anchor,false/*not undoable*/X_LOG_COMMENT_USE("btree.prop.3"));
         }
         SSMTEST("btree.propagate.d.3");
     }
     w_assert3( ! is_fixed());
-#if W_DEBUG_LEVEL > 2
+#if W_DEBUG_LEVEL > 4
     W_DO(log_comment("end propagate_split"));
 #endif 
     return RCOK;
@@ -339,7 +338,7 @@ btree_p::cut_page(lpid_t & W_IFDEBUG3(child_pid) , slotid_t slot)
     /*
      *  Free the child
      */
-    W_DO( io->free_page(cpid, false/*checkstore*/) );
+    W_DO( io->free_page(cpid) );
 
     SSMTEST("btree.propagate.d.6");
 
@@ -396,20 +395,6 @@ btree_p::set_hdr(shpid_t root, int l, shpid_t pid0, uint2_t flags)
 }
 
 
-/*********************************************************************
- *
- *  btree_p::set_root(root)
- *
- *  Set the root field in header to "root".
- *
- ********************************************************************/
-rc_t
-btree_p::set_root(shpid_t root)
-{
-    const btctrl_t& tmp = _hdr();
-    W_DO( set_hdr(root, tmp.level, tmp.pid0, tmp.flags) );
-    return RCOK;
-}
 
 
 /*********************************************************************
@@ -458,14 +443,14 @@ btree_p::_set_flag( flag_t f, bool compensate)
             if(xd && compensate)
             {
                 xd->rollback(anchor);
-                xd->release_anchor(true LOG_COMMENT_USE("btreep1"));
+                xd->release_anchor(true X_LOG_COMMENT_USE("btreep1"));
             }
             return RC_AUGMENT(__e);
         }
     }
 
     if(compensate) {
-        if (xd) xd->compensate(anchor,false/*not undoable*/LOG_COMMENT_USE("btree._set_flag"));
+        if (xd) xd->compensate(anchor,false/*not undoable*/X_LOG_COMMENT_USE("btree._set_flag"));
     }
     return RCOK;
 }
@@ -497,7 +482,7 @@ btree_p::_clr_flag(flag_t f, bool compensate)
                 (uint2_t)(tmp.flags & ~f)), anchor );
 
     if(compensate) {
-        if (xd) xd->compensate(anchor,false/*not undoable*/ LOG_COMMENT_USE("btree._clr_flag"));
+        if (xd) xd->compensate(anchor,false/*not undoable*/ X_LOG_COMMENT_USE("btree._clr_flag"));
     }
     return RCOK;
 }
@@ -665,8 +650,9 @@ btree_p::insert(
 )
 {
     FUNC(btree_p::insert);
-    DBG(<<"insert " << key 
+    DBGTHRD(<<"insert " << key 
         << " into page " << pid()
+        << " is_leaf " << is_leaf()
         << " at slot "  << slot
         << " REALLY? " << do_it
         << " nrecs="  << nrecs()
@@ -680,6 +666,7 @@ btree_p::insert(
     if (is_leaf()) {
         w_assert3(child == 0);
     } else {
+        DBGTHRD(<<"checking child " << child); 
         w_assert3(child);
         attr.put(&child, sizeof(child));
     }
@@ -712,6 +699,7 @@ btree_p::child(slotid_t slot) const
     memcpy(&child, aux + 2, sizeof(shpid_t));
     return child;
 }
+
 
 // Stats on btree leaf pages
 rc_t
@@ -884,7 +872,7 @@ btree_p::max_entry_size = // must be able to fit 2 entries to a page
         overhead_requirement_per_entry
     ) 
     // round down to aligned size
-    & -ALIGNON
+    & ~ALIGNON1 
     ;
 
 /*
@@ -1027,12 +1015,10 @@ btree_p::print(
 
     if ( is_leaf())  {
         if(print_elem) {
-	    rid_t rid;
-	    r.elem().copy_to(&rid, sizeof(rid_t));
-	    cout << ", elen="  << r.elen() << " bytes: " << rid;
+        cout << ", elen="  << r.elen() << " bytes: " << r.elem();
         }
     } else {
-	cout << ", pid = " << r.child();
+        cout << "pid = " << r.child();
     }
     cout << ">" << endl;
     }

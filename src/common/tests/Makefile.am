@@ -7,7 +7,7 @@ AM_CXXFLAGS    += -I$(top_srcdir)/src/common \
 RESULT_COMPARISON_FILES = \
 	lsns-out mapp-out bitmap-out errcodes-out latch1-out \
 	latch2-out latch3-out opaque-out vectors-out \
-	kvl-out.x86_64 kvl-out.athlon kvl-out.sun4v
+	kvl-out.x86_64 kvl-out.athlon kvl-out.sun4v kvl-out.i686
 
 ## no-op rule for making the -out files
 ## this is to avoid automagic makefiles thinking that the -out

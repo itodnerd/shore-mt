@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: devid_t.cpp,v 1.16.2.4 2010/01/28 04:52:52 nhall Exp $
+ $Id: devid_t.cpp,v 1.17 2010/05/26 01:20:11 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

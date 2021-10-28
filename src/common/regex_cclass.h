@@ -1,6 +1,6 @@
 /*<std-header orig-src='regex' incl-file-exclusion='REGEX_CCLASS_H'>
 
- $Id: regex_cclass.h,v 1.9.2.3 2010/03/19 22:19:19 nhall Exp $
+ $Id: regex_cclass.h,v 1.10 2010/05/26 01:20:12 nhall Exp $
 
 
 */

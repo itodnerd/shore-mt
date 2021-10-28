@@ -81,7 +81,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  */
 class tid_t {
 public:
-    typedef uint64_t datum_t;
+    typedef w_base_t::uint8_t datum_t;
     enum { hwm = max_uint4 };
 
     tid_t() : _data(0) { }
@@ -90,25 +90,13 @@ public:
 
     uint4_t get_hi() const { return (uint4_t) (_data >> 32); }
     uint4_t get_lo() const { return (uint4_t) _data; }
-    uint8_t get_value() const { return _data; }
 
     tid_t& operator=(const tid_t& t)    {
         _data = t._data;
         return *this;
     }
 
-    bool invalid() volatile const { return _data == 0; }
-
-    tid_t next() const {
-	tid_t rval;
-	rval._data = _data+1;
-	return rval;
-    }
-    tid_t prev() const {
-	tid_t rval;
-	rval._data = _data-1;
-	return rval;
-    }
+    bool invalid() const { return _data == 0; }
 
     datum_t atomic_incr() {
         return atomic_inc_nv(_data);

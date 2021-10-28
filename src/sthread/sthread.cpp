@@ -1,4 +1,3 @@
-
 /* -*- mode:C++; c-basic-offset:4 -*-
    Shore-MT -- Multi-threaded port of the SHORE storage manager
    
@@ -25,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore'>
 
- $Id: sthread.cpp,v 1.324 2010/06/15 17:26:00 nhall Exp $
+ $Id: sthread.cpp,v 1.336 2012/01/02 21:52:27 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -62,7 +61,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  *
  *    Josef Burger    <bolo@cs.wisc.edu>
  *    Dylan McNamee    <dylan@cse.ogi.edu>
- *      Ed Felten       <felten@cs.princeton.edu>
+ *    Ed Felten       <felten@cs.princeton.edu>
  *
  *   All Rights Reserved.
  *
@@ -101,6 +100,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #endif
 
 #include "sthread.h"
+#include "rand48.h"
 #include "sthread_stats.h"
 #include "stcore_pthread.h"
 
@@ -114,6 +114,20 @@ template class w_list_i<sthread_t, queue_based_lock_t>;
 template class w_descend_list_t<sthread_t, queue_based_lock_t, sthread_t::priority_t>;
 template class w_keyed_list_t<sthread_t, queue_based_lock_t, sthread_t::priority_t>;
 #endif
+
+/* thread-local random number generator -- see rand48.h  */
+
+/**\var static __thread rand48 tls_rng
+ * \brief A 48-bit pseudo-random number generator
+ * \ingroup TLS
+ * \details
+ * Thread-safety is achieved by having one per thread.
+ */
+static __thread rand48 tls_rng = RAND48_INITIALIZER;
+
+int sthread_t::rand() { return tls_rng.rand(); }
+double sthread_t::drand() { return tls_rng.drand(); }
+int sthread_t::randn(int max) { return tls_rng.randn(max); }
 
 class sthread_stats SthreadStats;
 
@@ -173,7 +187,7 @@ bool sthread_t::isStackOK(const char * /*file*/, int /*line*/) const
 /* check all threads */
 void sthread_t::check_all_stacks(const char *file, int line)
 {
-    sthread_list_i i(*_class_list);
+    w_list_i<sthread_t, queue_based_lock_t> i(*_class_list);
     unsigned    corrupt = 0;
 
     while (i.next())  {
@@ -209,16 +223,16 @@ bool    sthread_t::isStackFrameOK(size_t size)
     fprintf(stderr, 
 // In order of values:
     "STACK OVERFLOW frame (offset -%ld) %p bottom %p danger %p top %p stack_size %ld \n",
-	// cast so it works for -m32 and -m64
+    // cast so it works for -m32 and -m64
      (long int) size, _stack_top, absolute_bottom, _danger, _start_frame, 
-	 (long int) _stack_size);
+     (long int) _stack_size);
     } else {
     fprintf(stderr, 
 // In order of values:
     "STACK IN GUARD AREA bottom %p frame (offset -%ld) %p danger %p top %p stack_size %ld \n",
-	// cast so it works for -m32 and -m64
+    // cast so it works for -m32 and -m64
      absolute_bottom, (long int) size, _stack_top, _danger, _start_frame, 
-	 (long int) _stack_size);
+     (long int) _stack_size);
     }
     return false;
     }
@@ -239,30 +253,9 @@ sthread_t*              sthread_t::_main_thread = 0;
 const w_base_t::uint4_t MAIN_THREAD_ID(1);
 w_base_t::uint4_t       sthread_t::_next_id = MAIN_THREAD_ID;
 sthread_list_t*         sthread_t::_class_list = 0;
-
-#ifdef LOCKHACK
-pthread_mutex_t sthread_t::_class_list_lock = PTHREAD_MUTEX_INITIALIZER;
-#else
 queue_based_lock_t      sthread_t::_class_list_lock;
-#endif
 
 stime_t                 sthread_t::boot_time = stime_t::now();
-
-// NOTE: this returns a REFERENCE
-/**\fn sthread_t::me_lval()
- * \brief Returns a (writable) reference to the a 
- * pointer to the running sthread_t.
- * \ingroup TLS
- */
-sthread_t* &sthread_t::me_lval() {
-    /**\var sthread_t* _me;
-     * \brief A pointer to the running sthread_t.
-     * \ingroup TLS
-     */
-    static __thread sthread_t* _me(NULL);
-    return _me;
-}
-
 
 /*
  * sthread_t::cold_startup()
@@ -439,32 +432,8 @@ sthread_t::join(timeout_in_ms /*timeout*/)
             /*
              *  Wait for thread to finish.
              */
-#define TRACE_START_TERM 0
-#if TRACE_START_TERM
-            {   w_ostrstream o;
-                o << *this << endl;
-                fprintf(stderr, 
-                        "me: %#lx Joining on (%s = %s) \n", 
-                        (long) pthread_self() , 
-                        name(), o.c_str()
-                        ); 
-                fflush(stderr);
-            }
-#endif
             sthread_core_exit(_core, _terminated);
 
-#if TRACE_START_TERM
-            {   w_ostrstream o;
-                o << *this << endl;
-                fprintf(stderr, 
-                        "me: %#lx Join on (%s = %s) done\n", 
-                        (long) pthread_self() , 
-                        name(), o.c_str()
-                        ); 
-                fflush(stderr);
-            }
-            DBGTHRD(<< "Join on " << name() << " successful");
-#endif
         }
     }
 
@@ -490,9 +459,8 @@ w_rc_t    sthread_t::fork()
         /* Add us to the list of threads, unless we are the main thread */
         if(this != _main_thread) 
         {
-            pthread_mutex_lock(&_class_list_lock);
+            CRITICAL_SECTION(cs, _class_list_lock);
             _class_list->append(this);
-            pthread_mutex_unlock(&_class_list_lock);
         }
 
         
@@ -506,33 +474,10 @@ w_rc_t    sthread_t::fork()
             DO_PTHREAD( pthread_cond_signal(_start_cond) );
         }
     }
-#if TRACE_START_TERM
-    {   w_ostrstream o;
-        o << *this << endl;
-        fprintf(stderr, "me: %#lx Forked: %s : %s\n", 
-                    (long) pthread_self() , 
-                    (const char *)(name()?name():"anonymous"), 
-                    o.c_str()
-                    ); 
-        fflush(stderr);
-    }
-#endif
 
     return RCOK;
 }
 
-
-struct __rng_init {
-  typedef uint32_t array[w_rand::R];
-  typedef uint32_t const const_array[w_rand::R];
-  array _w;
-  
-  __rng_init() {
-    for (int i=0; i < w_rand::R; i++)
-      _w[i] = ::rand();
-  }
-  const_array &get() { return _w; }
-};
 
 /*
  *  sthread_t::sthread_t(priority, name)
@@ -556,14 +501,14 @@ sthread_t::sthread_t(priority_t        pr,
   _core(0),
   _status(t_virgin),
   _priority(pr),
-  _rng(__rng_init().get())
+  _rce(stOK)
 {
     if(!_start_terminate_lock || !_start_cond )
         W_FATAL(fcOUTOFMEMORY);
 
     DO_PTHREAD(pthread_cond_init(_start_cond, NULL));
     DO_PTHREAD(pthread_mutex_init(_start_terminate_lock, NULL));
-   
+    
     _core = new sthread_core_t;
     if (!_core)
         W_FATAL(fcOUTOFMEMORY);
@@ -598,28 +543,6 @@ sthread_t::sthread_t(priority_t        pr,
         cerr << "sthread_t: cannot initialize thread core" << endl;
         W_FATAL(stINTERNAL);
     }
-
-#if TRACE_START_TERM
-    {   w_ostrstream o;
-        o << *this << endl;
-        fprintf(stderr, "me: %#lx Constructed: %s : %s\n", 
-                    (long) pthread_self() , 
-                    (const char *)(name()?name():"anonymous"), 
-                    o.c_str()
-                    ); 
-        fflush(stderr);
-    }
-    /*
-    fprintf(stderr, "sthread_t %s constructed, this %p core %p pthread %p\n", 
-            (const char *)(nm?nm:"anonymous"), 
-            this, 
-            _core,
-            (void*) (myself())
-            );
-    fflush(stderr);
-    */
-#endif
-
 }
 
 
@@ -658,28 +581,17 @@ sthread_t::~sthread_t()
               (long)this, name()));
     }
     }
-#if TRACE_START_TERM
-    {   w_ostrstream o;
-        o << *this << endl;
-        fprintf(stderr, 
-                "me: %#lx Destruction of (%s = %s) \n", 
-                (long) pthread_self() , 
-                name(), o.c_str()
-                ); 
-        fflush(stderr);
-    }
-#endif
     sthread_core_exit(_core, _terminated);
 
     delete _core;
     _core = 0;
 
     DO_PTHREAD(pthread_cond_destroy(_start_cond));
-	delete _start_cond;
+    delete _start_cond;
     _start_cond = 0;
 
     DO_PTHREAD(pthread_mutex_destroy(_start_terminate_lock));
-	delete _start_terminate_lock;
+    delete _start_terminate_lock;
     _start_terminate_lock = 0; // clean up for valgrind
 
 }
@@ -789,11 +701,17 @@ void sthread_t::_start()
     w_assert1(isStackFrameOK(0));
     {
         CRITICAL_SECTION(cs, _start_terminate_lock);
-        while(!_forked) {
+        if(_forked) {
+            // If the parent thread gets to fork() before
+            // the child can get to _start(), then _forked
+            // will be true. In this case, skip the condition wait.
+            CRITICAL_SECTION(cs_thread, _wait_lock);
+            _status = t_running;
+        } else {
             DO_PTHREAD(pthread_cond_wait(_start_cond, _start_terminate_lock));
-	}
-	CRITICAL_SECTION(cs_thread, _wait_lock);
-	_status = t_running;
+            CRITICAL_SECTION(cs_thread, _wait_lock);
+            _status = t_running;
+        }
     }
 
 #if defined(PURIFY)
@@ -801,11 +719,33 @@ void sthread_t::_start()
        in run() ... this is mostly useless if that happens */
     purify_name_thread(name());
 #endif
+
+    { 
+        // thread checker complains about this not being reentrant
+        // so we'll protect it with a mutex.
+        // We could use reentrant rand_r but then we need to seed it.
+        // and the whole point here is to use rand() to seed each thread
+        // differently.
+        // to protect non-reentrant rand()
+        static queue_based_lock_t rand_mutex;
+
+        long seed1, seed2;
+        {
+            CRITICAL_SECTION(cs, rand_mutex);
+            seed1 = ::rand();
+            seed2 = ::rand();
+        }
+        tls_rng.seed( (seed1 << 24) ^ seed2);
+    }
+     
     
     {
         /* do not save sigmask */
         w_assert1(me() == this);
 #ifdef STHREAD_CXX_EXCEPTION
+        // NOTE: this is not tested in SHORE-MT; it is old code.
+        // TODO: exception-handling.
+        
         /* Provide a "backstop" exception handler to catch uncaught
            exceptions in the thread.  This prevents them from going
            into never-never land. */
@@ -830,15 +770,14 @@ void sthread_t::_start()
 
     /* Returned from run(). Current thread is ending. */
     {
-        CRITICAL_SECTION(cs, _wait_lock);
+        CRITICAL_SECTION(cswait, _wait_lock);
         w_assert3(me() == this);
         _status = t_defunct;
         _link.detach();
     }
     {
-         pthread_mutex_lock(&_class_list_lock);
+        CRITICAL_SECTION(csclass, _class_list_lock);
         _class_link.detach();
-        pthread_mutex_unlock(&_class_list_lock);
     }
 
     w_assert3(this == me());
@@ -846,9 +785,7 @@ void sthread_t::_start()
     {
         w_assert1(_status == t_defunct);
         // wake up any thread that joined on us
-        DBGTHRD(<< name() << " terminating");
         tls_tricks::tls_manager::thread_fini();
-        DBGTHRD(<< name() << " pthread_exiting");
         pthread_exit(0);
     }
     
@@ -962,14 +899,18 @@ sthread_t::_block(
     sthread_t* self = me();
     w_assert1(timeout != WAIT_IMMEDIATE);   // not 0 timeout
 
-    
-
     // wait...
     status_t old_status = self->_status;
     self->_status = t_blocked;
 
     int error = 0;
     self->_unblock_flag = false;
+    // NOTE: abstract timeouts, e.g., WAIT_FOREVER, are  < 0
+    // absolute timeouts are > 0
+    // WAIT_IMMEDIATE == 0; we asserted above that it's not immediate
+	
+	self->_rce = stOK;
+
     if(timeout > 0) {
         timespec when;
         timeout_to_timespec(timeout, when);
@@ -984,9 +925,9 @@ sthread_t::_block(
             // Break out if we were signalled
             if(!error) break;
         }
-    }
-    else {
-        // wait forever... no other abstract timeout should have gotten here
+        
+    } else {
+        // wait forever... no other abstract timeout should get here
         w_assert1(timeout == sthread_t::WAIT_FOREVER);
         // wait until someone else unblocks us (sets _unblock_flag)
         // pthread_cond_wait should return 0 if no error, that is,
@@ -999,7 +940,19 @@ sthread_t::_block(
     switch(error) {
     case ETIMEDOUT:
         // FRJ: Not quite sure why this one thinks it's not being checked...
+        // Should get here only from pthread_cond_timedwait
+        w_assert1(timeout > 0);
+#if 1 || DEAD
         W_COERCE(self->_unblock(stTIMEOUT));
+#else
+        // modified copy of _unblock(stTIMEOUT) below
+        {
+			// Don't change the error code unless it was not set
+			// by an unblocker coincident with our timeout.
+            if(!self->_rce) self->_rce = stTIMEOUT;
+            self->_unblock_flag = true;
+        }
+#endif
         // fall through
     case 0:
         /* somebody called unblock(). We don't need to lock because
@@ -1007,17 +960,7 @@ sthread_t::_block(
          * perform its initial block() after it is told to fork().
          */
         self->_status = old_status;
-#ifdef SM_THREAD_SAFE_ERRORS
-        if(self->_rc.is_error()) {
-            self->_rc->claim(); // it was created by a different thread
-            w_rc_t rc(self->_rce);
-            self->_rc = RCOK;
-            return rc;
-        }
-        return RCOK;
-#else
         return self->_rce;
-#endif
     default:
         self->_status = old_status;
         return sthread_t::stOS;
@@ -1038,10 +981,8 @@ sthread_t::unblock(w_rc_t::errcode_t e)
 {
     CRITICAL_SECTION(cs, _wait_lock);
 
-    /* Now that we hold both the list mutex (our caller did that) and
-       the thread mutex, we can remove ourselves from the waitlist. To
-       be honest, the list lock might be enough by itself, but we have
-       to grab both locks anyway, so we may as well be doubly sure.
+    /* Now that we hold both the list mutex (_wait_lock) 
+       we can remove ourselves from the waitlist. 
     */
     _link.detach();
     return _unblock(e);
@@ -1057,16 +998,11 @@ sthread_t::_unblock(w_rc_t::errcode_t e)
     /*
      *  Save rc (will be returned by block())
      */
-    if (e)
-        _rce = e;
-    else
-        _rce = stOK;
-
-    /*
-     *  Thread is again ready.
-     */
+    _rce = e;
     _unblock_flag = true;
-    membar_producer(); // make sure the unblock_flag is visible
+
+    membar_producer(); // make sure the unblock_flag and _rce
+    // are visible before the signal is.
     DO_PTHREAD(pthread_cond_signal(&_wait_cond));
     _status = t_running;
 
@@ -1083,11 +1019,11 @@ sthread_t::_unblock(w_rc_t::errcode_t e)
  *
  *  Give up CPU. Maintain ready status.
  *
+ *  Used only in tests, nowhere in basic sm.
+ *
  *********************************************************************/
 void sthread_t::yield()
 {
-#define USE_YIELD
-#ifdef USE_YIELD
     sthread_t* self = me();
     CRITICAL_SECTION(cs, self->_wait_lock);
     w_assert3(self->_status == t_running);
@@ -1096,7 +1032,6 @@ void sthread_t::yield()
     sched_yield();
     cs.resume();
     self->_status = t_running;
-#endif
 }
 
 /* print all threads */
@@ -1113,8 +1048,8 @@ void sthread_t::dumpall(ostream &o)
 // We've put this into a huge critical section
 // to make it thread-safe, even though it's probably not necessary
 // when used in the debugger, which is the only place this is used...
-	pthread_mutex_lock(&_class_list_lock);
-    sthread_list_i i(*_class_list);
+    CRITICAL_SECTION(cs, _class_list_lock);
+    w_list_i<sthread_t, queue_based_lock_t> i(*_class_list);
 
     while (i.next())  {
         o << "******* ";
@@ -1124,7 +1059,6 @@ void sthread_t::dumpall(ostream &o)
 
         i.curr()->_dump(o);
     }
-    pthread_mutex_unlock(&_class_list_lock);
 }
 
 
@@ -1162,7 +1096,7 @@ static void print_time(ostream &o, const sinterval_t &real,
 
 void sthread_t::dump_stats(ostream &o)
 {
-    o << SthreadStats;
+    o << me()->SthreadStats;
 
     /* To be moved somewhere else once I put some other infrastructure
        into place.  Live with it in the meantime, the output is really
@@ -1211,7 +1145,7 @@ void sthread_t::dump_stats(ostream &o)
 
 void sthread_t::reset_stats()
 {
-    SthreadStats.clear();
+    me()->SthreadStats.clear();
 }
 
 
@@ -1284,14 +1218,12 @@ void sthread_t::for_each_thread(ThreadFunc& f)
 // We've put this into a huge critical section
 // to make it thread-safe, even though it's probably not necessary
 // when used in the debugger, which is the only place this is used...
-    pthread_mutex_lock(&_class_list_lock);
-
-    sthread_list_i i(*_class_list);
+    CRITICAL_SECTION(cs, _class_list_lock);
+    w_list_i<sthread_t, queue_based_lock_t> i(*_class_list);
 
     while (i.next())  {
         f(*i.curr());
     }
-    pthread_mutex_unlock(&_class_list_lock);
 }
 
 void print_timeout(ostream& o, const sthread_base_t::timeout_in_ms timeout)
@@ -1340,12 +1272,53 @@ void occ_rwlock::release_read()
     }
 }
 
+void occ_rwlock::acquire_read()
+{
+    int count = atomic_add_32_nv(&_active_count, READER);
+    while(count & WRITER) {
+        // block
+        count = atomic_add_32_nv(&_active_count, -READER);
+        {
+            CRITICAL_SECTION(cs, _read_write_mutex);
+            
+            // nasty race: we could have fooled a writer into sleeping...
+            if(count == WRITER)
+                DO_PTHREAD(pthread_cond_signal(&_write_cond));
+            
+            while(*&_active_count & WRITER) {
+                DO_PTHREAD(pthread_cond_wait(&_read_cond, &_read_write_mutex));
+            }
+        }
+        count = atomic_add_32_nv(&_active_count, READER);
+    }
+    membar_enter();
+}
+
 void occ_rwlock::release_write()
 {
     w_assert9(_active_count & WRITER);
     CRITICAL_SECTION(cs, _read_write_mutex);
     atomic_add_32(&_active_count, -WRITER);
     DO_PTHREAD(pthread_cond_broadcast(&_read_cond));
+}
+
+void occ_rwlock::acquire_write()
+{
+    // only one writer allowed in at a time...
+    CRITICAL_SECTION(cs, _read_write_mutex);    
+    while(*&_active_count & WRITER) {
+        DO_PTHREAD(pthread_cond_wait(&_read_cond, &_read_write_mutex));
+    }
+    
+    // any lurking writers are waiting on the cond var
+    int count = atomic_add_32_nv(&_active_count, WRITER);
+    w_assert1(count & WRITER);
+
+    // drain readers
+    while(count != WRITER) {
+        DO_PTHREAD(pthread_cond_wait(&_write_cond, &_read_write_mutex));
+        count = *&_active_count;
+    }
 }
 
 /**\cond skip */
@@ -1394,6 +1367,7 @@ sthread_name_t::rename(
 
         _name[sz] = '\0';
     }
+
 }
 
 void
@@ -1421,24 +1395,6 @@ sthread_named_base_t::~sthread_named_base_t()
 /**\endcond skip */
 
 /**\cond skip */
-
-#if LATCH_CAN_BLOCK_LONG 
-/*********************************************************************
- *
- *  sthread_priority_list_t::sthread_priority_list_t()
- *
- *  Construct an sthread list sorted by priority level.
- *
- *********************************************************************/
-#define NOLOCK (queue_based_lock_t *)NULL
-
-NORET
-sthread_priority_list_t::sthread_priority_list_t()
-: w_descend_list_t<sthread_t, queue_based_lock_t, sthread_t::priority_t> 
-    (W_KEYED_ARG(sthread_t, _priority, _link), NOLOCK )
-{
-}
-#endif
 
 // if you really are a sthread_t return 0
 smthread_t* sthread_t::dynamic_cast_to_smthread()

@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: shell.cpp,v 1.335 2010/05/26 01:20:51 nhall Exp $
+ $Id: shell.cpp,v 1.352 2012/01/02 17:02:18 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -36,6 +36,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 #include "shell.h"
 
+#include <errno.h>
 #include <cstdio>
 #include <fstream>
 #include <w_strstream.h>
@@ -65,6 +66,7 @@ __thread w_ostrstream *tcloutp(NULL);
 rand48 &get_generator() {
      if (generatorp == NULL) {
          generatorp = new rand48;
+         generatorp->seed(0xabcdef);
      }
      return *generatorp;
 }
@@ -133,11 +135,10 @@ void clean_up_shell()
 /* XXX it would be nice if this was controllable from smsh for non-debug
    sessions. */
 #ifdef SSH_DUMPRC
-#define DEFAULT_DUMPRC        true
+bool dumprc =  true;
 #else
-#define        DEFAULT_DUMPRC        false
+bool dumprc =  false;
 #endif
-bool dumprc =  DEFAULT_DUMPRC;
 #endif
 
 const char*
@@ -470,14 +471,30 @@ ostream &format_ptr_null(ostream &o, const void *ptr)
 static int read_ptr(Tcl_Interp *, const char *s, void *&ptr)
 {
     char             *t;
-    long long        l = -1;
+    unsigned long long        l = (unsigned long long)(-1);
     bool             ok = true;
 
 
     // skip leading white space
     while(isspace(*s)) s++; 
 
-    l = strtoll(s, &t, 16);
+    errno = 0;
+    l = strtoull(s, &t, 16);
+    if((errno) || (l == ULLONG_MAX) ) {
+        fprintf(stderr, 
+                "cannot convert string %s to pointer; out of range. errno %d\n",
+                s, errno);
+    }
+
+#if W_DEBUG_LEVEL >= 0
+    const char *front = s;
+    if(ok) {
+        // peel off 0x000000
+        while(*front=='0') front++;
+        if(*front=='x') front++;
+        while(*front=='0') front++;
+    }
+#endif
 
     // skip trailing white space
     while(isspace(*t)) t++; 
@@ -486,18 +503,67 @@ static int read_ptr(Tcl_Interp *, const char *s, void *&ptr)
     ok = !(s == t || *t != 0);
 
     // try it again with base 10 just in case.
-    if (!ok)
-            l = strtoll(s, &t, 10);
+    if (!ok) {
+        errno = 0;
+        l = strtoull(s, &t, 10);
+        if((errno) || (l == ULLONG_MAX) ) {
+            fprintf(stderr, 
+                "cannot convert string %s to pointer; out of range. errno %d\n",
+                s, errno);
+        }
+#if W_DEBUG_LEVEL >= 0
+        if(ok) {
+            // peel off leading 0000000
+            while(*front=='0') front++;
+        }
+#endif
+    }
 
     // if it didn't scan completely something is wrong
     ok = !(s == t || *t != 0);
 
-    ptr = (void *) (ok ? l : 0);
+    ptr = 0;
+    if(ok) {
+        union {
+            void * p;
+            unsigned long long l;
+        } pun;
+        pun.l = l;
+        ptr = pun.p;
+    }
+        
+#if W_DEBUG_LEVEL >= 0
+    // Convert back to a string compare with input.
+    // Input might have trailing spaces.
+    {
+        const int buflen=100;
+        char buf[buflen];
+        if(l) {
+            sprintf(buf, "%llx%c", l, 0);
+            int n = strncmp(buf, front, buflen);
+            if(n) {
+                fprintf(stderr, 
+                        "1: buf |%s|,\n front |%s| \nstrcmp result is %d\n", 
+                        buf, front, n);
+                fprintf(stderr,
+                        "Failure here probably means white space %s\n",
+                        " is in a tcl string representing a pointer");
+            }
+            w_assert0(strncmp(buf, front,buflen) == 0);
+#ifndef SOLARIS2
+            sprintf(buf, "%p", ptr);
+            if(strcmp(buf, s)) {
+                fprintf(stderr, "2: buf %s, s %s\n", buf, s);
+            }
+            w_assert0(strcmp(buf, s) == 0);
+#endif
+        }
+    }
+#endif
 
     return ok ? 0 : -1;
 }
 
-#if 1 
 /* This is templated to allow for possible labelling of pointers by
    type in the future.  It also takes care of casting errors in some
    compilers. */
@@ -514,7 +580,6 @@ READ_PTR(pin_i)
 READ_PTR(scan_index_i)
 READ_PTR(scan_file_i)
 READ_PTR(append_file_i)
-#endif
 
 vec_t &
 parse_vec(const char *c, int len) 
@@ -564,6 +629,30 @@ t_lock_timeout(Tcl_Interp* ip, int ac, TCL_AV char* av[])
     return TCL_OK;
 }
 
+/* NOTE: this assumes that when we source another script, the
+ * transactions are started in the lowest-level script.  We don't
+ * have any way to reset the script name when we pop back.
+ * We also assume that we never fork threads that source other
+ * scripts.
+ */
+const  int SCRIPT_NAME_MAX = 80;
+static int script_number=0;
+static char script_name[SCRIPT_NAME_MAX];
+static int
+t_set_script_name(Tcl_Interp* ip, int ac, TCL_AV char* av[])
+{
+    if (check(ip, "[string]", ac, 2, 2)) 
+        return TCL_ERROR;
+
+    script_number++;
+    char *nxt = (char *)memccpy(script_name, av[1], 0, SCRIPT_NAME_MAX );
+    if(nxt) *nxt = '\0';
+    else script_name[SCRIPT_NAME_MAX-1] = '\0';
+
+
+    return TCL_OK;
+}
+
 static int
 t_begin_xct(Tcl_Interp* ip, int ac, TCL_AV char* av[])
 {
@@ -582,6 +671,9 @@ t_begin_xct(Tcl_Interp* ip, int ac, TCL_AV char* av[])
     {
         DO( sm->begin_xct(s) );
     }
+    w_ostrstream out;
+    out << "smsh: script " << script_name << " #" << script_number << ends;
+    sm->log_message(out.c_str());
     return TCL_OK;
 }
 
@@ -599,8 +691,32 @@ t_commit_xct(Tcl_Interp* ip, int ac, TCL_AV char* av[])
     if(linked.instrument_flag && s) {
         w_reset_strstream(tclout);
         tclout << *s << ends;
+        Tcl_AppendResult(ip, tclout.c_str(),  0);
     }
     delete s;
+    return TCL_OK;
+}
+
+/* for now we only handle 1 or 2 transactions */
+static int
+t_commit_xct_group(Tcl_Interp* ip, int ac, TCL_AV char* av[])
+{
+    if (check(ip, "xct* [, xct*]", ac, 1, ac)) return TCL_ERROR;
+#define NNNN 100
+    if(ac >= NNNN) {
+        Tcl_AppendResult(ip, "Too many transactions for smsh shell.", 0);
+        return TCL_ERROR;
+    }
+    xct_t *list[NNNN]; // XXXX LIMIT 
+    int    listlen=0;
+    int count = 1;
+    while(count < ac)  {
+        if (read_ptr(ip, av[count], list[listlen])) return TCL_ERROR;
+        listlen++;
+        count++;
+    }
+
+    DO( sm->commit_xct_group(list, listlen) );
     return TCL_OK;
 }
 
@@ -623,6 +739,7 @@ t_chain_xct(Tcl_Interp* ip, int ac, TCL_AV char* av[])
     if(linked.instrument_flag && s) {
         w_reset_strstream(tclout);
         tclout << *s << ends;
+        Tcl_AppendResult(ip, tclout.c_str(),  0);
     }
     delete s;
     return TCL_OK;
@@ -633,7 +750,12 @@ t_set_coordinator(Tcl_Interp* ip, int ac, TCL_AV char* av[])
 {
 
     if (check(ip, "handle", ac, 2)) return TCL_ERROR;
-    server_handle_t        h(av[1]);
+//  server_handle_t        h(av[1]);
+//  // add script name for the purpose of debugging, since now
+//  we have no external coordinators for smsh.
+    w_ostrstream out;
+    out << script_name << "#" << script_number << av[1] << ends;
+    server_handle_t        h(out.c_str());
     DO( sm->set_coordinator(h));
     return TCL_OK;
 }
@@ -653,6 +775,7 @@ t_recover2pc(Tcl_Interp* ip, int ac, TCL_AV char* av[])
     if (check(ip, "gtid_t", ac, 2)) return TCL_ERROR;
 
     gtid_t        g(av[1]);
+
     tid_t                 t;
     DO( sm->recover_2pc(g, true, t));
     w_reset_strstream(tclout);
@@ -680,11 +803,39 @@ t_num_prepared(Tcl_Interp* ip, int ac, TCL_AV char*[])
 {
     if (check(ip, "", ac, 1)) return TCL_ERROR;
 
-    int numu=0, num=0;
+    int num=0;
     DO( sm->query_prepared_xct(num));
-    num += numu ;
     w_reset_strstream(tclout);
     tclout << num << ends;
+    Tcl_AppendResult(ip, tclout.c_str(), 0);
+    w_reset_strstream(tclout);
+    return TCL_OK;
+}
+
+static int
+t_recover2pc_all(Tcl_Interp* ip, int ac, TCL_AV char* av[])
+{
+    if (check(ip, "abort/commit", ac, 2)) return TCL_ERROR;
+    bool abort=false;
+    if (strcmp(av[1], "abort")==0) abort=true;
+    w_reset_strstream(tclout);
+
+    int num=0;
+    DO( sm->query_prepared_xct(num));
+
+    gtid_t g;
+    while(num > 0) {
+        DO( sm->query_prepared_xct(1, &g));
+        tid_t  t;
+        DO( sm->recover_2pc(g, false, t));
+        if(abort) {
+            DO( sm->abort_xct() );
+        } else {
+            DO( sm->commit_xct());
+        }
+        tclout << " " << g << " " << t << ends;
+        DO( sm->query_prepared_xct(num));
+    }
     Tcl_AppendResult(ip, tclout.c_str(), 0);
     w_reset_strstream(tclout);
     return TCL_OK;
@@ -703,6 +854,8 @@ t_prepare_xct(Tcl_Interp* ip, int ac, TCL_AV char* [])
     if(linked.instrument_flag && s) {
         w_reset_strstream(tclout);
         tclout << *s << ends;
+        // prepare returns vote, not stats
+        // Tcl_AppendResult(ip, tclout.c_str(),  0);
     }
     delete s;
 
@@ -717,6 +870,10 @@ int
 t_abort_xct(Tcl_Interp* ip, int ac, TCL_AV char* [])
 {
     if (check(ip, "", ac, 1)) return TCL_ERROR;
+    if(ss_m::logging_enabled == false) {
+        Tcl_AppendResult(ip, "Logging not enabled. Cannot restart.", 0);
+        return TCL_ERROR;
+    }
     sm_stats_info_t *s=0;
     DO( sm->abort_xct(s));
     /*
@@ -725,6 +882,7 @@ t_abort_xct(Tcl_Interp* ip, int ac, TCL_AV char* [])
     if(linked.instrument_flag && s) {
         w_reset_strstream(tclout);
         tclout << *s << ends;
+        Tcl_AppendResult(ip, tclout.c_str(),  0);
     }
     delete s;
     return TCL_OK;
@@ -747,6 +905,10 @@ static int
 t_rollback_work(Tcl_Interp* ip, int ac, TCL_AV char* av[])
 {
     if (check(ip, "savepoint", ac, 2))  return TCL_ERROR;
+    if(ss_m::logging_enabled == false) {
+        Tcl_AppendResult(ip, "Logging not enabled. Cannot restart.", 0);
+        return TCL_ERROR;
+    }
     sm_save_point_t sp;
 
     w_istrstream anon(av[1]); anon >> sp;
@@ -896,7 +1058,7 @@ t_xct_to_tid(Tcl_Interp* ip, int ac, TCL_AV char* av[])
     xct_t *x = 0;
     if (read_ptr(ip, av[1], x)) return TCL_ERROR;
 
-    if(x) {
+    if(x!= NULL) {
         tid_t t = sm->xct_to_tid(x);
         w_reset_strstream(tclout);
         tclout << t << ends;
@@ -988,31 +1150,11 @@ t_snapshot_buffers(Tcl_Interp* ip, int ac, TCL_AV char* av[])
 }
 
 static int
-t_mem_stats(Tcl_Interp* ip, int ac, TCL_AV char* av[])
+t_mem_stats(Tcl_Interp* ip, int ac, TCL_AV char* /*av*/[])
 {
     if (check(ip, "[reset]", ac, 1,2))
         return TCL_ERROR;
 
-    bool reset = false;
-    if (ac == 2) {
-        if (strcmp(av[1], "reset") == 0) {
-            reset = true;
-        }
-    }
-
-#if DEAD
-    w_reset_strstream(tclout);
-    {
-        size_t amt=0, num=0, hiwat;
-        w_shore_alloc_stats(amt, num, hiwat); // TODO: some replacement?
-        tclout << amt << " bytes allocated in main heap in " 
-                << num
-                << " calls, high water mark= " << hiwat
-                << ends;
-    }
-    Tcl_AppendResult(ip, tclout.c_str(), 0);
-    w_reset_strstream(tclout);
-#endif
     return TCL_OK;
 }
 
@@ -1025,6 +1167,9 @@ t_gather_xct_stats(Tcl_Interp* ip, int ac, TCL_AV char* av[])
     bool reset = false;
     if (ac == 2) {
         if (strcmp(av[1], "reset") == 0) {
+            reset = true;
+        }
+        if (strcmp(av[1], "true") == 0) {
             reset = true;
         }
     }
@@ -1135,7 +1280,6 @@ t_sync_log(Tcl_Interp* ip, int ac, TCL_AV char* [])
     return TCL_OK;
 }
 
-extern "C" void check_disk(const vid_t &vid);
 static int
 t_check_volume(Tcl_Interp* ip, int ac, TCL_AV char* av[])
 {
@@ -1147,10 +1291,17 @@ t_check_volume(Tcl_Interp* ip, int ac, TCL_AV char* av[])
         w_istrstream anon(av[1]); anon >> vid;
         w_ostrstream junk;
         junk << "vid = " << vid << ends;
-        // fprintf(stderr, "calling check_disk vid=%s, results in %s\n", 
+        // fprintf(stderr, "calling dump_vol_store_info vid=%s, results in %s\n", 
           //       av[1], junk.c_str());
 
-        check_disk(vid);
+        bool need_xct = (xct()==NULL);
+        if(need_xct) {
+            DO( sm->begin_xct() );
+        }
+        DO(ss_m::dump_vol_store_info(vid));
+        if(need_xct) {
+            DO( sm->commit_xct() );
+        }
         w_reset_strstream(tclout);
     }
     Tcl_AppendResult(ip, tclout.c_str(), 0);
@@ -1889,23 +2040,29 @@ prepare_for_blkld(sort_stream_i& s_stream,
         if (!eof && pin->pinned()) {
             vec_t key(pin->hdr(), pin->hdr_size()),
                   el(pin->body(), pin->body_size());
-                
-if(t == test_spatial) {
-        nbox_t k;
-        k.bytes2box((char *)pin->hdr(), pin->hdr_size());
 
-        DBG(<<"hdr size is " << pin->hdr_size());
-        int dim = pin->hdr_size() / (2 * sizeof(int));
-        const char *cp = pin->hdr();
-        int tmp;
-        for(int j=0; j<dim; j++) {
-            memcpy(&tmp, cp, sizeof(int));
-            cp += sizeof(int);
-            DBG(<<"int[" << j << "]= " << tmp);
-        }
-        DBG(<<"key is " << k);
-        DBG(<<"body is " << (const char *)(pin->body()));
-}
+            if(t == test_spatial) {
+                    nbox_t k;
+                    k.bytes2box((char *)pin->hdr(), pin->hdr_size());
+
+                    DBG(<<"hdr size is " << pin->hdr_size());
+                    int dim = pin->hdr_size() / (2 * sizeof(int));
+                    const char *cp = pin->hdr();
+                    int tmp;
+                    for(int j=0; j<dim; j++) {
+                        memcpy(&tmp, cp, sizeof(int));
+                        cp += sizeof(int);
+                        DBG(<<"int[" << j << "]= " << tmp);
+                    }
+                    DBG(<<"key is " << k);
+                    DBG(<<"body is " << (const char *)(pin->body()));
+            }
+            DBG(<<"prepare_for_blkld key.size " << key.size()
+                    << " pin->hdr_size() " << pin->hdr_size()
+                    << " el.size " << el.size()
+                    << " pin->body_size() " << pin->body_size()
+                    );
+                
             W_DO(s_stream.put(key, el));
         }
     }
@@ -1968,11 +2125,11 @@ t_blkld_ndx(Tcl_Interp* ip, int ac, TCL_AV char* av[])
                " takes only one source file.", 0);
         }
             if (excess_arguments==1) {
-            DBG(<<"prepare_for_blkld 1 " );
-            DO( prepare_for_blkld(s_stream, ip, av[first_src], typearg) );
+                DBG(<<"prepare_for_blkld 1 " );
+                DO( prepare_for_blkld(s_stream, ip, av[first_src], typearg) );
             } else {
-            DBG(<<"prepare_for_blkld 2 " );
-            DO( prepare_for_blkld(s_stream, ip, av[first_src], typearg, universearg) );
+                DBG(<<"prepare_for_blkld 2 " );
+                DO( prepare_for_blkld(s_stream, ip, av[first_src], typearg, universearg) );
         }
 
         {
@@ -2065,13 +2222,20 @@ t_print_index(Tcl_Interp* ip, int ac, TCL_AV char* av[])
 static int
 t_print_md_index(Tcl_Interp* ip, int ac, TCL_AV char* av[])
 {
-    if (check(ip, "stid", ac, 2))
+    if (check(ip, "stid [output file]", ac, 3))
         return TCL_ERROR;
 
+    ofstream OutFile(av[2]);
+    if (!OutFile) {
+        w_rc_t        e = RC(fcOS);
+        cerr << "Can't open output file: " << av[2] << ":" << endl
+                    << e << endl;
+        return TCL_ERROR;        /* XXX or should it be some other error? */
+    }
     {
         stid_t stid;
         w_istrstream anon(av[1]); anon >> stid;
-        DO( sm->print_md_index(stid) );
+        DO( sm->print_md_index(stid, OutFile) );
     }
 
     return TCL_OK;
@@ -2107,6 +2271,10 @@ t_restart(Tcl_Interp* ip, int ac, TCL_AV char* av[])
     if (check(ip, "clean:bool", ac, 1, 2))
         return TCL_ERROR;
 
+    if(ss_m::logging_enabled == false) {
+        Tcl_AppendResult(ip, "Logging not enabled. Cannot restart.", 0);
+        return TCL_ERROR;
+    }
     bool clean = false;
     if(ac==2) {
             /* XXX error ignored for now */
@@ -2332,7 +2500,6 @@ t_scan_next(Tcl_Interp* ip, int ac, TCL_AV char* av[])
         bool done = false;
         switch(t) {
         case test_bv:
-            outbuf[klen] = outbuf[klen + 1 + elen] = '\0';
             Tcl_AppendResult(ip, outbuf, " ", outbuf + klen + 1, 0);
             done = true;
             break;
@@ -3508,7 +3675,25 @@ t_scan_file_create(Tcl_Interp* ip, int ac, TCL_AV char* av[])
         }
         if(s->error_code().is_error()) {
             w_rc_t rc = RC(s->error_code().err_num());
-            cerr << rc << endl;
+            if(s->error_code().err_num() == ss_m::eDEADLOCK) {
+                // Trying to track down an occasional deadlock here
+                const char *x= (cc==ss_m::t_cc_append?"append_file_i":"scan_file_i");
+                cerr << s->error_code() 
+                    << " encountered while creating a "
+                    << x
+                    << " on fid " << fid
+                    << " cc == " << cc
+                    << endl;
+                if(ac > 4)  {
+                    cerr << " starting with rid " << av[3] << endl;
+                }
+
+                DO( sm->dump_locks(cerr) );
+                cerr << s->error_code() << endl;
+                cerr << "DUMP LOCKS AGAIN" << endl;
+                DO( sm->dump_locks(cerr) );
+                w_assert0(0);
+            }
         }
         TCL_HANDLE_FSCAN_FAILURE(s);
     }
@@ -3704,12 +3889,12 @@ t_create_assoc(Tcl_Interp* ip, int ac, TCL_AV char* av[])
             case test_i8: {
                     il = w_base_t::strtoi8(av[2]); 
                     key.reset();
-                    key.put(&i, sizeof(w_base_t::int8_t));
+                    key.put(&il, sizeof(w_base_t::int8_t));
                 } break;
             case test_u8: {
                     ul = w_base_t::strtou8(av[2]);
                     key.reset();
-                    key.put(&u, sizeof(w_base_t::uint8_t));
+                    key.put(&ul, sizeof(w_base_t::uint8_t));
                 }
                 break;
 
@@ -3970,7 +4155,7 @@ static void boxGen(nbox_t* rect[], int number, const nbox_t& universe)
     int box[4];
     int length, width;
 
-        rand48&  generator(get_generator());
+    rand48&  generator(get_generator());
 
     for (i = 0; i < number; i++) {
         // generate the bounding box
@@ -3986,57 +4171,55 @@ static void boxGen(nbox_t* rect[], int number, const nbox_t& universe)
         box[2] = box[0] + length;
         box[3] = box[1] + width;
         rect[i] = new nbox_t(2, box); 
-        }
+    }
 }
 
 
-/* Tool to hand out boxes in a consistent fashion so various resuls
-   are repeatble.   The minder also takes care of deallocating resoursces
+/* Tool to hand out boxes in a consistent fashion so various results
+   are repeatble.   The minder also takes care of deallocating resources
    on exit, fixing some memory leaks. */
 
 struct BoxMinder {
         enum { box_count = 50 };
 
-        bool        have_boxes;
+        bool       have_boxes;
         int        next;
 
-        nbox_t        *box[box_count];
+        nbox_t*    box[box_count];
 
         BoxMinder()
         : have_boxes(false),
           next(-1)
         {
-                for (unsigned i = 0; i < box_count; i++)
-                        box[i] = 0;
+            for (unsigned i = 0; i < box_count; i++) box[i] = 0;
         }
 
         ~BoxMinder()
         {
-                for (unsigned i = 0; i < box_count; i++) {
-                        if (box[i])
-                                delete box[i];
-                        box[i] = 0;
-                }
-                have_boxes = false;
-                next = -1;
+            for (unsigned i = 0; i < box_count; i++) {
+                if (box[i]) delete box[i];
+                box[i] = 0;
+            }
+            have_boxes = false;
+            next = -1;
         }
 
         nbox_t        *next_box(const nbox_t &universe)
         {
-                if (++next >= box_count) {
-                        for (unsigned i = 0; i < box_count; i++)
-                                delete box[i];
-                        next = -1;
-                        have_boxes = false;
-                }
+            if (++next >= box_count) {
+                for (unsigned i = 0; i < box_count; i++)
+                            delete box[i];
+                next = -1;
+                have_boxes = false;
+            }
 
-                if (!have_boxes) {
-                        boxGen(box, box_count, universe);
-                        next = 0;
-                        have_boxes = true;
-                }
+            if (!have_boxes) {
+                boxGen(box, box_count, universe);
+                next = 0;
+                have_boxes = true;
+            }
 
-                return box[next];
+            return box[next];
         }
 
 };
@@ -4673,19 +4856,31 @@ t_lock_many(Tcl_Interp* ip, int ac, TCL_AV char* av[])
     {
         lockid_t n;
         cvt2lockid_t(av[2], n);
+#define DO_HANDLE_DEADLOCK(x) {                                \
+    w_rc_t ___rc = x;                                          \
+    if (___rc.is_error()) {                                    \
+       if(___rc.err_num() != ss_m::eDEADLOCK)  {               \
+        w_reset_strstream(tclout);                             \
+        DUMPRC(___rc);                                         \
+        tclout << smsh_err_name(___rc.err_num()) << ends;      \
+        Tcl_AppendResult(ip, tclout.c_str(), 0);               \
+        w_reset_strstream(tclout);                             \
+        return TCL_ERROR;                                      \
+    } }                                                          \
+}
         
         if (ac == 4)  {
             for (i = 0; i < num_requests; i++)
-                DO( sm->lock(n, mode) );
+                DO_HANDLE_DEADLOCK( sm->lock(n, mode) );
         } else {
             lock_duration_t duration = cvt2lock_duration(av[4]);
             if (ac == 5) {
                 for (i = 0; i < num_requests; i++)
-                    DO( sm->lock(n, mode, duration) );
+                    DO_HANDLE_DEADLOCK( sm->lock(n, mode, duration) );
             } else {
                 long timeout = atoi(av[5]);
                 for (i = 0; i < num_requests; i++)
-                    DO( sm->lock(n, mode, duration, timeout) );
+                    DO_HANDLE_DEADLOCK( sm->lock(n, mode, duration, timeout) );
             }
         }
     }
@@ -5076,9 +5271,11 @@ static cmd_t cmd[] = {
     { "checkpoint", t_checkpoint },
 
     // thread/xct related
+    { "set_script_name", t_set_script_name },
     { "begin_xct", t_begin_xct },
     { "abort_xct", t_abort_xct },
     { "commit_xct", t_commit_xct },
+    { "commit_xct_group", t_commit_xct_group },
     { "chain_xct", t_chain_xct },
     { "save_work", t_save_work },
     { "rollback_work", t_rollback_work },
@@ -5096,6 +5293,7 @@ static cmd_t cmd[] = {
     { "enter2pc", t_enter2pc},
     { "set_coordinator", t_set_coordinator}, // extern 2pc
     { "recover2pc", t_recover2pc},
+    { "recover2pc_all", t_recover2pc_all},
     { "num_prepared", t_num_prepared},
     { "num_active", t_num_active},
     { "lock_timeout", t_lock_timeout},

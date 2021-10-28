@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: hash1.cpp,v 1.25.2.5 2010/03/19 22:17:53 nhall Exp $
+ $Id: hash1.cpp,v 1.29 2010/12/08 17:37:38 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -39,6 +39,17 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 const int htsz = 3;
 const int nrecs = 20;
 
+class int_key_t {
+	int i;
+public:
+	int_key_t(int _i) : i(_i) {}
+	~int_key_t() {}
+
+	operator int () const { return i; }
+
+	w_base_t::uint4_t hash() const { return w_base_t::uint4_t(i); }
+};
+
 struct element_t {
     int         i;
     w_link_t        link;
@@ -46,7 +57,7 @@ struct element_t {
 
 int main()
 {
-    w_hash_t<element_t, unsafe_list_dummy_lock_t, int> 
+    w_hash_t<element_t, unsafe_list_dummy_lock_t, int_key_t> 
 		h(htsz, W_HASH_ARG(element_t, i, link), unsafe_nolock);
     element_t array[nrecs];
 
@@ -77,16 +88,9 @@ int main()
     return 0;
 }
 
-#ifdef __BORLANDC__
-#pragma option -Jgd
-#include <w_list.cpp>
-#include <w_hash.cpp>
-typedef w_list_t<element_t, unsafe_list_dummy_lock_t> w_list_t_element_t_dummy;
-typedef w_hash_t<element_t, unsafe_list_dummy_lock_t, int> w_hash_t_element_t_dummy;
-#endif /*__BORLANDC__*/
 
 #ifdef EXPLICIT_TEMPLATE
-template class w_hash_t<element_t, unsafe_list_dummy_lock_t, int>;
+template class w_hash_t<element_t, unsafe_list_dummy_lock_t, int_key_t>;
 template class w_list_t<element_t, unsafe_list_dummy_lock_t>;
 template class w_list_i<element_t, unsafe_list_dummy_lock_t>;
 #endif

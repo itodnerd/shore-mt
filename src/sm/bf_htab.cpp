@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore'>
 
- $Id: bf_htab.cpp,v 1.3 2010/06/15 17:30:07 nhall Exp $
+ $Id: bf_htab.cpp,v 1.8 2012/01/02 17:02:16 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -77,6 +77,10 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 #include "w_hashing.h"
 #include "bf_htab.h"
+
+// static
+// Used only for the dirty_pages_tab_t used in restart.
+w_hashing::hash2 bfpid_t::_hash;
 
 /*
  *  Move item from src->slot[which] to the next 
@@ -279,7 +283,7 @@ bfcb_t* bf_core_m::htab::insert(bfcb_t* t)
     bool ok = _insert(t, moved);
     if(!ok) 
     {
-        // TODO: rebuild 
+        // TODO: rebuild: filed  GNATS 47
         W_FATAL_MSG(fcINTERNAL, << "Must rebuild the hash table");
     }
 
@@ -290,7 +294,7 @@ bfcb_t* bf_core_m::htab::insert(bfcb_t* t)
  * This is for updating _max_limit
  * If needed elsewhere, put somewhere more accessible.
  */
-void atomic_max_32(volatile int *target, int arg)
+static void atomic_max_32(volatile int *target, int arg)
 {
     int orig=0;
     int larger = 0;
@@ -301,7 +305,7 @@ void atomic_max_32(volatile int *target, int arg)
         // changed in the meantime.
         orig = (int) atomic_cas_32((volatile uint32_t *)target, orig,  larger);
     } while (orig != larger);
-};
+}
 
 /*
  * insert key t in the _table. Assumes it's not already there.
@@ -340,7 +344,7 @@ bool bf_core_m::htab::_insert(bfcb_t* t, bfcb_t* &moved)
         }
     }
 
-#if W_DEBUG_LEVEL > 2
+#if W_DEBUG_LEVEL > 4
     // This is to debug the case of HASH_COUNT==2
     // in the case of only 2 hash funcs, this says that there is only
     // one place where I can stuff this page.  So I have to try
@@ -420,6 +424,34 @@ bfcb_t *bf_core_m::htab::lookup(bfpid_t const &pid) const
     bfcb_t* p = NULL;
     ADD_BFSTAT(_lookups, 1);
 
+	/* NOTE: 
+	 * I ran the kits  without the cheap lookup first.  Results are mixed; 
+	 * some things ran faster with, some without, some scaled
+	 * better with, some without. On the whole, the raw performance
+	 * was slightly worse. 
+	 *
+	 * With the cheap lookup first, there is likely less
+	 * contention on the bucket locks when the item is found in the htab.
+	 *
+	 * When the item is in the htab & not moving, 
+	 * the critical path is shorter with the cheap lookup first, 
+	 * but it is longer when the item is not in the htab
+	 * or is moved to a different bucket while the lookup is going on.
+	 * 
+	 * With the kits, most of the lookups are successful, and I haven't
+	 * seen any instances of the unlikely case of moving during
+	 * lookup.
+	 *
+	 * With only 2 hash functions, it's only 2 bucket locks and 2 items
+	 * to sort with the slow lookup, so it's not surprising that the
+	 * differences aren't significant.
+	 *
+	 * WARNING: if you change this, you will get different results with
+	 * the htab unit tests in sm/tests.
+	 */
+#define USE_CHEAP_LOOKUP_FIRST
+#ifdef USE_CHEAP_LOOKUP_FIRST
+
     for(int i=0; i < HASH_COUNT && !p; i++) 
     {
         int idx = hash(i, pid);
@@ -465,24 +497,27 @@ bfcb_t *bf_core_m::htab::lookup(bfpid_t const &pid) const
             }
         } // we drop out if p is non-null
     } // we drop out of p is non-null
+#endif
 
-    if(!p) p = _lookup_harsh(pid);
+    if(!p) p = _lookup_harsh(pid); // workaround for GNATS 35
     if(!p) ADD_BFSTAT(_lookups_failed, 1);
     return p;
 }
 
 // If we fail to find the page the first time around,
 // we'll do another look in case it moved while we were looking.
+// This is slower but safe b/c we lock *all* the possible buckets
+// before we search them for the frame we seek.
 bfcb_t *bf_core_m::htab::_lookup_harsh(bfpid_t const &pid) const
 {
     ADD_BFSTAT(_harsh_lookups, 1);
 
     int hash_count = HASH_COUNT;
 
+    // pre-hash into this array
     int idx[HASH_COUNT];
 
-    int i;
-    for(i=0; i < HASH_COUNT; i++) {
+    for(int i=0; i < HASH_COUNT; i++) {
         idx[i] = hash(i, pid);
         w_assert1(idx[i] < _size);
         w_assert1(idx[i] >= 0);
@@ -508,7 +543,7 @@ bfcb_t *bf_core_m::htab::_lookup_harsh(bfpid_t const &pid) const
                     hash_count--;
                     w_assert1(hash_count > 0);
                 }
-                if( idx[i] > idx[j]) {
+                else if( idx[i] > idx[j]) {
                     // swap
                     int tmp = idx[i];
                     idx[i] = idx[j];
@@ -522,7 +557,11 @@ bfcb_t *bf_core_m::htab::_lookup_harsh(bfpid_t const &pid) const
 
     bucket *b[HASH_COUNT];
     
-    for(i=0; i < hash_count; i++) {
+    // hash_count is the number of unique hashes,
+    // less than HASH_COUNT if two or more hashes yield the
+    // same value.  Must detect collisions so we don't
+    // try to double-acquire the bucket locks.
+    for(int i=0; i < hash_count; i++) {
         b[i]   = &_table[idx[i]];
         w_assert2(i==0 || (b[i] >= b[i-1]));
         // Acquire the mutexes in given order.
@@ -531,21 +570,24 @@ bfcb_t *bf_core_m::htab::_lookup_harsh(bfpid_t const &pid) const
         b[i]->_lock.acquire();
     }
 
+    // Now for each bucket, check all the slots in the
+    // bucket to see if the item is there.
     bfcb_t* result = NULL;
-    for(i=0; i < hash_count && result; i++) 
+    for(int i=0; (i < hash_count) && !result; i++) 
     {
         w_assert1(b[i]->_count <= SLOT_COUNT);
-        for(int s=0; s < b[i]->_count && result; s++) 
+        for(int s=0; (s < b[i]->_count) && !result; s++) 
         {
             bfcb_t* p = b[i]->_slots[s];
             ADD_BFSTAT(_harsh_probes, 1);
             if(p != NULL && p->pid() == pid)  {
+                // found. Pin it.
                 result = p; result->pin_frame();
             }
         }
     }
 
-    for(i=0; i < hash_count; i++) 
+    for(int i=0; i < hash_count; i++) 
     {
         // Release all the mutexes 
         w_assert1(b[i]->_lock.is_mine()==true);

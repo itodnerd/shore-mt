@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='UMEMCMP_H'>
 
- $Id: umemcmp.h,v 1.20.2.5 2010/03/19 22:19:19 nhall Exp $
+ $Id: umemcmp.h,v 1.22 2010/12/08 17:37:34 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -44,7 +44,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  */
 
 #include <assert.h>
-#include <w_base.h>
 
 #ifndef W_WORKAROUND_H
 #include <w_workaround.h>
@@ -63,10 +62,8 @@ inline int __umemcmp(const unsigned char* p, const unsigned char* q, int n)
  * should be verified!
  *
  * So far only sparcs (sunos) have been found to need a special umemcmp.
- * On HPs and Decstation/ultrix the library version of memcmp
- * uses unsigned chars.
  */
-#if defined(COMMON_USE_UMEMCMP) || defined(Sparc)
+#if defined(Sparc)
 
 inline uint int_alignment_check(const void *i) 
 {

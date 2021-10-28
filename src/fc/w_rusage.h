@@ -1,6 +1,7 @@
+/**\cond skip */
 /*<std-header orig-src='shore' incl-file-exclusion='W_RUSAGE_H'>
 
- $Id: w_rusage.h,v 1.12.2.5 2010/03/19 22:17:20 nhall Exp $
+ $Id: w_rusage.h,v 1.15 2010/12/08 17:37:37 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -34,99 +35,76 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 /*  -- do not edit anything above this line --   </std-header>*/
 
+#include "w_workaround.h"
 #include <sys/time.h>
-
-#ifdef Linux
-    extern "C" {
-#endif
 #include <sys/resource.h>
+#include <iosfwd>
+
+/*
+ * rusage.h
+ *
+ * Unix/Solaris rusage stats class.
+ */
+
+
+class unix_stats {
+protected:
+    struct timeval  time1;        /* gettimeofday() buffer */
+    struct timeval  time2;        /* gettimeofday() buffer */
+    struct rusage   rusage1;    /* getrusage() buffer */
+    struct rusage   rusage2;    /* getrusage() buffer */
+    void*           sbrk1;        /* sbrk #1 */
+    void*           sbrk2;        /* sbrk #2 */
+    int                iterations;
 #ifdef Linux
-    }
+typedef enum __rusage_who who_t;
+#else
+typedef int who_t;
 #endif
+    who_t who;
 
-/**\cond skip */
-/* XXX
- * 
- * This needs to be fixed.  The system should not be dependent
- * upon unix rusage facilities.  It should adapt to whatever is 
- * available (if anything)  on the host system.
- */
+public:
+    unix_stats();
+    unix_stats(int who); // if other than self
 
-/* XXX using kernel include file to do this is bogus.   It would be better
-   to say "enough of the actual defines are defined", rather than determining
-   whether the kernel include file has been sucked in.  Heck, we might
-   not be including the right file! */
+    float compute_time() const;
 
-/* _SYS_RESOURCE_H_ for *BSD unix boxes */
-/* _SYS_RESOURCE_INCLUDED for HPUX */
-#if !defined(_SYS_RESOURCE_H) && !defined(_SYS_RESOURCE_H_) && !defined(_SYS_RESOURCE_INCLUDED)
-#define    _SYS_RESOURCE_H
+    void   start();            /* start gathering stats  */
+    // you can start and then stop multiple times-- don't need to continue
+    void   stop(int iter=1);            /* stop gathering stats  */
+    int    clocktime() const;        /* elapsed real time in micro-seconds */
+    int    usertime() const;        /* elapsed user time in micro-seconds */
+    int    systime() const;    /* elapsed system time in micro-seconds */
+    /* variants */
+    int    s_clocktime() const;        /* diff of seconds only */
+    int    s_usertime() const;        
+    int    s_systime() const;    
+    int    us_clocktime() const;    /* diff of microseconds only */
+    int    us_usertime() const;        
+    int    us_systime() const;    
 
-/*
- * Process priority specifications
- */
+    int    page_reclaims() const;    /* page reclaims */
+    int    page_faults() const;    /* page faults */
+    int    swaps() const;            /* swaps */
+    int    inblock() const;        /* page-ins */
+    int    oublock() const;        /* page-outs */
+    int    xrss() const;            /* shared mem resident-set size */
+    int    drss() const;            /* unshared data size */
+    int    srss() const;            /* unsared stack size */
+    int    vcsw() const;            /* voluntary context swtch */
+    int    invcsw() const;            /* involuntary context swtch */
+    int    msgsent() const;            /* socket messages sent */
+    int    msgrecv() const;            /* socket messages recvd */
+    int    signals() const;            /* signals dispatched */
 
-#define    PRIO_PROCESS    0
-#define    PRIO_PGRP    1
-#define    PRIO_USER    2
+    int    mem() const;            /* sbrk diff */
 
-
-/*
- * Resource limits
- */
-
-#define    RLIMIT_CPU    0        /* cpu time in milliseconds */
-#define    RLIMIT_FSIZE    1        /* maximum file size */
-#define    RLIMIT_DATA    2        /* data size */
-#define    RLIMIT_STACK    3        /* stack size */
-#define    RLIMIT_CORE    4        /* core file size */
-#define    RLIMIT_NOFILE    5        /* file descriptors */
-#define    RLIMIT_VMEM    6        /* maximum mapped memory */
-#define    RLIMIT_AS    RLIMIT_VMEM
-
-#define    RLIM_NLIMITS    7        /* number of resource limits */
-
-#define    RLIM_INFINITY    0x7fffffff
-
-typedef unsigned long rlim_t;
-
-struct rlimit {
-    rlim_t    rlim_cur;        /* current limit */
-    rlim_t    rlim_max;        /* maximum value for rlim_cur */
+    ostream &print(ostream &) const;
 };
 
-#define    RUSAGE_SELF    0
-#define    RUSAGE_CHILDREN    -1
-
-struct    rusage {
-    struct timeval ru_utime;    /* user time used */
-    struct timeval ru_stime;    /* system time used */
-    long    ru_maxrss;        /* XXX: 0 */
-    long    ru_ixrss;        /* XXX: 0 */
-    long    ru_idrss;        /* XXX: sum of rm_asrss */
-    long    ru_isrss;        /* XXX: 0 */
-    long    ru_minflt;        /* any page faults not requiring I/O */
-    long    ru_majflt;        /* any page faults requiring I/O */
-    long    ru_nswap;        /* swaps */
-    long    ru_inblock;        /* block input operations */
-    long    ru_oublock;        /* block output operations */
-    long    ru_msgsnd;        /* messages sent */
-    long    ru_msgrcv;        /* messages received */
-    long    ru_nsignals;        /* signals received */
-    long    ru_nvcsw;        /* voluntary context switches */
-    long    ru_nivcsw;        /* involuntary " */
-};
-#endif    /* _SYS_RESOURCE_H */
-
-#ifndef Linux
-#ifndef getrusage
-    extern "C" int getrusage(int x , struct rusage* use);
-#endif /* getrusage */
-#endif /* Linux  */
-
-
-/**\endcond skip */
+extern ostream& operator<<(ostream&, const unix_stats &s);
+float compute_time(const struct timeval *start_time, const struct timeval *end_time);
 
 /*<std-footer incl-file-exclusion='W_RUSAGE_H'>  -- do not edit anything below this line -- */
-
 #endif          /*</std-footer>*/
+/**\endcond skip */

@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: pmap.cpp,v 1.9.2.4 2010/01/28 04:54:09 nhall Exp $
+ $Id: pmap.cpp,v 1.10 2010/05/26 01:20:40 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

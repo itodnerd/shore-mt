@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='SM_IO_H'>
 
- $Id: sm_io.h,v 1.23 2010/06/08 22:28:56 nhall Exp $
+ $Id: sm_io.h,v 1.29 2010/12/08 17:37:43 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -80,13 +80,13 @@ public:
         typedef w_base_t::uint2_t uint2_t;
 
         typedef smlevel_0::store_operation_t        store_operation_t;
-        typedef smlevel_0::store_flag_t                store_flag_t;
-        typedef smlevel_0::store_deleting_t        store_deleting_t;
+        typedef smlevel_0::store_flag_t             store_flag_t;
+        typedef smlevel_0::store_deleting_t         store_deleting_t;
 
 private:
         snum_t                _snum;
-        uint2_t                _op;
-        fill2                _filler; // for purify
+        uint2_t               _op;
+        fill2                 _filler; // for purify
         union {
             struct {
                 uint2_t                _value1;
@@ -102,7 +102,7 @@ private:
         :
             _snum(snum), _op(theOp)
         {
-            w_assert9(_op == smlevel_0::t_delete_store);
+            w_assert2(_op == smlevel_0::t_delete_store);
             _u.extent=0;
         };
 
@@ -111,7 +111,7 @@ private:
         :
             _snum(snum), _op(theOp)
         {
-            w_assert9(_op == smlevel_0::t_create_store);
+            w_assert2(_op == smlevel_0::t_create_store);
             _u.values._value1 = theFlags;
             _u.values._value2 = theEff;
         };
@@ -121,7 +121,7 @@ private:
         :
             _snum(snum), _op(theOp)
         {
-            w_assert9(_op == smlevel_0::t_set_deleting);
+            w_assert2(_op == smlevel_0::t_set_deleting);
             _u.values._value1=newValue;
             _u.values._value2=oldValue;
         };
@@ -131,7 +131,7 @@ private:
         :
             _snum(snum), _op(theOp)
         {
-            w_assert9(_op == smlevel_0::t_set_store_flags);
+            w_assert2(_op == smlevel_0::t_set_store_flags);
             _u.values._value1=newFlags;
             _u.values._value2=oldFlags;
         };
@@ -140,7 +140,7 @@ private:
         :
             _snum(snum), _op(theOp)
         {
-            w_assert9(_op == smlevel_0::t_set_first_ext);
+            w_assert2(_op == smlevel_0::t_set_first_ext);
             _u.extent=theExt;
         };
         snum_t snum()  const
@@ -153,43 +153,43 @@ private:
         };
         store_flag_t new_store_flags()  const
         {
-            w_assert9(_op == smlevel_0::t_create_store 
+            w_assert2(_op == smlevel_0::t_create_store 
                 || _op == smlevel_0::t_set_store_flags);
             return (store_flag_t)_u.values._value1;
         };
         store_flag_t old_store_flags()  const
         {
-            w_assert9(_op == smlevel_0::t_set_store_flags);
+            w_assert2(_op == smlevel_0::t_set_store_flags);
             return (store_flag_t)_u.values._value2;
         };
         void set_old_store_flags(store_flag_t flag)
         {
-            w_assert9(_op == smlevel_0::t_set_store_flags);
+            w_assert2(_op == smlevel_0::t_set_store_flags);
             _u.values._value2 = flag;
         }
         extnum_t first_ext()  const
         {
-            w_assert9(_op == smlevel_0::t_set_first_ext);
+            w_assert2(_op == smlevel_0::t_set_first_ext);
             return _u.extent;
         };
         store_deleting_t new_deleting_value()  const
         {
-            w_assert9(_op == smlevel_0::t_set_deleting);
+            w_assert2(_op == smlevel_0::t_set_deleting);
             return (store_deleting_t)_u.values._value1;
         };
         store_deleting_t old_deleting_value()  const
         {
-            w_assert9(_op == smlevel_0::t_set_deleting);
+            w_assert2(_op == smlevel_0::t_set_deleting);
             return (store_deleting_t)_u.values._value2;
         };
         void set_old_deleting_value(store_deleting_t old_value)
         {
-            w_assert9(_op == smlevel_0::t_set_deleting);
+            w_assert2(_op == smlevel_0::t_set_deleting);
             _u.values._value2 = old_value;
         }
         uint2_t eff()  const
         {
-            w_assert9(_op == smlevel_0::t_create_store);
+            w_assert2(_op == smlevel_0::t_create_store);
             return _u.values._value2;
         };
         int size()  const
@@ -360,12 +360,13 @@ private:
         );
 
     static rc_t                 _free_page(const lpid_t& pid, 
-                                        vol_t *v, bool chk_st_mmb);
+                                        vol_t *v);
 public:
 
 
-    static rc_t                 free_page(const lpid_t& pid, bool chk_st_mmb);
-    static bool                 is_valid_page_of(const lpid_t& pid, snum_t s);
+    static rc_t                 free_page(const lpid_t& pid);
+    static rc_t                 is_valid_page_of(const lpid_t& pid, snum_t s,
+                                         bool& result);
 
     static rc_t                 create_store(
         vid_t                          vid, 
@@ -381,7 +382,8 @@ public:
     static rc_t                 free_ext_after_xct(const extid_t& extid);
     static rc_t                 get_store_flags(
         const stid_t&                  stid,
-        store_flag_t&                  flags);
+        store_flag_t&                  flags,
+        bool                           ok_if_deleting = false);
     static rc_t                 set_store_flags(
         const stid_t&                  stid,
         store_flag_t                   flags,
@@ -517,9 +519,6 @@ private:
     // volumes, it can't be fuzzy wrt mounts and dismounts.
     class auto_leave_and_trx_release_t; // forward decl - in sm_io.cpp
     
-    // Prime the volume's caches if not already primed
-    static rc_t                 _prime_cache(vol_t *v, snum_t s);
-
     static int                  vol_cnt;
     static vol_t*               vol[max_vols];
     static w_base_t::uint4_t    _msec_disk_delay;
@@ -582,11 +581,6 @@ private:
     static const char*          _dev_name(vid_t vid);
     static int                  _find(vid_t vid);
 
-    // WARNING: this MUST MATCH the code in vol.h
-    // The compiler requires this definition just for _find_and_grab.
-    // We could have vol.cpp #include sm_io.h but we really don't want that
-    // either.
-    typedef mcs_rwlock VolumeLock;
     typedef void *     lock_state;
 
     static vol_t*               _find_and_grab(
@@ -606,6 +600,20 @@ private:
     static lvid_t               _get_lvid(const vid_t vid);
     static rc_t                 _dismount(vid_t vid, bool flush);
     static rc_t                 _dismount_all(bool flush);
+    static rc_t                 _alloc_one_page_with_vol_mutex(
+        alloc_page_filter_t               *filter,
+        vol_t*                            v,
+        const stid_t&                     stid, 
+        const lpid_t&                     near,
+        lpid_t&                           pid,
+        lock_mode_t                       desired_lock_mode,
+        bool                              search_file
+        );
+    static rc_t                 _alloc_one_ext_with_vol_mutex(
+        vol_t*                            v,
+        const stid_t&                     stid, 
+        extnum_t&                         extent
+        );
     static rc_t                 _alloc_pages_with_vol_mutex(
         alloc_page_filter_t               *filter,
         vol_t*                            v,
@@ -670,7 +678,7 @@ io_m::GetLastMountLSN()
 inline void
 io_m::SetLastMountLSN(lsn_t theLSN)
 {
-    w_assert9(theLSN >= _lastMountLSN);
+    w_assert2(theLSN >= _lastMountLSN);
     _lastMountLSN = theLSN;
 }
 

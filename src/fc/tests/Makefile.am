@@ -3,7 +3,7 @@ include $(top_srcdir)/Makefile.generic
 
 RESULT_COMPARISON_FILES = stats2-out \
 	 box.2-out box.3-out box.4-out \
-	 list1-out  darray-out memblock-out
+	 list1-out  darray-out memblock-out blockpools-out
 
 EXTRA_DIST = testall test_stat.dat test_stat.h $(RESULT_COMPARISON_FILES) test_me.h
 
@@ -20,31 +20,36 @@ AM_CXXFLAGS    += -I$(top_srcdir)/src/fc
 check_PROGRAMS     = list1$(EXEEXT) list2$(EXEEXT) list3$(EXEEXT) \
 		hash1$(EXEEXT) hash2$(EXEEXT) \
 		ntime$(EXEEXT) \
-			darray$(EXEEXT) \
-			memblock$(EXEEXT) \
-	        heap$(EXEEXT) \
-	       	rc$(EXEEXT) \
-			errlogtest$(EXEEXT) \
-	       	random$(EXEEXT) \
-	       	stats$(EXEEXT) \
-	       	stats2$(EXEEXT) \
-	       	box$(EXEEXT) \
-	       	io$(EXEEXT) \
-	       	ss$(EXEEXT) \
-	       	rand$(EXEEXT) \
-	       	container$(EXEEXT) \
-	       	cuckoo$(EXEEXT) \
-	       	findprime$(EXEEXT) \
-	       	findsizes$(EXEEXT) \
-	       	bitvector$(EXEEXT) \
-	       	basic_sizes$(EXEEXT)
+		rusage_test$(EXEEXT) \
+		darray$(EXEEXT) \
+		memblock$(EXEEXT) \
+		blockpools$(EXEEXT) \
+		heap$(EXEEXT) \
+		rc$(EXEEXT) \
+		random$(EXEEXT) \
+		stats$(EXEEXT) \
+		stats2$(EXEEXT) \
+		box$(EXEEXT) \
+		io$(EXEEXT) \
+		ss$(EXEEXT) \
+		rand$(EXEEXT) \
+		container$(EXEEXT) \
+		cuckoo$(EXEEXT) \
+		findprime$(EXEEXT) \
+		findsizes$(EXEEXT) \
+		bitvector$(EXEEXT) \
+		basic_sizes$(EXEEXT)
 
 
 TESTS = testall
 
-LDADD = ../libfc.a  $(LOCALLDADD)
+LDADD = ../../fc/libfc.a $(LOCALLDADD)
+
+rusage_test_SOURCES = rusage_test.cpp
 
 memblock_SOURCES = memblock.cpp
+
+blockpools_SOURCES = blockpools.cpp
 
 darray_SOURCES = darray.cpp
 
@@ -67,8 +72,6 @@ ntime_SOURCES      = ntime.cpp
 heap_SOURCES      = heap.cpp
 
 rc_SOURCES      = rc.cpp
-
-errlogtest_SOURCES      = errlogtest.cpp
 
 random_SOURCES      = random.cpp
 
@@ -96,17 +99,9 @@ bitvector_SOURCES      = bitvector.cpp
 TEST = testall
 testall:  $(check_PROGRAMS)
 
-TEST_STAT_GENFILES = test_stat_struct_gen.h \
-                     test_stat_msg_gen.h \
-                     test_stat_collect_enum_gen.h \
-                     test_stat_collect_gen.cpp \
-                     test_stat_dec_gen.cpp \
-                     test_stat_inc_gen.cpp \
-                     test_stat_out_gen.cpp
+TEST_STAT_GENFILES = test_stat_struct_gen.h  test_stat_msg_gen.h
 
 GENFILES = $(TEST_STAT_GENFILES)
-
-MOSTLYCLEANFILES = $(GENFILES)
 
 test_stat.$(OBJEXT): $(TEST_STAT_GENFILES)
 stats.$(OBJEXT):  $(TEST_STAT_GENFILES)

@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: ioperf.cpp,v 1.49.2.9 2010/03/19 22:20:03 nhall Exp $
+ $Id: ioperf.cpp,v 1.52 2010/12/08 17:37:54 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -248,15 +248,6 @@ DBGTHRD(<<"io_thread_t::run");
         << " offset= " << _offset 
         << " left= " << (_block_cnt - i)
         );
-#if 0
-        cerr 
-        << " i=" << i
-        << " bytes=" << _total_bytes
-        << " block_size=" << _block_size
-        << " offset= " << _offset 
-        << " left= " << (_block_cnt - i)
-        << endl;
-#endif
 
         if ((_rw_flag == 'r') || (_rw_flag == 'b') ) {
             if(i % _nblocks == (_nblocks-1) ) {

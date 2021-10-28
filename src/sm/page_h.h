@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='PAGE_H_H'>
 
- $Id: page_h.h,v 1.6.2.4 2010/01/28 04:54:08 nhall Exp $
+ $Id: page_h.h,v 1.11 2010/11/08 15:06:55 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -50,6 +50,12 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  */
 #define HBUCKETBITS 4
 enum    { 
+        // space_num_buckets is the number of values we can
+        // fit in space_bucket_size_in_bits.
+        // The number of bits available depends on the amount of
+        // space we are willing to consume in an extlink_t,
+        // which has to hold (#pages-per-ext)*space_bucket_size_in_bits
+        // bits for its pbucketmap, which is, for now, 32 bits
 #if HBUCKETBITS==4
         space_num_buckets        = 16, // 2**HBUCKETBITS,
 #elif HBUCKETBITS==3
@@ -199,28 +205,27 @@ enum {
 
 class pginfo_t {
 private:
-    smsize_t    _space_left;
+    smsize_t       _space_left;
     shpid_t        _pgid;
 public:
-    NORET       pginfo_t():  _space_left(0), _pgid(0) {}
+    NORET     pginfo_t():  _space_left(0), _pgid(0) {}
     NORET     pginfo_t(const shpid_t& pg, smsize_t sl): 
-            _space_left(sl), _pgid(pg) { }
-    NORET       pginfo_t(const pginfo_t& other):  
-            _space_left(other._space_left), 
-            _pgid(other._pgid) { }
+                        _space_left(sl), _pgid(pg) { }
+    NORET     pginfo_t(const pginfo_t& other):  
+                        _space_left(other._space_left), 
+                        _pgid(other._pgid) { }
 
     NORET     ~pginfo_t() { }
 
     smsize_t  space() const { return _space_left; }
+    static smsize_t  unknown_size() { return SM_PAGESIZE; }
     shpid_t   page() const { return _pgid; }
-    void       update_space(smsize_t v) {
-            _space_left = v; 
-        }
-    void set_bucket(const shpid_t& pg, space_bucket_t b);
-    void set(const shpid_t& pg, smsize_t v) {
-            _space_left = v; 
-            _pgid = pg;
-        }
+    void      update_space(smsize_t v) { _space_left = v; }
+    void      set_bucket(const shpid_t& pg, space_bucket_t b);
+    void      set(const shpid_t& pg, smsize_t v) {
+                    _space_left = v; 
+                    _pgid = pg;
+                }
     friend ostream &operator<<(ostream&, const pginfo_t&p);
 };
 
@@ -234,7 +239,7 @@ pginfo_t::set_bucket(const shpid_t& pg, space_bucket_t b)
 
 inline 
 ostream &operator<<(ostream&o, const pginfo_t&p) {
-    o << p._pgid << ":" << p._space_left << ends;
+    o << p._pgid << ":" << p._space_left << " " << ends;
     return o;
 }
 

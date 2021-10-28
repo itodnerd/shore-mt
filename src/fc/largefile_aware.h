@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='W_BASE_H'>
 
- $Id: largefile_aware.h,v 1.1.2.3 2010/03/19 22:17:16 nhall Exp $
+ $Id: largefile_aware.h,v 1.2 2010/05/26 01:20:21 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

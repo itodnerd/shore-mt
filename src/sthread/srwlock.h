@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore' incl-file-exclusion='STHREAD_H'>
 
- $Id: srwlock.h,v 1.1.2.5 2010/03/19 22:20:01 nhall Exp $
+ $Id: srwlock.h,v 1.4 2010/11/08 15:07:28 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -52,24 +52,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 */
 
 /*  -- do not edit anything above this line --   </std-header>*/
-
-/*
- *   NewThreads is Copyright 1992, 1993, 1994, 1995, 1996, 1997 by:
- *
- *    Josef Burger    <bolo@cs.wisc.edu>
- *    Dylan McNamee    <dylan@cse.ogi.edu>
- *      Ed Felten       <felten@cs.princeton.edu>
- *
- *   All Rights Reserved.
- *
- *   NewThreads may be freely used as long as credit is given
- *   to the above authors and the above copyright is maintained.
- */
-
-/*
- * The base thread functionality of Shore Threads is derived
- * from the NewThreads implementation wrapped up as c++ objects.
- */
 
 #ifndef SRWLOCK_H
 #define SRWLOCK_H
@@ -109,12 +91,9 @@ class mcs_rwlock : protected queue_based_lock_t
      */
     unsigned int volatile _holders; // 2*readers + writer
 
-    bool _is_plp;
-    bool _is_reader;
-
 public:
     enum rwmode_t { NONE=0, WRITER=0x1, READER=0x2 };
-    mcs_rwlock() : _holders(0), _is_plp(false), _is_reader(false) { }
+    mcs_rwlock() : _holders(0) { }
     ~mcs_rwlock() {}
 
     /// Return the mode in which this lock is held by anyone.
@@ -122,23 +101,17 @@ public:
         return (holders == WRITER)? WRITER : (holders > 0) ? READER : NONE; }
 
     /// True if locked in any mode.
-    bool is_locked() const { return (!_is_plp && (*&_holders)==0)?false:true; }
+    bool is_locked() const { return (*&_holders)==0?false:true; }
 
     /// 1 if held in write mode, else it's the number of readers
     int num_holders() const { int holders = *&_holders; 
-	return (holders == WRITER || _is_plp) ? 1 : holders/2; }
+                              return (holders == WRITER)? 1 : holders/2; }
 
     /// True iff has one or more readers.
-    bool has_reader() const { return !_is_plp && (*&_holders & ~WRITER); }
+    bool has_reader() const { return *&_holders & ~WRITER; }
     /// True iff has a writer (never more than 1) 
-    bool has_writer() const { return !_is_plp && (*&_holders & WRITER); }
+    bool has_writer() const { return *&_holders & WRITER; }
 
-    // pin: for plp
-    void set_plp(bool is_reader) { _is_plp = true; _is_reader = is_reader; }
-    void unset_plp() { _is_plp = false; }
-    bool is_plp() { return _is_plp; }
-    bool is_reader() { return _is_reader; }
-    
     /// True if success.
     bool attempt_read();
     /// Wait (spin) until acquired.
@@ -158,8 +131,10 @@ public:
     void downgrade();
 
 private:
-    void _spin_on_writer(); // no-inline.cpp
-    void _spin_on_readers(); // no-inline.cpp
+    // CC mangles this as __1cKmcs_rwlockO_spin_on_writer6M_v_
+    int  _spin_on_writer();
+    // CC mangles this as __1cKmcs_rwlockP_spin_on_readers6M_v_
+    void _spin_on_readers();
     bool _attempt_write(unsigned int expected);
     void _add_when_writer_leaves(int delta);
 };

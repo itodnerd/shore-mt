@@ -24,7 +24,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='SRV_LOG_H'>
 
- $Id: partition.h,v 1.3 2010/06/08 22:28:55 nhall Exp $
+ $Id: partition.h,v 1.6 2010/08/23 14:28:18 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -68,7 +68,12 @@ class log_core; // forward
 class partition_t {
 public:
     typedef smlevel_0::fileoff_t fileoff_t;
+#if SM_PAGESIZE < 8192
     enum { XFERSIZE = 8192 };
+#else
+    enum { XFERSIZE = 8192 };
+    // TODO: decide enum { XFERSIZE = SM_PAGESIZE };
+#endif
     enum { invalid_fhdl = -1 };
     enum { nosize = -1 };
 
@@ -98,7 +103,6 @@ private:
     fileoff_t             _eop; 
     log_core*             _owner;
     lsn_t                 _last_skip_lsn;
-    // DEAD log_buf*              _writebuf;
     // Read and append file handles
     int                   _fhdl_rd;
     int                   _fhdl_app;

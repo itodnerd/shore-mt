@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='LID_H'>
 
- $Id: lid.h,v 1.64.2.5 2010/03/19 22:20:23 nhall Exp $
+ $Id: lid.h,v 1.67 2011/09/08 18:10:56 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -58,7 +58,10 @@ public:
     NORET            lid_m() {};
     NORET            ~lid_m() {};
 
-    rc_t            generate_new_volid(lvid_t& lvid);
+    // If name is given, that is the host name to use.
+    // If not given, generate_new_volid does its best to find
+    // out the host name or else uses "localhost.localdomain".
+    rc_t            generate_new_volid(lvid_t& lvid, const char *name=NULL);
 
 private:
 

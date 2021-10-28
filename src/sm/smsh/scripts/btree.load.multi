@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: btree.load.multi,v 1.12.4.1 2010/01/28 04:54:33 nhall Exp $
+#  $Id: btree.load.multi,v 1.15 2010/09/15 18:36:19 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -37,13 +37,14 @@
 #
 source $script_dir/vol.init
 
-if {$multi_threaded_xct == 0 } {
-    echo "Not configured for multi-threaded xcts"
-    return
-}
-
 set nrec 500
-set nthreads 2
+#
+# Since we disallow multi-threaded xcts for bulk loading now,
+# we'll do this with just one thread. If nthreads > 1, it'll
+# fail, and we haven't written the script to handle the
+# E_TWOUTHREAD error cleanly.
+#
+set nthreads 1
 
 # for clean-up later
 set cmd 0
@@ -51,9 +52,10 @@ set thread_list 0
 set th 0
 set tx 0
 
-if {$multi_threaded_xct == 0 } {
-	echo "Not configured for multi-threaded xcts"
-} else {
+# if {$multi_threaded_xct == 0 } {
+	# echo "Not configured for multi-threaded xcts"
+# } else 
+# {
     #
     # helper proc to print the file
     #
@@ -221,6 +223,7 @@ proc each_thread {tx j} {
 	    set th [fork_thread each_thread $tx $j ]
 	    set thread_list "$thread_list $th"
 	}
+	sm detach_xct $tx
 	verbose ALL FORKED: $thread_list
 
 	verbose SYNCING-A: $thread_list
@@ -236,6 +239,7 @@ proc each_thread {tx j} {
 	eval $cmd
 	verbose ALL JOINED: $thread_list
 
+	sm attach_xct $tx
     sm commit_xct
 
     verbose "---- successful"
@@ -251,7 +255,7 @@ proc each_thread {tx j} {
     sm commit_xct
 
     unset f i j 
-}
+# }
 
 verbose "---- successful"
 unset nrec nthreads cmd tx thread_list th

@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='W_ERROR_H'>
 
- $Id: w_error.h,v 1.58 2010/05/26 01:20:24 nhall Exp $
+ $Id: w_error.h,v 1.62 2010/12/08 17:37:37 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -62,9 +62,9 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #pragma interface
 #endif
 
-#include "w_base.h"
 #include "fc_error_enum_gen.h"
 #include "tls.h"
+#include "w_base.h"
 
 #define USE_BLOCK_ALLOC_FOR_W_ERROR_T 1
 #if USE_BLOCK_ALLOC_FOR_W_ERROR_T
@@ -76,8 +76,8 @@ DECLARE_TLS_SCHWARZ(w_error_alloc);
  * used by w_error_t.
  */
 struct w_error_info_t {
-	w_base_t::uint4_t        err_num;
-	const char                *errstr;
+    w_base_t::uint4_t        err_num;
+    const char                *errstr;
 };
 
 
@@ -114,13 +114,31 @@ public:
     w_error_t&                   clear_more_info_msg();
     w_error_t&                   append_more_info_msg(const char* more_info);
     const char*                  get_more_info_msg() const;
-    void                         claim();
-    void                         verify_owner() const;
     
     ostream                      &print_error(ostream &o) const;
 
 #if USE_BLOCK_ALLOC_FOR_W_ERROR_T
     void operator delete(void* p);
+
+    /* The following grunge is so that we can catch any cases
+    * of deleting a w_error_t that are not through the
+    * operator delete that we defined.
+    */
+#if W_DEBUG_LEVEL > 2
+#define DEBUG_BLOCK_ALLOC_MARK_FOR_DELETION(p) if(p) (p)->debug_mark_for_deletion();
+#define CHECK_DEBUG_BLOCK_ALLOC_MARKED_FOR_DELETION(p)  \
+        if(p && p != no_error) {w_assert0((p)->debug_is_marked_for_deletion() ); }
+private:  
+    bool marked;
+    void debug_mark_for_deletion() { marked = true; }
+    bool debug_is_marked_for_deletion() const { return marked == true; }
+public:
+#else
+#define DEBUG_BLOCK_ALLOC_MARK_FOR_DELETION(p)
+#define CHECK_DEBUG_BLOCK_ALLOC_MARKED_FOR_DELETION(p) 
+#endif
+#else
+#define CHECK_DEBUG_BLOCK_ALLOC_MARKED_FOR_DELETION(p) 
 #endif
     
     static w_error_t*            make(
@@ -162,9 +180,6 @@ private:
     w_error_t*                   _next;
     const char*                  _trace_file[max_trace];
     uint4_t                      _trace_line[max_trace];
-#ifdef SM_THREAD_SAFE_ERRORS
-    pthread_t                    _owner;
-#endif
 
     NORET                        w_error_t(
         const char* const            filename,
@@ -202,26 +217,37 @@ private:
 
 extern ostream  &operator<<(ostream &o, const w_error_t &obj);
 
-#ifdef SM_THREAD_SAFE_ERRORS 
-#include <pthread.h>
-#include <stdlib.h>
-inline void w_error_t::claim() {
-  _owner = pthread_self();
-}
-inline void w_error_t::verify_owner() const {
-  w_assert1(pthread_equal(_owner, pthread_self()));
-}
+#if W_DEBUG_LEVEL > 1
+#define CHECKIT do {\
+        w_error_t*    my = _next; \
+        w_error_t*    p = my; \
+        while(p) { \
+        if (p == p->_next || my == p->_next) { \
+            cerr << "Recursive error detected:" << endl << *this << endl;\
+            w_assert0(0); \
+        } \
+        p = p->_next; \
+        } \
+  } while(0)
+
 #else
-inline void w_error_t::claim() { /* do nothing */ }
-inline void w_error_t::verify_owner() const { /* do nothing */ }
+#define CHECKIT
 #endif
+
 
 inline NORET
 w_error_t::~w_error_t()
 {
+    // CHECKIT;
+    CHECK_DEBUG_BLOCK_ALLOC_MARKED_FOR_DELETION((w_error_t *)this)
     delete[] more_info_msg;
     more_info_msg = NULL;
+#if USE_BLOCK_ALLOC_FOR_W_ERROR_T
+    w_error_t::operator delete(_next); // make sure the right delete is used.
+#else
     delete _next;
+#endif
+    _next = NULL;
 }
 
 /*<std-footer incl-file-exclusion='W_ERROR_H'>  -- do not edit anything below this line -- */

@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='LOCK_S_H'>
 
- $Id: lock_s.h,v 1.73 2010/06/15 17:30:07 nhall Exp $
+ $Id: lock_s.h,v 1.79 2012/01/02 17:02:17 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -56,8 +56,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include "w_defines.h"
 
 /*  -- do not edit anything above this line --   </std-header>*/
-
-#include <w_hashing.h>
 
 #ifdef __GNUG__
 #pragma interface
@@ -213,6 +211,7 @@ typedef lock_base_t::status_t status_t;
  *
  */
 class lockid_t {
+	static w_hashing::uhash lockhashfunc; // in lock_core.cpp
 public:
     //
     // The lock graph consists of 6 nodes: volumes, stores, pages, key values,
@@ -315,8 +314,7 @@ public:
     void              zero();
 
 private:
-    static w_hashing::uhash lockhashfunc;
-    
+
     //
     // lspace -- contains enum for type of lockid_t
     //
@@ -528,7 +526,8 @@ public:
     *
     * If the given space isn't in the hierarchy, this generates a fatal error.
     */
-    void              truncate(name_space_t space);
+    w_rc_t            truncate(name_space_t space);
+    w_rc_t            make_parent();
 
     /// copy operator
     lockid_t&         operator=(const lockid_t& i);
@@ -553,12 +552,6 @@ istream& operator>>(istream& o, lockid_t::user4_t& u);
 #else
 #include "lock_s_inline.h"
 #endif
-
-// This is used in probe() for lock cache
-inline w_base_t::uint4_t w_hash(const lockid_t& id)
-{
-    return id.hash();
-}
 
 /*<std-footer incl-file-exclusion='LOCK_S_H'>  -- do not edit anything below this line -- */
 

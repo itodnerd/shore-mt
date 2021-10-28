@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: tcl_thread.cpp,v 1.142 2010/06/15 17:30:09 nhall Exp $
+ $Id: tcl_thread.cpp,v 1.147 2012/01/02 21:52:24 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -56,7 +56,6 @@ template class w_list_t<tcl_thread_t, queue_based_block_lock_t>;
 // exit cleanly.
 static const char *TCL_EXIT_ERROR_STRING = "!@#EXIT#@!";
 
-const char* Logical_id_flag_tcl = "Use_logical_id";
 Tcl_Interp* global_ip (NULL); // for debugging
 
 int tcl_thread_t::thread_count = 0;
@@ -70,7 +69,9 @@ extern "C" int vtable_dispatch(ClientData, Tcl_Interp* ip, int ac, TCL_AV char* 
 extern "C" int sm_dispatch(ClientData, Tcl_Interp* ip, int ac, TCL_AV char* av[]);
 extern "C" int st_dispatch(ClientData, Tcl_Interp *, int, TCL_AV char **);
 
+#if DEAD
 extern const char* tcl_init_cmd;
+#endif
 static int    num_tcl_threads(0);
 /*static*/ int    num_tcl_threads_ttl(0); // now  extern
 extern "C" int num_tcl_threads_running() { return num_tcl_threads; }
@@ -1095,6 +1096,7 @@ static void process_stdin(Tcl_Interp* ip)
 void
 copy_interp(Tcl_Interp *ip, Tcl_DString *vars, Tcl_DString *procs)
 {
+#if DEAD
     if(tcl_init_cmd) {
         int result = Tcl_Eval(ip, TCL_CVBUG tcl_init_cmd);
 
@@ -1108,6 +1110,7 @@ copy_interp(Tcl_Interp *ip, Tcl_DString *vars, Tcl_DString *procs)
             w_assert3(0);;
         }
     }
+#endif
 
     
     /* These three are done separately because 
@@ -1647,9 +1650,9 @@ void tcl_thread_t::initialize(
     if(!lib_dir) return;
     // Only main thread has a lib_dir
 
-    // default is to not use logical IDs
-    Tcl_SetVar(ip, TCL_CVBUG Logical_id_flag_tcl, 
-            TCL_CVBUG tcl_form_flag(0), TCL_GLOBAL_ONLY);
+    // default is to not use logical IDs, in fact, they
+	// are no longer supported, but we'd best set the flag
+	// so lots of old scripts don't go a-croaking ...
 
     w_ostrstream_buf s(ss_m::max_devname + 1);
     s << lib_dir << "/smsh.tcl" << ends;
@@ -1686,7 +1689,6 @@ void tcl_thread_t::initialize(
 
     Tcl_SetVar(ip, TCL_CVBUG "log_warn_callback_flag",
         TCL_SETV2 tcl_form_flag(log_warn_callback), TCL_GLOBAL_ONLY);
-#if 1
 
     Tcl_SetVar(ip, TCL_CVBUG "compress_flag",
         TCL_SETV2 tcl_form_flag(force_compress), TCL_GLOBAL_ONLY);
@@ -1698,7 +1700,6 @@ void tcl_thread_t::initialize(
            TCL_SETV2 tcl_form_flag(verbose), TCL_GLOBAL_ONLY);
     Tcl_SetVar(ip, TCL_CVBUG "verbose2_flag",
            TCL_SETV2 tcl_form_flag(verbose2), TCL_GLOBAL_ONLY);
-#endif
 
 
     Tcl_SetVar(ip, TCL_CVBUG "argv", args, TCL_GLOBAL_ONLY);
@@ -1708,34 +1709,10 @@ void tcl_thread_t::initialize(
         Tcl_SetVar(ip, TCL_CVBUG "argc", otmp.c_str(), TCL_GLOBAL_ONLY);
     }
 
-#if 0
-    {
-        const char *f_arg = (ac > 0)?  av[1] : argv0;
-        Tcl_SetVar(ip, TCL_CVBUG "argv0", TCL_CVBUG f_arg, TCL_GLOBAL_ONLY);
-    }
-#endif
 
     Tcl_SetVar(ip, TCL_CVBUG "tcl_interactive",
            TCL_CVBUG (tcl_form_flag(interactive)), TCL_GLOBAL_ONLY);
 
-#if 0
-    if(debug)
-    {
-        Tcl_DString* procs = new Tcl_DString;
-        Tcl_DString* vars = new Tcl_DString;
-        grab_vars(ip,  vars);
-        grab_procs(ip, procs);
-        Tcl_DStringFree(procs);
-        Tcl_DStringFree(vars);
-        delete procs;
-        delete vars;
-        std::cerr << "                INITIALIZE CHECK OK" << endl;
-        Tcl_Eval(ip, TCL_CVBUG "interp recursionlimit");
-        std::cerr << "                recursionlimit "
-                << Tcl_GetStringResult(ip)
-            << endl;
-    }
-#endif
     {
     (void) Tcl_LinkVar(ip, 
             TCL_CVBUG "sm_page_sz", (char*)&linked.sm_page_sz, TCL_LINK_INT);

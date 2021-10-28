@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: trans.2,v 1.16.2.4 2009/12/21 18:45:19 nhall Exp $
+#  $Id: trans.2,v 1.19 2010/10/27 17:04:29 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -72,8 +72,9 @@ foreach a $actionlist {
 unset c a f
 
 sm begin_xct
+set x [sm xct]
 sm destroy_file $f0
-sm commit_xct
+sm commit_xct_group $x
 
 unset formsize
 unset cleanlist

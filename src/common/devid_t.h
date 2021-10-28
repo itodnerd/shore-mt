@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='DEVID_T_H'>
 
- $Id: devid_t.h,v 1.21 2010/05/26 01:20:11 nhall Exp $
+ $Id: devid_t.h,v 1.22 2010/07/26 23:37:06 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -51,7 +51,7 @@ struct devid_t {
        int8 == 8 bits, not 8 bytes */
     w_base_t::uint8_t    id;
     w_base_t::uint4_t    dev;
-#if defined(ZERO_INIT)
+#ifdef ZERO_INIT
     fill4    dummy;
 #endif
 

@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: btree_bl.cpp,v 1.29 2010/06/08 22:28:55 nhall Exp $
+ $Id: btree_bl.cpp,v 1.37 2010/12/09 15:20:14 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -114,13 +114,9 @@ elm_cmp(const void *_r1, const void *_r2)
  *********************************************************************/
 class btsink_t : private btree_m {
 public:
-
     NORET        btsink_t(const lpid_t& root, rc_t& rc);
     NORET        ~btsink_t() {};
-
-    btsink_t() { }
-    rc_t        set(const lpid_t& root);
-
+    
     rc_t        put(const cvec_t& key, const cvec_t& el);
     rc_t        map_to_root();
 
@@ -179,18 +175,18 @@ btree_impl::_handle_dup_keys(
 
     if (slot==1) {
         // previous rec is on the previous page
-        W_COERCE( prevp->get_rec(prevp->num_slots()-1, r) );
+        W_DO( prevp->get_rec(prevp->num_slots()-1, r) );
     } else {
-        W_COERCE( curp->get_rec(slot-1, r) );
+        W_DO( curp->get_rec(slot-1, r) );
     }
     recs[count++] = r;
 
-    W_COERCE( curp->get_rec(slot, r) );
+    W_DO( curp->get_rec(slot, r) );
     recs[count++] = r;
 
     slotid_t s = slot;
     while ((s = curp->next_slot(s)))  {
-        W_COERCE( curp->get_rec(s, r) );
+        W_DO( curp->get_rec(s, r) );
         if (r->hdr_size() == recs[0]->hdr_size() &&
             !memcmp(r->hdr(), recs[0]->hdr(), r->hdr_size())) {
             if (r->body_size() == recs[0]->body_size() &&
@@ -219,15 +215,14 @@ btree_impl::_handle_dup_keys(
     w_auto_delete_array_t<file_p> auto_del_pages(pages);
 
     if (!eod)  {
-        W_DO( fi->next_page(pid, eof, NULL /* allocated only*/) );
+        W_DO( fi->next_file_page(pid, eof, NULL /* allocated only*/, NL) );
     }
 
     while (!eof && !eod) {
-	latch_mode_t latch = LATCH_SH;
-        W_DO( pages[page_cnt].fix(pid, latch) );
+        W_DO( pages[page_cnt].fix(pid, LATCH_SH) );
         s = 0;
         while ((s = pages[page_cnt].next_slot(s)))  {
-            W_COERCE( pages[page_cnt].get_rec(s, r) );
+            W_DO( pages[page_cnt].get_rec(s, r) );
 
             if (r->hdr_size() == recs[0]->hdr_size() &&
                !memcmp(r->hdr(), recs[0]->hdr(), r->hdr_size())) {
@@ -252,7 +247,7 @@ btree_impl::_handle_dup_keys(
         }
         page_cnt++;
         if (!eod) {
-            W_DO( fi->next_page(pid, eof, NULL /* allocated only*/) );
+            W_DO( fi->next_file_page(pid, eof, NULL /* allocated only*/, NL) );
             if (page_cnt >= max_page_cnt) {
                 cerr 
                 << "btree_impl::_handle_dup_keys: "
@@ -317,7 +312,8 @@ rc_t
 btree_m::purge(
     const lpid_t&         root,                // I-  root of btree
     bool                check_empty,
-    bool                forward_processing)
+    bool                forward_processing
+    )
 {
     if (check_empty)  {
         /* For forward processing, we just make
@@ -333,6 +329,8 @@ btree_m::purge(
         }
     }
 
+    AUTO_ROLLBACK_work
+
     lsn_t anchor;
     xct_t* xd = xct();
     w_assert3(xd);
@@ -340,19 +338,19 @@ btree_m::purge(
     anchor = xd->anchor();
 
     lpid_t pid;
-    X_DO( io->first_page(root.stid(), pid, NULL /* allocated only*/), anchor );
+    X_DO( io->first_page(root.stid(), pid, NULL /* allocated only*/, NL), anchor );
     while (pid.page)  {
         /*
          *  save current pid, get next pid, free current pid.
          */
         lpid_t cur = pid;
-        rc_t rc = io->next_page(pid);
+        rc_t rc = io->next_page(pid); // no lock
         if (cur.page != root.page)  {
-            X_DO( io->free_page(cur, false/*check_store_membership*/), anchor );
+            X_DO( io->free_page(cur), anchor );
         }
         if (rc.is_error())  {
             if (rc.err_num() != eEOF)  {
-                xd->release_anchor(true LOG_COMMENT_USE("btbl1"));
+                xd->release_anchor(true X_LOG_COMMENT_USE("btbl1"));
                 return RC_AUGMENT(rc);
             }
             break;
@@ -366,7 +364,7 @@ btree_m::purge(
         ), anchor );
 
     SSMTEST("btree.bulk.3");
-    xd->compensate(anchor,false/*not undoable*/ LOG_COMMENT_USE("btree.bl.3"));
+    xd->compensate(anchor,false/*not undoable*/ X_LOG_COMMENT_USE("btree.bl.3"));
     
     // W_COERCE( log_btree_purge(page) );
     // GNATS 100: you cannot use multiple threads to bulk-load
@@ -377,11 +375,12 @@ btree_m::purge(
     while(rc.is_error() && (rc.err_num() == eRETRY)) {
         rc = log_btree_purge(page);
     }
-    W_COERCE(rc);
+    W_DO(rc);
 
     if(forward_processing) {
         W_DO( io->set_store_flags(root.stid(), bulk_loaded_store_type) );
     }
+    work.ok();
     return RCOK;
 }
 
@@ -453,8 +452,6 @@ btree_m::bulk_load(
     file_p page[2];           // page[i] is current page
 
     const record_t*         pr = 0;        // previous record
-    lpid_t pr_pid; // previous pid
-    slotid_t pr_s = 0; // previous slot
     int                     src_index = 0;
     bool                    skip_last = false;
 
@@ -463,9 +460,9 @@ btree_m::bulk_load(
         bool                 eof = false;
         skip_last = false;
 
-        for (rc = fi->first_page(src[src_index], pid, NULL /* allocated only*/);
+        for (rc = fi->first_file_page(src[src_index], pid, NULL /* allocated only*/, NL);
              !rc.is_error() && !eof;
-              rc = fi->next_page(pid, eof, NULL /* allocated only*/))     {
+              rc = fi->next_file_page(pid, eof, NULL /* allocated only*/, NL))     {
             /*
              *  for each page ...
              */
@@ -484,7 +481,7 @@ btree_m::bulk_load(
                  *  for each slot in page ...
                  */
                 record_t* r;
-                W_COERCE( page[i].get_rec(s, r) );
+                W_DO( page[i].get_rec(s, r) );
 
                 if(!sort_duplicates) {
                     // free up page asap
@@ -494,10 +491,9 @@ btree_m::bulk_load(
                 if (pr) {
                     bool insert_one = false;
                     cvec_t key(pr->hdr(), pr->hdr_size());
-		    rid_t rid(pr_pid, pr_s);
-                    cvec_t el((char*)(&rid), sizeof(rid_t));
-                    DBG(<<"pr->key_size " << pr->hdr_size());
-                    DBG(<<"pr->el_size " << el.size());
+                    cvec_t el(pr->body(), (int)pr->body_size());
+                    DBG(<<"pr->hdr_size " << pr->hdr_size());
+                    DBG(<<"pr->body_size " << pr->body_size());
 
                     /*
                      *  check uniqueness and sort order
@@ -563,8 +559,6 @@ btree_m::bulk_load(
 
                 if (page[1-i].is_fixed())  page[1-i].unfix();
                 pr = r;
-		pr_s = s;
-		pr_pid = pid;
 
                 if (!s) break;
             }
@@ -578,10 +572,9 @@ btree_m::bulk_load(
 
 
     if (!skip_last && pr) {
-	cvec_t key(pr->hdr(), pr->hdr_size());
-	rid_t rid(pr_pid, pr_s);
-	cvec_t el((char*)(&rid), sizeof(rid_t));
-	if(lexify_keys) {
+        cvec_t key(pr->hdr(), pr->hdr_size());
+        cvec_t el(pr->body(), (int)pr->body_size());
+        if(lexify_keys) {
             cvec_t* real_key;
             W_DO(_scramble_key(real_key, key, nkc, kc));
             DBG(<<"");
@@ -706,8 +699,9 @@ btree_m::bulk_load(
         }
 
         cvec_t* real_key;
-        DBG(<<"");
         W_DO(_scramble_key(real_key, key, nkc, kc));
+        DBG(<<"sink.put real_key.size " << real_key->size() 
+                << " el.size " << el.size()  );
         W_DO( sink.put(*real_key, el) ); 
         key.reset();
         el.reset();
@@ -746,39 +740,12 @@ btsink_t::btsink_t(const lpid_t& root, rc_t& rc)
     btree_p rp;
     rc = rp.fix(root, LATCH_SH);
     if (rc.is_error())  return;
+    
     _is_compressed = rp.is_compressed();
     rc = _add_page(0, 0);
     _left_most[0] = _page[0].pid().page;
 }
 
-
-/*********************************************************************
- *
- *  btsink_t::set(root_pid)
- *
- *  To update the sink for bulk loading as roots change in mrbtrees.
- *  Resets the sink.
- *
- *********************************************************************/
-rc_t btsink_t::set(const lpid_t& root)
-{
-    _is_compressed = false;
-    _height = 0;
-    _num_pages = 0;
-    _leaf_pages = 0;
-    _root = root;
-    _top = 0;
-
-    rc_t rc;
-    btree_p rp;
-    rc = rp.fix(root, LATCH_SH);
-    if (!rc.is_error()) {
-	_is_compressed = rp.is_compressed();
-	rc = _add_page(0, 0);
-	_left_most[0] = _page[0].pid().page;
-    }
-    return rc;
-}
 
 
 /*********************************************************************
@@ -798,7 +765,7 @@ btsink_t::map_to_root()
     w_assert1(xd);
     check_compensated_op_nesting ccon(xd, __LINE__, __FILE__);
     if (xd)  anchor = xd->anchor();
-    
+
     for (int i = 0; i <= _top; i++)  {
         X_DO( log_page_image(_page[i]), anchor );
     }
@@ -808,6 +775,7 @@ btsink_t::map_to_root()
      */
     btree_p rp;
     X_DO( rp.fix(_root, LATCH_EX), anchor );
+
     lpid_t child_pid;
     {
         btree_p cp = _page[_top];
@@ -819,7 +787,7 @@ btsink_t::map_to_root()
             /*
              *  No need to remap.
              */
-            xd->release_anchor(true LOG_COMMENT_USE("btbl1"));
+            xd->release_anchor(true X_LOG_COMMENT_USE("btbl1"));
             return RCOK;
         }
 
@@ -835,17 +803,15 @@ btsink_t::map_to_root()
     }
     _page[_top] = rp;
 
-
     if (xd)  {
         SSMTEST("btree.bulk.2");
-        xd->compensate(anchor,false/*not undoable*/ LOG_COMMENT_USE("btree.bl.2"));
+        xd->compensate(anchor,false/*not undoable*/ X_LOG_COMMENT_USE("btree.bl.2"));
     }
-
 
     /*
      *  Free the child page. It has been copied to the root.
      */
-    W_DO( io->free_page(child_pid, false/*check_store_membership*/) );
+    W_DO( io->free_page(child_pid) );
 
     return RCOK;
 }
@@ -877,10 +843,10 @@ btsink_t::_add_page(const int i, shpid_t pid0)
          *  necessary
          */
         X_DO( btree_impl::_alloc_page(_root, 
-                                      i+1, (_page[i].is_fixed() ? _page[i].pid() : _root), 
-                                      _page[i], pid0,
-                                      false, _is_compressed,
-                                      bulk_loaded_store_type), anchor);
+                i+1, (_page[i].is_fixed() ? _page[i].pid() : _root), 
+                _page[i], pid0,
+                false, _is_compressed,
+                bulk_loaded_store_type), anchor );
 
     
         /*
@@ -916,7 +882,7 @@ btsink_t::_add_page(const int i, shpid_t pid0)
                     );
                 X_DO( lsib.link_up(lsib.prev(), _page[i].pid().page), anchor );
 
-                xct_log_switch_t toggle(ON);
+                xct_log_switch_t toggle2(ON);
                 X_DO( log_page_image(lsib), anchor );
             }
         }
@@ -924,7 +890,7 @@ btsink_t::_add_page(const int i, shpid_t pid0)
 
     if (xd)  {
         SSMTEST("btree.bulk.1");
-        xd->compensate(anchor,false/*not undoable*/ LOG_COMMENT_USE("btree.bl.1"));
+        xd->compensate(anchor,false/*not undoable*/ X_LOG_COMMENT_USE("btree.bl.1"));
     }
 
     /*

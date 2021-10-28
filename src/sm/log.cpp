@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: log.cpp,v 1.127.2.19 2010/03/19 22:20:24 nhall Exp $
+ $Id: log.cpp,v 1.137 2010/12/08 17:37:42 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -80,7 +80,7 @@ typedef smlevel_0::fileoff_t fileoff_t;
  *********************************************************************/
 bool log_i::next(lsn_t& lsn, logrec_t*& r)  
 {
-    bool eof = (cursor == null_lsn);
+    bool eof = (cursor == lsn_t::null);
     if (! eof) {
         lsn = cursor;
         rc_t rc = log.fetch(lsn, r, &cursor);
@@ -171,10 +171,6 @@ static char const* page_tag_to_str(int page_tag) {
         return "t_rtree_p";
     case page_p::t_file_p:
         return "t_file_p";
-    case page_p::t_ranges_p:
-        return "t_ranges_p";
-    case page_p::t_file_mrbt_p:
-        return "t_file_mrbt_p";
     default:
         return "<garbage>";
     }
@@ -254,7 +250,8 @@ log_m::log_m()
  *  log_core::set_master(master_lsn, min_rec_lsn, min_xct_lsn)
  *
  *********************************************************************/
-void log_m::set_master(lsn_t mlsn, lsn_t min_rec_lsn, lsn_t min_xct_lsn) 
+void log_m::set_master(const lsn_t& mlsn, const lsn_t  & min_rec_lsn, 
+        const lsn_t &min_xct_lsn) 
 {
     CRITICAL_SECTION(cs, _partition_lock);
     lsn_t min_lsn = std::min(min_rec_lsn, min_xct_lsn);
@@ -307,7 +304,7 @@ log_m::make_log_name(uint4_t idx, char* buf, int bufsz)
 }
 
 rc_t                
-log_m::scavenge(lsn_t min_rec_lsn, lsn_t min_xct_lsn) 
+log_m::scavenge(const lsn_t& min_rec_lsn, const lsn_t & min_xct_lsn) 
     { return log_core::THE_LOG->scavenge(min_rec_lsn, min_xct_lsn); }
 
 void                
@@ -335,11 +332,11 @@ log_m::insert(logrec_t &r, lsn_t* ret)
 }
 
 rc_t 
-log_m::flush(lsn_t lsn, bool block)
+log_m::flush(const lsn_t &lsn, bool block)
     { return log_core::THE_LOG->flush(lsn, block); }
 
 rc_t 
-log_m::compensate(lsn_t orig_lsn, lsn_t undo_lsn) 
+log_m::compensate(const lsn_t & orig_lsn, const lsn_t& undo_lsn) 
     { return log_core::THE_LOG->compensate(orig_lsn, undo_lsn); }
 
 /*********************************************************************
@@ -370,7 +367,7 @@ log_m::_make_master_name(
 }
 
 void
-log_m::_write_master(lsn_t l, lsn_t min) 
+log_m::_write_master(const lsn_t &l, const lsn_t &min) 
 {
     /*
      *  create new master record
@@ -390,17 +387,7 @@ log_m::_write_master(lsn_t l, lsn_t min)
 
     {        /* write ending lsns into the master chkpt record */
         lsn_t         array[PARTITION_COUNT];
-#if 0
-        int j=0;
-        for(int i=0; i < PARTITION_COUNT; i++) {
-            const partition_t *p = this->_partition(i);
-            if(p->num() > 0 && (p->last_skip_lsn().hi() == p->num())) {
-                array[j++] = p->last_skip_lsn();
-            }
-        }
-#else
         int j = log_core::THE_LOG->get_last_lsns(array);
-#endif
         if(j > 0) {
             w_ostrstream s(_chkpt_meta_buf, CHKPT_META_BUF);
             _create_master_chkpt_contents(s, j, array);
@@ -690,6 +677,9 @@ log_m::_read_master(
 fileoff_t log_m::take_space(fileoff_t volatile* ptr, int amt) 
 {
     fileoff_t ov = *ptr;
+#if W_DEBUG_LEVEL > 0
+    DBGTHRD("take_space " << amt << " old value of ? " << ov);
+#endif
     while(1) {
         if(ov < amt)
             return 0;
@@ -701,31 +691,27 @@ fileoff_t log_m::take_space(fileoff_t volatile* ptr, int amt)
     }
 }
 
-fileoff_t log_m::reserve_space(fileoff_t amt) {
-
-#if USE_LOG_RESERVATIONS
+extern "C" void log_stop()
+{
+}
+fileoff_t log_m::reserve_space(fileoff_t amt) 
+{
     return (amt > 0)? take_space(&_space_available, amt) : 0;
-#else
-    return (_space_available > amt) ? _space_available - amt : 0; 
-#endif
 }
 
 fileoff_t log_m::consume_chkpt_reservation(fileoff_t amt) {
-#if USE_LOG_RESERVATIONS
     if(operating_mode != t_forward_processing)
        return amt; // not yet active -- pretend it worked
 
     return (amt > 0)? 
         take_space(&_space_rsvd_for_chkpt, amt) : 0;
-#else
-    return amt; // anything > 0 means ok
-#endif
 }
 
 // make sure we have enough log reservation (conservative)
+// NOTE: this has to be compared with the size of a partition,
+// which _set_size does (it knows the size of a partition)
 bool log_m::verify_chkpt_reservation() 
 {
-#if USE_LOG_RESERVATIONS
     fileoff_t space_needed = max_chkpt_size();
     while(*&_space_rsvd_for_chkpt < 2*space_needed) {
         if(reserve_space(space_needed)) {
@@ -743,7 +729,6 @@ bool log_m::verify_chkpt_reservation()
             return false;
         }
     }
-#endif
     return true;
 }
 
@@ -752,17 +737,10 @@ void log_m::release_space(fileoff_t amt)
     log_core::THE_LOG->release_space(amt);
 }
 
-#if USE_LOG_RESERVATIONS
 rc_t log_m::wait_for_space(fileoff_t &amt, timeout_in_ms timeout) 
 {
     return log_core::THE_LOG->wait_for_space(amt, timeout);
 }
-#else
-rc_t log_m::wait_for_space(fileoff_t &, timeout_in_ms ) 
-{
-    return RCOK;
-}
-#endif
 
 void            
 log_m::activate_reservations()

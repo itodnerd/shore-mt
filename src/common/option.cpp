@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: option.cpp,v 1.54.2.7 2010/03/19 22:19:19 nhall Exp $
+ $Id: option.cpp,v 1.58 2010/12/08 17:37:34 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -287,11 +287,13 @@ option_t::set_value_int8(
         const char* value, 
         ostream* err_stream)
 {
-    w_base_t::int8_t MAYBE_UNUSED l;
 
     char* lastValid;
     errno = 0;
-    l = w_base_t::strtoi8(value, &lastValid);
+    // Keep compiler from complaining about
+    // unused l: 
+    // w_base_t::int8_t l =
+    (void) w_base_t::strtoi8(value, &lastValid);
     if (errno == ERANGE) {
         /* out of range */
         if (err_stream)  {
@@ -303,7 +305,8 @@ option_t::set_value_int8(
     }
     if (lastValid == value) {
         // not integer could be formed
-        if (err_stream) *err_stream << "no valid integer could be formed from " << value;
+        if (err_stream) *err_stream 
+            << "no valid integer could be formed from " << value;
         return RC(OPT_BadValue);
     }
     // value is good
@@ -420,43 +423,6 @@ w_rc_t option_group_t::add_class_level(const char* name)
 
     return RCOK;
 }
-
-#ifdef OLD_CODE
-w_rc_t option_group_t::setClassLevel(const char* name, int level)
-{
-    int                len;
-
-    if (level > _numLevels) {
-            return RC(OPT_TooManyClasses);
-    }
-
-    if (level == _numLevels) {
-            return (add_class_level(name));
-    }
-
-    if (_numLevels == MaxOptClassification) {
-            return RC(OPT_TooManyClasses);
-    }
-
-    _levelName[level] = name;
-
-    // rebuild the class level string
-    _classStringLen = 0;
-    _class_name[0] = '\0';
-
-    for(int i = 0; i < _numLevels; i++) {
-            len = strlen(_levelName[i]) + 1;
-
-            if (len > (MaxOptClassLength-_classStringLen) ) {
-                    return RC(OPT_ClassTooLong);
-            }
-            strncat(_class_name, _levelName[i], MaxOptClassLength-_classStringLen);
-            strcat(_class_name, ".");
-            _classStringLen += len;
-    }
-    return RCOK;
-}
-#endif /*OLD_CODE*/
 
 w_rc_t option_group_t::lookup(const char* name, bool exact, option_t*& returnOption)
 {

@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: lock_cache_test.cpp,v 1.1 2010/06/15 22:22:10 nhall Exp $
+ $Id: lock_cache_test.cpp,v 1.7 2010/09/21 14:26:28 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -32,12 +32,18 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 /*  -- do not edit anything above this line --   </std-header>*/
 
 
-#include <w_stream.h>
-#include <sys/types.h>
-#include <cassert>
 #include "sm_vas.h"
 #define SM_SOURCE
-class lock_request_t {};
+class lock_request_t { 
+    lock_base_t::lmode_t _mode;
+    public: 
+    NORET lock_request_t () : _mode(NL) {}
+    lock_base_t::lmode_t mode() { return _mode; }  
+};
+// This could cause problems, as it pulls in the definition
+// of the output operator from the sm, but that won't have the
+// same structure as above...
+ostream & operator<<(ostream &s, const lock_request_t &);
 #include "lock_cache.h"
 
 // To get the extid_t:
@@ -47,7 +53,7 @@ vid_t    vol(1000);
 stid_t   stor(vol,900);
 lpid_t   page(stor, 50);
 rid_t    rec(page, 6);
-extid_t  _extent;
+extid_t  extent;
 typedef lockid_t::user1_t user1_t;
 typedef lockid_t::user2_t user2_t;
 typedef lockid_t::user3_t user3_t;
@@ -109,15 +115,15 @@ testit(lockid_t &l, int line)
     cout << "\tInserted " << l << " at line " << line << endl; 
     cout << "\tEvicted " << evicted << endl;
     if(evicted) {
-        cout << "\t\t Victim " ; victim.dump(); cout << endl;
+        cout << "\t\t Victim " ; victim.dump(cout); cout << endl;
     }
-    cout << "\tDump at line " << line << endl; C.dump();
+    cout << "\tDump at line " << line << endl; C.dump(cout);
 
     lock_cache_elem_t *probed = C.probe(l, l.lspace());
     w_assert0(probed != NULL);
     lock_cache_elem_t *searched = C.search(l);
     if(searched != probed) {
-        cout << "Not found, collision with "; probed->dump(); cout << endl;
+        cout << "Not found, collision with "; probed->dump(cout); cout << endl;
     }
 
 
@@ -132,7 +138,7 @@ testit(lockid_t &l, int line)
     // 2) Inserted and evicted noone.
     //
     // 3) Inserted and evicted someone else.
-    // Victim had better have equal or higher granularity that what we
+    // Victim had better have equal or higher granularity than what we
     // tried to insert.  It might be a parent of the one we tried to
     // insert.
     //
@@ -148,7 +154,7 @@ testit(lockid_t &l, int line)
         cout << "Now compact..." << endl;
         bool evicted2;
         C.compact(victim.lock_id);
-        cout << "\tDump after compact " << endl; C.dump();
+        cout << "\tDump after compact " << endl; C.dump(cout);
         lock_cache_elem_t victim2;
         if(victim.lock_id == l) {
             cout << "Try to reinsert victim after eviction. " << endl;
@@ -159,35 +165,57 @@ testit(lockid_t &l, int line)
         }
         cout << "\tThis time evicted " << evicted2 << endl;
         if(evicted2) {
-            cout << "\t\t This victim " ; victim2.dump(); cout << endl;
+            cout << "\t\t This victim " ; victim2.dump(cout); cout << endl;
         }
-        cout << "\tDump after reinsert " << endl; C.dump();
-    }
-
-    // Ok, now let's ensure that no subsumed entries are in the
-    // table.
-    if(l.lspace() <= lockid_t::t_page) {
-        lockid_t ancestor(l); // make a non-const copy.
-        for (int k = l.lspace(); 
-                k < lockid_t::t_page; )
-        {
-            k++;
-            ancestor.truncate(lockid_t::name_space_t(k));
-            lock_cache_elem_t *p = C.search(ancestor);
-            w_assert0(p == NULL);
-        }
+        cout << "\tDump after reinsert " << endl; C.dump(cout);
     }
 
 
     cout << "}" << endl;
 }
 
+void testcompact(const lockid_t &child, const lockid_t &parent) 
+{
+
+    // See if child is in the table.
+    lock_cache_elem_t *e = C.search(child);
+    w_assert0(e != NULL);
+    lockid_t found;
+    cout << "\tCheck find_child of " << parent << endl; 
+    bool res = C.find_child(parent, found) ;
+    w_assert0(res);
+
+    C.compact(parent);
+    cout << "Dump after compacting all at line " << __LINE__ << endl; 
+    C.dump(cout);
+
+    // Ok, now let's ensure that no subsumed entries are in the
+    // table. The only way to do that is to
+    // scan through the next-down granularity and
+    // check each one.
+    cout << "\tCheck compact: cached granularity = " 
+        << lockid_t::cached_granularity 
+        << " lock in question is " << parent
+        << " int " << int(parent.lspace())
+        << endl; 
+    
+    if(parent.lspace() <= lockid_t::cached_granularity) {
+        cout << "\tCheck find_child: " << parent << endl; 
+        res = C.find_child(parent, found) ;
+        cout << "\tCheck find_child: " << parent << " returns " << res
+            << " found= " << found << endl; 
+        w_assert0(!res);
+    }
+    // check again for child
+    e = C.search(child);
+    w_assert0(e == NULL);
+}
 
 int
 main(int /*argc*/, char* /*argv*/[])
 {
-    _extent.vol = vol;
-    _extent.ext = 33;
+    extent.vol = vol;
+    extent.ext = 33;
 
     const char     *keybuf = "Admiral Richard E. Byrd";
     const char     *elembuf= "Most of the confusion in the world comes from not knowing how little we need.";
@@ -199,7 +227,7 @@ main(int /*argc*/, char* /*argv*/[])
         <<  "\t store " << stor << endl
         <<  "\t page " << page << endl
         <<  "\t rec " << rec << endl
-        <<  "\t extent " << _extent << endl
+        <<  "\t extent " << extent << endl
         <<  "\t u1 " << u1 << endl
         <<  "\t u2 " << u2 << endl
         <<  "\t u3 " << u3 << endl
@@ -210,23 +238,31 @@ main(int /*argc*/, char* /*argv*/[])
     lockid_t lstor(stor);
     lockid_t lpage(page);
     lockid_t lrec(rec);
-    lockid_t lx(_extent);
+    lockid_t lx(extent);
     lockid_t l1(u1);
     lockid_t l2(u2);
     lockid_t l3(u3);
     lockid_t l4(u4);
 
-    testit(lvol, __LINE__);
-    testit(lstor, __LINE__);
-    testit(lpage, __LINE__);
-    testit(lrec, __LINE__);
-    testit(lx, __LINE__);
-    testit(l1, __LINE__);
-    testit(l2, __LINE__);
-    testit(l3, __LINE__);
     testit(l4, __LINE__);
+    testit(l3, __LINE__);
+    testit(l2, __LINE__);
+    testit(l1, __LINE__);
+    testit(lx, __LINE__);
+    testit(lpage, __LINE__);
+    testit(lstor, __LINE__);
+    testit(lvol, __LINE__);
 
-    C.compact();
-    cout << "Dump after compacting all at line " << __LINE__ << endl; 
-    C.dump();
+
+    if( lockid_t::cached_granularity == lockid_t::t_record) {
+        testit(lrec, __LINE__);
+        testcompact(lrec, lpage);
+    } else 
+    if( lockid_t::cached_granularity == lockid_t::t_page) {
+        testcompact(lpage, lstor);
+    }
+
+
+    C.dump(cout);
 }
+

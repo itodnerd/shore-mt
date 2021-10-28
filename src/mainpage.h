@@ -1,6 +1,6 @@
-/*<std-header orig-src='shore' incl-file-exclusion='W_H'>
+/*<std-header orig-src='shore' incl-file-exclusion='MAINPAGE_H'>
 
- $Id: mainpage.h,v 1.2 2010/05/26 01:19:47 nhall Exp $
+ $Id: mainpage.h,v 1.15 2011/04/11 20:37:16 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -30,6 +30,117 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 /* this file contains only Doxygen documentation */
 
 
+/**\page COPYRIGHT Copyrights and Licenses 
+ *
+The main code base of the storage manager is subject to the SHORE/UW 
+copyright (given below) and most of it is also subject to 
+the SHORE-MT/DIAS copyright (also given below).
+Both copyrights are hereby extended to the date of this release, 2010.
+
+The atomic operations library is taken from the OPENSOLARIS release and
+is subject to Sun Microsystems copyright, and to the OPENSOLARIS license,
+found in src/atomic_ops/OPENSOLARIS.LICENSE.
+It is lengthy and so it is not included here.
+
+The strstream compatibility code found in src/fc/w_compat_strstream.h and
+src/fc/w_compat_strstream.cpp
+is subject to the Silicon Graphics copyright, below.
+
+The regex code found in the src/common/ library is subject to the 
+Henry Spencer/ATT copyright and license, contained in src/common/regex2.h, and
+included below.
+
+What little remains of the old SHORE sthreads library is subject to
+copyright given in those source files (src/sthread/sthread.h) as well as to the SHORE/UW and
+SHORE-MT/DIAS copyrights.
+
+
+ -       \b SHORE/UW \b Copyright:
+
+SHORE -- Scalable Heterogeneous Object REpository
+
+Copyright (c) 1994-2010 Computer Sciences Department, University of
+                      Wisconsin -- Madison
+All Rights Reserved.
+
+Permission to use, copy, modify and distribute this software and its
+documentation is hereby granted, provided that both the copyright
+notice and this permission notice appear in all copies of the
+software, derivative works or modified versions, and any portions
+thereof, and that both notices appear in supporting documentation.
+
+THE AUTHORS AND THE COMPUTER SCIENCES DEPARTMENT OF THE UNIVERSITY
+OF WISCONSIN - MADISON ALLOW FREE USE OF THIS SOFTWARE IN ITS
+"AS IS" CONDITION, AND THEY DISCLAIM ANY LIABILITY OF ANY KIND
+FOR ANY DAMAGES WHATSOEVER RESULTING FROM THE USE OF THIS SOFTWARE.
+
+This software was developed with support by the Advanced Research
+Project Agency, ARPA order number 018 (formerly 8230), monitored by
+the U.S. Army Research Laboratory under contract DAAB07-91-C-Q518.
+Further funding for this work was provided by DARPA through
+Rome Research Laboratory Contract No. F30602-97-2-0247.
+
+ -       \b SHORE-MT/DIAS \b Copyright:
+
+Shore-MT -- Multi-threaded port of the SHORE storage manager
+
+                   Copyright (c) 2007-2009
+  Data Intensive Applications and Systems Labaratory (DIAS)
+           Ecole Polytechnique Federale de Lausanne
+
+                     All Rights Reserved.
+
+Permission to use, copy, modify and distribute this software and
+its documentation is hereby granted, provided that both the
+copyright notice and this permission notice appear in all copies of
+the software, derivative works or modified versions, and any
+portions thereof, and that both notices appear in supporting
+documentation.
+
+This code is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. THE AUTHORS
+DISCLAIM ANY LIABILITY OF ANY KIND FOR ANY DAMAGES WHATSOEVER
+RESULTING FROM THE USE OF THIS SOFTWARE.
+
+
+ -       \b Silicon \b Graphic \b Copyright \b and \b License:
+
+ Copyright (c) 1998
+ Silicon Graphics Computer Systems, Inc.
+
+ Permission to use, copy, modify, distribute and sell this software
+ and its documentation for any purpose is hereby granted without fee,
+ provided that the above copyright notice appear in all copies and
+ that both that copyright notice and this permission notice appear
+ in supporting documentation.  Silicon Graphics makes no
+ representations about the suitability of this software for any
+ purpose.  It is provided "as is" without express or implied warranty.
+
+ -       \b Henry \b Spencer/ATT \b Copyright \b and \b License:
+
+Copyright 1992, 1993, 1994, 1997 Henry Spencer.  All rights reserved.
+This software is not subject to any license of the American Telephone
+and Telegraph Company or of the Regents of the University of California.
+
+Permission is granted to anyone to use this software for any purpose on
+any computer system, and to alter it and redistribute it, subject
+to the following restrictions:
+
+1. The author is not responsible for the consequences of use of this
+   software, no matter how awful, even if they arise from flaws in it.
+
+2. The origin of this software must not be misrepresented, either by
+   explicit claim or by omission.  Since few users ever read sources,
+   credits must appear in the documentation.
+
+3. Altered versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.  Since few users
+   ever read sources, credits must appear in the documentation.
+
+4. This notice may not be removed or altered.
+
+ * */
 /** \mainpage SHORE Storage Manager: The Multi-Threaded Version 
  * \section Brief Description
  *
@@ -66,22 +177,25 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  * maintained through 2008.
  *
  * The SHORE Storage Manager was originally developed on single-cpu Unix-based systems,
- * providing support for "value-added" cooperating peer servers, one of which was the
- * SHORE Value-Added Server (http://www.cs.wisc.edu/shore), and another of which was 
- * Paradise (http://www.cs.wisc.edu/paradise) at the University of Wisconsin.
+ * providing support for "value-added" cooperating peer servers, which were processes
+ * on single-CPU machines.  One such server was the
+ * SHORE Value-Added Server (http://research.cs.wisc.edu/shore), and another of which was 
+ * Paradise (http://research.cs.wisc.edu/paradise) at the University of Wisconsin.
  * The
- * TIMBER (http://www.eecs.umich.edu/db/timber) and 
- * Persicope (http://www.eecs.umich.edu/persiscope) projects 
+ * TIMBER (http://www.eecs.umich.edu/db/timber, and http://dx.doi.org/10.1007/s00778-002-0081-x) and 
+ * Pericope (http://www.eecs.umich.edu/periscope) projects 
  * at the University of Michigan, 
- * PREDATOR (http://www.distlab.dk/predator) at Cornell 
- * and 
+ * PREDATOR (http://www.distlab.dk/predator) at Cornell,
  * Lachesis (http://www.vldb.org/conf/2003/papers/S21P03.pdf)
+ * BODHI (http://dsl.serciisc.ernet.in/projects/BODHI/homepage/index.html, http://doi.acm.org/10.1145/1007568.1007717)
  * used the SHORE Storage Manager.
  * The storage manager has been used for innumerable published studies since
  * then.
  *
- * The storage manager had its own "green threads" and communications
- * layers, and until recently, its code structure, nomenclature, 
+ * The storage manager had its own (non-preemptive) threads library, which
+ * forked a per-disk cooperating process to provide non-blocking I/O. 
+ * The storage manager also had a communications library for peer-server communication. 
+ * Until recently, the code structure, nomenclature, 
  * and contents reflected its SHORE roots.
  *
  * In 2007, the Data Intensive Applications and Systems Labaratory (DIAS)
@@ -95,72 +209,45 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  * It was a partial port of the storage manager and did not include documentation.
  * Projects using Shore-MT include
  * StagedDB/CMP (http://www.cs.cmu.edu/~stageddb/),
- * DORA (http://www.cs.cmu.edu/~ipandis/resources/CMU-CS-10-101.pdf)
+ * DORA (http://www.cs.cmu.edu/~ipandis/resources/pvldb10pandis.pdf)
  *
- * In 2009, the University of Wisconsin - Madison took the first Shore-MT
+ * In 2009, the University of Wisconsin - Madison (UW) took the first Shore-MT
  * release and ported the remaining code to Pthreads.
  * This work as done on a Red Hat Linux/x86-64 platform.
+ * The UW and DIAS cooperated on bug fixes and some internal
+ * rewrites.
  * This release is the result of that work, and includes this documentation,
  * bug fixes, and supporting test code.   
- * In this release some of the scalability changes of the DIAS
- * release have been disabled as bug work-arounds, with the hope that 
- * further work will improve scalability of the completed port.
  *
- * \section Copyrights
- * Most of this library and documentation is subject one or both of the following copyrights:
+ * \section Copyrights Copyrights and Licenses
  *
- *  -       \b SHORE -- \b Scalable \b Heterogeneous \b Object \b REpository
- *
- *  Copyright (c) 1994-2007 Computer Sciences Department, University of
- *                      Wisconsin -- Madison
- *                      All Rights Reserved.
- *
- *  Permission to use, copy, modify and distribute this software and its
- *  documentation is hereby granted, provided that both the copyright
- *  notice and this permission notice appear in all copies of the
- *  software, derivative works or modified versions, and any portions
- *  thereof, and that both notices appear in supporting documentation.
- *
- *  THE AUTHORS AND THE COMPUTER SCIENCES DEPARTMENT OF THE UNIVERSITY
- *  OF WISCONSIN - MADISON ALLOW FREE USE OF THIS SOFTWARE IN ITS
- *  "AS IS" CONDITION, AND THEY DISCLAIM ANY LIABILITY OF ANY KIND
- *  FOR ANY DAMAGES WHATSOEVER RESULTING FROM THE USE OF THIS SOFTWARE.
- *
- *  This software was developed with support by the Advanced Research
- *  Project Agency, ARPA order number 018 (formerly 8230), monitored by
- *  the U.S. Army Research Laboratory under contract DAAB07-91-C-Q518.
- *  Further funding for this work was provided by DARPA through
- *  Rome Research Laboratory Contract No. F30602-97-2-0247.
- *
- * -   \b Shore-MT -- \b Multi-threaded \b port \b of \b the \b SHORE \b Storage \b Manager
- *  
- *                     Copyright (c) 2007-2009
- *        Data Intensive Applications and Systems Labaratory (DIAS)
- *                 Ecole Polytechnique Federale de Lausanne
- *  
- *                       All Rights Reserved.
- *  
- *  Permission to use, copy, modify and distribute this software and
- *  its documentation is hereby granted, provided that both the
- *  copyright notice and this permission notice appear in all copies of
- *  the software, derivative works or modified versions, and any
- *  portions thereof, and that both notices appear in supporting
- *  documentation.
- *  
- *  This code is distributed in the hope that it will be useful, but
- *  WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. THE AUTHORS
- *  DISCLAIM ANY LIABILITY OF ANY KIND FOR ANY DAMAGES WHATSOEVER
- *  RESULTING FROM THE USE OF THIS SOFTWARE.
+This distribution contains code and documentation subject to several copyrights and licenses.
+See the copyrights page \ref COPYRIGHT "Copyrights and Licenses, here".
+
  *
  * \section START Getting Started With the Shore Storage Manager
- * A good place to start is with \ref SSMAPI.
+ * A good place to start is with the programming interface, described \ref SSMAPI "here".
  *
  *\section BUILD Configuring and Building the Storage Manager
  * See \ref OPT "this page" to configure and build the storage manager.
  *
  * \section IMPLNOTES1 Implementation Notes
  * See \ref IMPLNOTES "this page" for some implementation details.
+ *
+ * \section BUGREPORT Reporting Bugs
+ * This is unsupported software.  We hope there will be times when someone will
+ * be able to respond to problem reports.
+ * A problem report should include the following information:
+ * - Release number/version of the storage manager.
+ * - Platform (operating system, hardware/CPU type).
+ * - Configuration options (command used to build the storage manager).
+ * - Copy of program that demonstrates problematic behavior, if possible (if
+ *   not itself part of the release).
+ * - Description of problematic behavior, and how the program is run to
+ *    reproduce the behavior.  If you can create a script to reproduce the
+ *    problem, include that.
+ *
+ * Mail this to: shore-mt@cs.wisc.edu
  *
  * \section REFS References
  * See \ref REFERENCES "this page" for references to selected papers 
@@ -190,10 +277,11 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  * We are moving away from that scheme and replacing it with
  * autoconf options and features, but a few things still remain under
  * the control of \e shore.def.
- * These fall into two categories:
+ * These fall into three categories:
  *     - details related to autoconf-controlled options, such as pathnames
  *     - basic compile-time constants that someone extending the
- *     storage manager might want to change (e.g., page size)
+ *       storage manager might want to change 
+ *     - maintainer's tools
  *
  * There remaining some CPP macros not 
  * described in \e config/shore.def:
@@ -215,6 +303,8 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  *
  * \verbatim
 SHORE-specific Features:
+  --enable-pthread-mutex default:yes    Compile to use pthreads for mutexes for
+                                        certain critical sections.
   --enable-lp64         default:yes     Compile to use LP 64 data model
                                         No other data model is supported yet.
                                         But we hope some day to port back to LP32.
@@ -242,6 +332,7 @@ SHORE-specific Features:
   --enable-purecov      default:no      Enable build of <prog>.purecov
 
 SHORE-specific Optional Packages:
+  --with-page-size        1024, 2048, 4196, 8192(default), 16384, or 32768
   --with-hugetlbfs        Use the hugetlbfs for the buffer pool.
                           Depending on the target architecture, this might
                           be useful.  If you use it, you will need to set
@@ -269,12 +360,30 @@ SHORE-specific Optional Packages:
                           W_IFDEBUG3
  \endverbatim
 
+ \bug GNATS 136 Only 64-bit platforms are supported. The issue is that
+ lsns and some other data structures need atomic methods.
+
+ \bug GNATS 143 
+ The polyphase merge-sort does not handle this case:
+ More than one run is required AND 
+ keys are embedded in  objects AND the keys are 
+ already in lexicographic order in the
+ object AND the keys are properly aligned AND the keys 
+ span multiple pages.
+ It returns an error indication about a "broken key" comparison not 
+ being implemented. The workaround is to provide a marshal function
+ or to put the sort key in the header of the object or to provide more
+ memory (larger number of pages for the run size) for the sort.
+ 
+
+ \bug GNATS 139  Convert w_assert9 to w_assert3 where the asserts are still reasonable and remove the rest.  Some of these are obsolete, some are racy in the new mt-context.  All the w_assert9's are what used to be w_assert3; they were turned into 9 to disable them until they could be evaluated for usefulness, and many have been converted to 2 or 3-level asserts; many remain to be addressed.
+
  * \subsection SHOREDEFOPT Description of Selected CPP Macros 
  * In this section we describe selected macros defined (or not) in
  * \e config/shore.def.
  *
  * - HUGETLBFS_PATH See --with-hugetlbfs in \ref CONFIGOPT;
- *   see also \ref REFHUGEPAGE1 for use of hugetlbfs with Linux.
+ *   see also \ref REFHUGEPAGE1 "Huge Pages" for use of hugetlbfs with Linux.
  *
  * - USE_SSMTEST Define this if you want to include crash test hooks in your
  *   smsh.  This is for a maintainer's testing purposes and should not be
@@ -293,10 +402,6 @@ SHORE-specific Optional Packages:
  *
  * - SM_LOG_PARTITIONS  : You can override the default maximum number of
  *   open partitions for the log by defining this. 
- *
- * - SM_PAGESIZE  : You can override the default page size by defineing this.
- *   Warning: this has not been tested in a long time, and in any case,
- *   the maximum page size is 64KB.
  *
  * - SM_EXTENTSIZE  : You can override the default extent size with this.
  *   Warning: you must also address the alignment of Pmap_Align4
@@ -378,13 +483,12 @@ SHORE-specific Optional Packages:
  *  or
  *  \code configure --includedir=\<path\> \endcode
  *
- * \todo mainpage.h update the test platforms list in README 
- * \todo mainpage.h update ChangeLog and other files at the top level
  */
 
+/**\cond skip */
 /**\page HUGETLBFS HugeTLBfs
  *
- * See \ref REFHUGEPAGE1 for assorted on-line documentation about
+ * See \ref REFHUGEPAGE1 "Huge Pages" for assorted on-line documentation about
  * using large pages to avoid excessive load on the TLB.
  *
  * Here we do not claim to be complete for all target architectures.
@@ -392,7 +496,7 @@ SHORE-specific Optional Packages:
  * The following steps are what we did on one RHEL5 system.
  *
  * NOTE: If you have kernel documentation installed, see:
- * /usr/share/doc/kernel-doc-<version>/Documentation/vm/hugetlbpage.txt
+ * /usr/share/doc/kernel-doc-\<version\>/Documentation/vm/hugetlbpage.txt
  *
  * First steps (most of this must be done by the super-user):
  * - Determine that our kernel supports hugetlbfs.
@@ -412,6 +516,16 @@ SHORE-specific Optional Packages:
  *   - echo "none       /mnt/huge    hugetlbfs rw,gid=55555,size10g,mode=0770 0 0" > /etc/fstab
  *
  * - Reboot.
+ *
+ *\warning 
+ * <b> If you have configured the storage manager for use with hugetlbfs
+ * and have not taken the above steps to ensure that your system actually
+ * has the hugetlbfs pages available for use, your storage manager (or
+ * the 'make check' tests) will likely croak.  Unfortunately, we have
+ * not yet figured out a way to determine ahead of time, programmatically,
+ * whether things will go well or not, before we try to write to the 
+ * huge pages.  </b>
+ *
  *
  * Second steps (this can be done by users in the ssm group):
  * - Edit the default path for the hugetlbfs node in config/shore.def.
@@ -436,3 +550,5 @@ SHORE-specific Optional Packages:
  *   require high availability. 
  *
  */
+/**\endcond skip */
+

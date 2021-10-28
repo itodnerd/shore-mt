@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: sthread_core_pthread.cpp,v 1.8 2010/06/08 22:28:00 nhall Exp $
+ $Id: sthread_core_pthread.cpp,v 1.11 2012/01/02 17:02:22 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -71,57 +71,8 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include <w.h>
 #include "sthread.h"
 #include <w_stream.h>
-#include <pthread.h>
+#include <w_pthread.h>
 #include "stcore_pthread.h"
-
-
-
-#define    USER_STACK_SIZE        (sthread_t::default_stack)
-#define    DEFAULT_STACK_SIZE    (USER_STACK_SIZE)
-
-
-#ifndef HAVE_SEMAPHORE_H
-// TODO: move this to another file or get rid of it altogether
-/* Mimic the posix semaphores so it just works.  They release
-   waiters when the count is > 0, sleep if <= 0 */
-
-static    int    sem_init(sthread_core_t::sem_t *sem, int, int count)
-{
-    /* XXX could bitch if shared was true, but it is just for
-       local compatability */
-
-    sem->count = count;
-    DO_PTHREAD(pthread_mutex_init(&sem->lock, NULL));
-    DO_PTHREAD(pthread_cond_init(&sem->wake, NULL));
-
-    return 0;
-}
-
-static    void    sem_destroy(sthread_core_t::sem_t *sem)
-{
-    DO_PTHREAD(pthread_mutex_destroy(&sem->lock));
-    DO_PTHREAD(pthread_cond_destroy(&sem->wake));
-}
-
-static    inline    void    sem_post(sthread_core_t::sem_t *sem)
-{
-    DO_PTHREAD(pthread_mutex_lock(&sem->lock));
-    sem->count++;
-    if (sem->count > 0)
-        DO_PTHREAD(pthread_cond_signal(&sem->wake));
-    DO_PTHREAD(pthread_mutex_unlock(&sem->lock));
-}
-
-static    inline    void    sem_wait(sthread_core_t::sem_t *sem)
-{
-    DO_PTHREAD(pthread_mutex_lock(&sem->lock));
-    while (sem->count <= 0)
-        DO_PTHREAD(pthread_cond_wait(&sem->wake, &sem->lock));
-    sem->count--;
-    DO_PTHREAD(pthread_mutex_unlock(&sem->lock));
-}
-#endif
-
 
 // starting function called by every pthread created; core* is the
 // argument. Through the core* we get the "real function and arg.

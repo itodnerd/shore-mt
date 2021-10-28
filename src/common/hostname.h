@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='HOSTNAME_H'>
 
- $Id: hostname.h,v 1.11.2.5 2010/03/19 22:19:19 nhall Exp $
+ $Id: hostname.h,v 1.12 2010/05/26 01:20:12 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

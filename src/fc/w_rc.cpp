@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: w_rc.cpp,v 1.28 2010/05/26 01:20:25 nhall Exp $
+ $Id: w_rc.cpp,v 1.30 2010/12/09 15:20:12 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -58,10 +58,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #pragma implementation "w_rc.h"
 #endif
 
-#define W_SOURCE
 #include <w_base.h>
-
-#include <pthread.h>
 #include <vector>
 #include <sstream>
 

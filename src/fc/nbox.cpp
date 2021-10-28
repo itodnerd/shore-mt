@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: nbox.cpp,v 1.24.2.6 2010/03/19 22:17:16 nhall Exp $
+ $Id: nbox.cpp,v 1.25 2010/05/26 01:20:21 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -423,7 +423,7 @@ void nbox_t::bytes2box(const char* key, int klen)
 //
 void nbox_t::put(const char* s)
 {
-    int MAYBE_UNUSED n;
+    int n;
     n = sscanf(C_STRING_BUG s, "%d.%d.%d.%d.%d", &dim,
                 &array[0], &array[1], &array[2], &array[3]);
     w_assert1(n==5 && dim == 2);

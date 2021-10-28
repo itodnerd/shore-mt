@@ -1,6 +1,6 @@
 #<std-header style='tcl' orig-src='shore'>
 #
-#  $Id: sort.mkey.1,v 1.11 2010/06/08 22:28:29 nhall Exp $
+#  $Id: sort.mkey.1,v 1.16 2010/10/07 15:12:40 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -30,6 +30,8 @@
 
 source $script_dir/vol.init
 # set verbose_flag 1
+#
+# This does a whopping number (over 7000) of tests.
 
 # 
 # NB: set do_eval to 0 if all you want to do is generate
@@ -41,11 +43,24 @@ source $script_dir/vol.init
 # assertions. Note that sm/newsort.cpp must be built with INSTRUMENT_SORT
 # on for this to work.
 #
+echo "*******************************************************************"
+echo "This script runs many (more than 1500) tests and takes a long time."
+echo "*******************************************************************"
+set testnumber 0
+#
+#
+# use do_eval to control whether you want to just list the tests to be run
+# or list them and run them.
+#
 set do_eval 1
+# use skip_dupok to control whether you want to run only the uniq (eliminate dups)
+# tests or all the tests.
+set skip_dupok 0
 
-set nrecslist { 10 5000 20 }
-set nrecslist { 100 }
-# we seem to have problems with nrecs 200, 5000
+# scratch variable:
+set eval_afterall 1
+
+set nrecslist { 1 8000 2 20 100 }
 set nrecslen [llength $nrecslist]
 verbose  nrecs $nrecslist
 
@@ -53,11 +68,16 @@ set runsizelist { 3 12 8 }
 set runsizelen [llength $runsizelist]
 verbose runsizes $runsizelist
 
-set unique { dupok uniq }
+if { $skip_dupok } {
+	set unique { uniq } 
+} else {
+	set unique { uniq dupok } 
+} 
+
 set ulen [llength $unique]
 verbose unique $unique
 
-set direction { down up }
+set direction { up down }
 set dirlen [llength $direction]
 verbose direction $direction
 
@@ -65,11 +85,11 @@ set carry { carry nocarry  }
 set carrylen [llength $carry]
 verbose carry  $carry
 
-set deep { deep shallow  }
+set deep { shallow deep  }
 set deeplen [llength $deep]
 verbose deep  $deep
 
-set keep { keep nokeep  }
+# TODO RESTORE set keep { nokeep keep  }
 set keep { nokeep  }
 # Can't use keep and shallow together
 set keeplen [llength $keep]
@@ -117,6 +137,7 @@ verbose outputs $outlist
 # spatial -> derived 
 #
 set xlist_ui { \
+    u4@V:u4@V:u4@V:u4@V\
     u2@FAN\
     u2@FA\
     u2@VN\
@@ -125,61 +146,58 @@ set xlist_ui { \
     u2@FN\
     i4@FNA \
     u4@FA:u4@FA:u4@FA:u4@FA:u4@FA\
-    u4@V:u4@V:u4@V:u4@V\
     i2@FAN:u2@N:u1@V:u2@VN:u2@AVN\
     i1@FAN:u1@V:u1@VN:u1@AVN\
 }
 
-set xlist_uiL { \
-    u2L@FAN\
-    u2L@FA\
-    u2L@VN\
-    u2L@V\
-    u2L@F\
-    u2L@FN\
-    i4L@FNA \
-    u4L@FA:u4@FA:u4@FA:u4@FA:u4@FA\
-    u4L@V:u4@V:u4@V:u4@V\
-    i2L@FAN:u2@N:u1@V:u2@VN:u2@AVN\
-    i1L@FAN:u1@V:u1L@VN:u1@AVN\
-}
-
-set xlist_b { \
+set xlist_blarge { \
+    b*1000@FN \
+    b*1000@VA  \
     i1@FA:b*1000@FN \
+}
+set xlist_b { \
     b1@V \
     b1@VNA \
     b1@FA \
     b1@FN \
-    b*1000@FN \
-    b*1000@VA  \
+    i1@FA:b23@FN \
+    b23@FA:b23@FN \
 }
 
 set xlist_f { \
-    f8L@FA:u4@FA:i2@FA:b1@FA:u1@FA \
     u1@FA:i2@V:f4@V:b1@A:u4@VN \
     f8@FNA \
+    f8@FA:u4@FA:i2@FA:b1@FA:u1@FA \
     f8@V \
-    f4L@V \
+    f4@V \
     f4@FA:f8@N \
 }
 
+## NOTE: smsh doesn't have support for spatial & nullable
+# that is, it doesn't have a way to verify the sorted-ness of the file
+# in that case.
+# NOTE: spatial is necessarily derived (D). We don't automagically
+# make it derived so we must put D in the key descr here:
 set xlist_s { \
-    spatial@DF \
-    spatial@VN \
-    spatial@DN \
+    spatial@FD:i4@FA \
+    spatial@DF:i2@FAN:b1@VNA:spatial@D \
+    spatial@FD \
+    spatial@FD:i4@FA:u4@FA \
+    spatial@FD:i4@FA:u4@FA:i1@V \
     spatial@FD:i4@FA:u4@FA:i1@V:u4@V \
-    spatial@DF:i2@FAN:b1@VNA:spatial@D\
-    spatial@DF:i2@FAN:b1@VNA:spatial@D\
     i2@FAN:u2@N:spatial@D\
+    spatial@VD \
+    spatial@DF \
+    spatial@D \
 }
 
+# set xlist $xlist_f OK
+# set xlist $xlist_ui OK
 # set xlist $xlist_s fails
-# set xlist $xlist_f fails
-# set xlist $xlist_b fails
-# set xlist $xlist_ui  sort_funcs4 1185 with len 150 but ok with len 100
-# NOTE: might have to do with key_cookie_t
-# set xlist $xlist_b fails with 100
-set xlist $xlist_f
+# set xlist $xlist_b fails on the b*1000 items when the
+# page size is only 1K, so I've removed them to xlist_blarge
+# for later work.
+set xlist [concat $xlist_b $xlist_ui $xlist_s $xlist_f ]
 
 set xlistlen [llength $xlist]
 
@@ -214,11 +232,6 @@ for {set x 0} {$x < $xlistlen} {incr x} {
 
 			verbose  NRECS  = $nrecs
 
-			# remove duplicates: uniq/dupok
-			for {set u 0} {$u < $ulen} {incr u} {
-			set uniq [lindex $unique $u]
-
-			verbose  UNIQ/DUPOK  = $uniq
 
 			# direction
 			for {set d 0} {$d < $dirlen} {incr d} {
@@ -240,49 +253,78 @@ for {set x 0} {$x < $xlistlen} {incr x} {
 
 			# keep 
 			for {set k 0} {$k < $keeplen} {incr k} {
-				set keep_file [lindex $keep $k]
+			set keep_file [lindex $keep $k]
 
-				verbose  KEEP/DESTROY  = $keep
+			verbose  KEEP/DESTROY  = $keep
+
+			for {set u 0} {$u < $ulen} {incr u} {
+
+				# remove duplicates: uniq/dupok
+				set uniq [lindex $unique $u]
+
+				set overrode 0
+				# See if we need to override the value of $uniq
+				if [expr {[string match uniq $uniq]}] {
+					set nullable [expr [string first "N" $rest]]
+					if [expr { $nullable < 0 }] {
+						# did not find "N" in $rest
+					} else {
+						# did find "N" in $rest: override $uniq
+						verbose OVERRIDING $uniq because test specifies nullable: $rest
+						set uniq "dupok"
+						set overrode 1
+					}
+				}
+				verbose  UNIQ/DUPOK  = $uniq
 
 				set cmd "sm multikey_sort_file $volid $nrecs $runsize $dir $uniq $outfile $keep_file $deep_copy $carry_obj"
 					
 				set command "$cmd $nkeys $rest"
-				verbose $command
 
-				if {$do_eval} {
+			    set eval_afterall $do_eval
+                if {$skip_dupok} {
+					if {$overrode} {
+					   set eval_afterall 0
+					   verbose SKIPPING OVERRIDDEN TEST $command $eval_afterall
+					}
+				}
+				if {$eval_afterall} {
 					sm begin_xct
 					# set save_verbose_flag $verbose_flag 
 					#set verbose_flag 0
+					incr testnumber
+					echo $testnumber $command
 					eval $command
 					# set verbose_flag $save_verbose_flag
 					sm commit_xct
 				}
 			}
-			# for keep file
+			# for u: unique/dupok
 
 			}
-			# for deep_copy
+			# for k:  keep file
 
 			}
-			# for carry_obj
+			# for dc: deep_copy
 
 			}
-			# for direction
+			# for c: carry_obj
 
 			}
-			# for unique/dupok
+			# for d: direction
 
 		}
-		# for num of records
+		# for n: num of records
 		
 		}
-		# for run size
+		# for r: run size
 	}
-# for index/file output
+    # for f: outlist -- index/file output
 
 }
-# for experiment
+# for x: experiment
 
+unset eval_afterall skip_dupok overrode testnumber
 
 # clean up tcl variables
 unset nkeys rest cmd command
@@ -299,3 +341,4 @@ unset deep deeplen
 unset deep_copy
 unset keep_file carry_obj
 unset c dc k do_eval
+unset xlist_s xlist_ui xlist_b xlist_f

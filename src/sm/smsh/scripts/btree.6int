@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: btree.6int,v 1.5 2006/06/01 17:09:37 nhall Exp $
+#  $Id: btree.6int,v 1.7 2010/08/23 14:28:23 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -136,7 +136,7 @@ if {$logging==0} {
     #
     # load, abort
     #
-    verbose load (1->$nr * 1->$ne), abort
+    verbose TEST 1: load (1->$nr * 1->$ne), abort
     sm begin_xct
     for {set i 1} {$i <= $nr} {incr i} {
 	set key $i
@@ -150,9 +150,10 @@ if {$logging==0} {
     }
     scan_up_partial $ndx 2 [expr {$nr - 1}] $nr $ne
 
-    dstats $volid
+    # dstats $volid
     verbose sm abort_xct 
-    sm abort_xct 
+    set stats [sm abort_xct]
+    verbose TEST 1: [pnzstats $stats]
 
     sm begin_xct
     scan_up $ndx 0 0
@@ -161,7 +162,7 @@ if {$logging==0} {
     #
     # load, restart
     #
-    verbose load, restart
+    verbose TEST 2: load, restart
     sm begin_xct
     set tx [sm xct]
     set tid [sm xct_to_tid $tx]
@@ -188,7 +189,7 @@ if {$logging==0} {
     #
     # load, commit restart
     #
-    verbose load, commit, restart
+    verbose TEST 3: load, commit, restart
     sm begin_xct
     for {set i 1} {$i <= $nr} {incr i} {
 	set key $i
@@ -214,7 +215,7 @@ if {$logging==0} {
     #
     # empty, abort
     #
-    verbose empty, abort
+    verbose TEST 4: empty, abort
     sm begin_xct
     for {set i 1} {$i <= $nr} {incr i} {
 	set key $i
@@ -225,7 +226,8 @@ if {$logging==0} {
     }
     scan_up $ndx 0 0
     verbose sm abort_xct 
-    sm abort_xct 
+    set stats [sm abort_xct]
+    verbose TEST 4: [pnzstats $stats]
 
     sm begin_xct
     scan_up $ndx $nr $ne 
@@ -236,7 +238,7 @@ if {$logging==0} {
     # empty, restart
     #
 
-    verbose empty, restart
+    verbose TEST 5: empty, restart
     sm begin_xct
     set tx [sm xct]
     set tid [sm xct_to_tid $tx]
@@ -262,7 +264,7 @@ if {$logging==0} {
     #
     # empty, commit, restart
     #
-    verbose empty, commit, restart
+    verbose TEST 6: empty, commit, restart
     sm begin_xct
     for {set i 1} {$i <= $nr} {incr i} {
 	set key $i

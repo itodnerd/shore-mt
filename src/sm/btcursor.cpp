@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: btcursor.cpp,v 1.16 2010/06/08 22:28:55 nhall Exp $
+ $Id: btcursor.cpp,v 1.18 2010/08/04 01:57:54 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -141,31 +141,6 @@ bt_cursor_t::set_up_part_2(cmp_t cond1, const cvec_t& bound1)
     return check_bounds();
 }
 
-void
-bt_cursor_t::set_roots(vector<lpid_t>& roots) {
-    is_mrbt = true;
-    _roots = roots;
-    if(_backward) {
-	_next_root = 1;
-    } else {
-	_next_root = roots.size() - 2;
-    }
-}
-
-bool
-bt_cursor_t::get_next_root() {
-    if(_backward && (size_t) _next_root != _roots.size()) {
-	_root = _roots[_next_root];
-	_next_root++;
-	return true;
-    } else if(_next_root >= 0) {
-	_root = _roots[_next_root];
-	_next_root--;
-	return true;
-    } else {
-	return false;
-    }
-}
 
 /*********************************************************************
  *
@@ -210,14 +185,14 @@ bt_cursor_t::inbounds(
 
     // because we start by traversing for the lower(upper) bound,
     // this should be true:
-	DBG(<<"v <= bound2() == " << (bool)(v <= bound2()) );
-	DBG(<<"v >= bound1() == " << (bool)(v <= bound1()) );
-	W_IFDEBUG3(
+    DBG(<<"v <= bound2() == " << (bool)(v <= bound2()) );
+    DBG(<<"v >= bound1() == " << (bool)(v <= bound1()) );
+    W_IFDEBUG3(
     if(is_backward()) {
         if(!v.is_null()) { w_assert3(v <= bound2()); }
     } else {
         if(!v.is_null()) { w_assert3(v >= bound1()); }
-	}
+    }
     )
 
     ok1 = inbound(v, cond1(), bound1(), more);
@@ -346,6 +321,7 @@ bt_cursor_t::make_rec(const btree_p& page, int slot)
     btrec_t r(page, slot);
     _klen = r.klen();
     _elen = r.elen();
+    DBG(<< "_klen " << _klen << " _elen " << _elen);
     if (_klen + _elen > _splen)  {
         if (_space) { delete[] _space; _space=0; }
         if (! (_space = new char[_splen = _klen + _elen]))  {

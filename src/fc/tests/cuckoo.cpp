@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: cuckoo.cpp,v 1.1.2.4 2010/03/19 22:17:53 nhall Exp $
+ $Id: cuckoo.cpp,v 1.3 2010/06/08 22:27:15 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

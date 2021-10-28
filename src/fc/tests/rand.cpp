@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: rand.cpp,v 1.1.2.4 2009/10/30 23:49:04 nhall Exp $
+ $Id: rand.cpp,v 1.4 2010/07/29 21:22:44 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -87,7 +87,7 @@ static void p(const char *str,  const unsigned48_t &u);
 static void p(const char *str,  const signed48_t &u);
 static void p(const char *str,  const double &u);
 
-struct  randorig : rand48 {
+struct  randorig : public rand48 {
    randorig()  { seed(RAND48_INITIAL_SEED); }
    randorig(const rand48 &other) { _state = other._state; }
    bool operator == (const randorig & other)const 
@@ -141,7 +141,7 @@ void randorig::dump( const char *str, bool debug) const
 // randalt: basically the same as the library rand class,
 // but this gives us a change to override the generators for
 // testing purposes
-struct  randalt : randorig {
+struct  randalt : public randorig {
         randalt() { }
         randalt(const rand48 &other) : randorig(other) { }
     double drand() ;

@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='KVL_T_H'>
 
- $Id: kvl_t.h,v 1.9.2.4 2010/03/19 22:19:19 nhall Exp $
+ $Id: kvl_t.h,v 1.12 2012/01/02 21:52:20 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -98,7 +98,9 @@ inline NORET
 kvl_t::kvl_t(stid_t id, const cvec_t& v)
     : stid(id)
 {
-    v.calc_kvl(h), g = 0;
+	// don't waste "g" for uni_btree. uses different hash seed
+    v.calc_kvl(h), v.calc_kvl2(g); 
+    v.calc_kvl(h), v.calc_kvl2(g); 
 }
 
 inline NORET
@@ -131,7 +133,8 @@ kvl_t::operator=(const kvl_t& k)
 inline kvl_t&
 kvl_t::set(stid_t s, const cvec_t& v)
 {
-    stid = s, v.calc_kvl(h), g = 0;
+	// don't waste "g" for uni_btree. uses different hash seed
+    stid = s, v.calc_kvl(h), v.calc_kvl2(g); 
     return *this;
 }
 

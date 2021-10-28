@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: deadlock.2,v 1.19.4.3 2009/11/23 22:34:44 nhall Exp $
+#  $Id: deadlock.2,v 1.22 2012/01/02 17:02:19 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -30,7 +30,11 @@
 # Test Upgrade deadlock detection
 #
 #    t1: {SH(A), EX(B)} --> EX(A)(upgrade)
-#    t2: {SH(A)} --> SH(B)
+#    t2: {SH(A)} --> EX(B)
+#
+#    Looking at the lock head lists:
+#    A: t1-sh-granted  t2-sh-granted t1-ex-upgrade
+#    B: t1-ex-granted  t2-ex-wait
 #
 #    deadlock.5 does the same thing but with records and
 #    sm commands that would grab the locks to read/update the records.
@@ -50,12 +54,14 @@ proc t1 {} {
     sync
     verbose "t1: sync B }"
 	# step 2: try to upgrade to EX on A
-    verbose "t1: attempting to acquire EX on $A"
+    verbose "t1: attempting to upgrade to EX on $A"
     # catch deadlock
     verbose catch deadlock:
 	if [catch {sm lock $A EX LONG} errorno] {
 		verbose "(EXPECTED E_DEADLOCK) error is $errorno"
 		assert {error_is $errorno E_DEADLOCK}
+	} else {
+	    verbose NO DEADLOCK
 	}
 	sm abort_xct
 }
@@ -80,6 +86,8 @@ proc t2 {} {
 	if [catch {sm lock $B SH LONG} errorno] {
 		verbose "(EXPECTED E_DEADLOCK) error is $errorno"
 		assert {error_is $errorno E_DEADLOCK}
+	} else {
+	    verbose NO DEADLOCK
 	}
     sm commit_xct
 }
@@ -93,11 +101,14 @@ verbose t1 $x1
 set x2 [fork_thread t2 {}]
 verbose x2 $x2
 
+# encourage the other threads to run 
+sm sleep 10 
 
 verbose "{ sync_thread $x1 $x2 B "
 sync_thread $x1 $x2
 verbose "sync_thread $x1 $x2 }"
 
+# sm dump_locks
 
 verbose "{ sync_thread $x2  C"
 sync_thread $x2

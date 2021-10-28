@@ -1,6 +1,6 @@
 # <std-header style='data' orig-src='shore'>
 #
-#  $Id: e_error.dat,v 1.53.2.7 2010/03/19 22:20:23 nhall Exp $
+#  $Id: e_error.dat,v 1.60 2010/12/08 17:37:42 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -29,7 +29,6 @@
 
 e = 0x00080000 "Storage Manager" smlevel_0 {
 
-ASSERT			Assertion failed
 USERABORT		User initiated abort
 CRASH			Server told to crash or shutdown immediately
 
@@ -77,6 +76,7 @@ BADARGUMENT		bad argument or combination of arguments to function
 
 TWOTRANS		transaction already attached to thread
 TWOTHREAD		multiple threads not allowed for this operation
+TWOUTHREAD		multiple update threads not allowed for this operation
 NOTRANS			no active transaction
 INTRANS			in active transaction (not allowed for this operation)
 TWOQUARK		second quark in a single transaction is not allowed
@@ -90,6 +90,7 @@ NOTEXTERN2PC		transaction is not participating in external 2-phase commit
 NOSUCHPTRANS		could not find a prepared transaction with given global transaction id
 
 THREADMAPFULL		No more bits for thread maps
+NOTPARENTLOCK		invalid parent lock type for lockid_t::truncate
 BADLOCKMODE		invalid lock mode
 LOCKTIMEOUT		lock timeout
 NOTBLOCKED		smthread is not blocked
@@ -99,6 +100,7 @@ RETRY			retry the request (used internally)
 FOUNDEXTTOFREE		unlock duration found an ext to free (used internally)
 
 CANTWHILEACTIVEXCTS	can't do to volume while there are active transactions
+LISTTOOLONG    	too many items in list
 
 NOHANDLE		Missing coordinator handle
 
@@ -116,6 +118,7 @@ DUAUDITFAILED      Audit failed for du statistics
 PINACTIVE        Thread has something pinned
 HOTPAGE          Another thread pinned this page in the buffer pool
 BPFORCEFAILED   Could not force all the necessary pages from the buffer pool
+BRKKEYCMPNOTIMPL      Sort key is broken across pages - case not implemented
 
 }
 

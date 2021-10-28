@@ -4,7 +4,6 @@ include $(top_srcdir)/Makefile.generic
 EXTRA_DIST = st_error.dat sthread_stats.dat 
 
 AM_CXXFLAGS          += -I. \
-		       -I$(top_srcdir)/config \
 		       -I$(top_srcdir)/src/fc
 
 
@@ -37,6 +36,7 @@ GENFILES = $(GENFILES_H) $(GENFILES_CPP)
 include_HEADERS = \
 	$(GENFILES_H) \
 	auto_release.h \
+	errlog.h critical_section.h w_pthread.h \
 	mcs_lock.h \
 	os_fcntl.h os_interface.h \
 	sdisk.h \
@@ -44,18 +44,18 @@ include_HEADERS = \
 	stcore_pthread.h \
 	srwlock.h \
 	sthread.h \
-	sthread_stats.h sthread_vtable_enum.h 
+	sthread_stats.h sthread_vtable_enum.h  w_debug.h
 
 libsthread_a_SOURCES      = \
+	errlog.cpp \
 	sthread.cpp \
 	sthread_core_pthread.cpp \
 	sthread_stats.cpp \
 	srwlock.cpp \
-	no-inline.cpp \
 	io.cpp \
 	sdisk_unix.cpp \
 	sdisk.cpp \
-	vtable_sthread.cpp
+	vtable_sthread.cpp w_debug.cpp
 
 
 # libsthread_a_LIBADD       = @LIBOBJS@

@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: file.cpp,v 1.201 2010/06/15 17:30:07 nhall Exp $
+ $Id: file.cpp,v 1.216 2010/12/09 15:20:14 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -61,12 +61,8 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #pragma implementation "file_s.h"
 #endif
 
-#include "sm_int_2.h"
-//
-#include "btree_p.h"
-#include <set>
-//
 #define FILE_C
+#include "sm_int_2.h"
 #include "lgrec.h"
 #include "w_minmax.h"
 #include "sm_du_stats.h"
@@ -169,8 +165,9 @@ file_m::~file_m()
 rc_t 
 file_m::create(stid_t stid, lpid_t& first_page)
 {
+    FUNC(create);
     file_p  page;
-    DBGTHRD(<<"file_m::create create first page in store " << stid);
+    DBGTHRD(<<"creating first page in store " << stid);
     W_DO(_alloc_page( stid, 
         lpid_t::eof,  // hint bof/eof doesn't matter, but if eof,
                       // it will shorten the path a bit
@@ -181,32 +178,11 @@ file_m::create(stid_t stid, lpid_t& first_page)
     // page.destructor() causes it to be unfixed
     w_assert3(page.is_fixed());
 
+    DBGTHRD(<<"allocated page; now update histoid");
     histoid_update_t hu(page);
     hu.update();
-    DBGTHRD(<<"file_m::create(d) first page is  " << first_page);
-    return RCOK;
-}
-
-
-// same as create, except creates a file_mrbt_p as first page instead file_p 
-rc_t 
-file_m::create_mrbt(stid_t stid, lpid_t& first_page)
-{
-    file_mrbt_p  page;
-    DBGTHRD(<<"file_m::create_mrbt create first page in store " << stid);
-    W_DO(_alloc_mrbt_page( stid, 
-        lpid_t::eof,  // hint bof/eof doesn't matter, but if eof,
-                      // it will shorten the path a bit
-        first_page,   // output
-        page,
-        true              // immaterial here
-        ));
-    // page.destructor() causes it to be unfixed
-    w_assert3(page.is_fixed());
-
-    histoid_update_t hu(page);
-    hu.update();
-    DBGTHRD(<<"file_m::create_mrbt(d) first page is  " << first_page);
+    DBGTHRD(<<"create done first page is  " << first_page
+            << " unfixing now");
     return RCOK;
 }
 
@@ -221,57 +197,25 @@ file_m::create_rec(
     const vec_t&         data,
     sdesc_t&             sd,
     rid_t&               rid, // output
-    const bool bIgnoreParents
-)
+    uint4_t              policy
+#ifdef SM_DORA
+    , const bool bIgnoreParents
+#endif
+    )
 {
     file_p        page;
-
-    // compact stores become a bottleneck
-    // and they make the parallel loading of the benchmark databases
-    // unable to acquire EX latches, and those db loads don't
-    // cope with this situation.
-    uint4_t     policy = t_cache | /*t_compact |*/ t_append;
-
     DBG(<<"create_rec store " << fid);
 
     W_DO(_create_rec( fid, pg_policy_t(policy), 
                       len_hint, sd, hdr, data, 
-                      rid, page, bIgnoreParents ));
+                      rid, page
+#ifdef SM_DORA
+                      , bIgnoreParents
+#endif
+                      ));
     DBG(<<"create_rec created " << rid);
     return RCOK;
 }
-
-
-rc_t
-file_m::create_mrbt_rec(
-    const stid_t&        fid,
-    // no page hint
-    smsize_t             len_hint,
-    const vec_t&         hdr,
-    const vec_t&         data,
-    sdesc_t&             sd,
-    rid_t&               rid, // output
-    const bool bIgnoreParents
-)
-{
-    file_mrbt_p        page;
-
-    // compact stores become a bottleneck
-    // and they make the parallel loading of the benchmark databases
-    // unable to acquire EX latches, and those db loads don't
-    // cope with this situation.
-    uint4_t     policy = t_cache | /*t_compact |*/ t_append;
-
-    DBG(<<"create_mrbt_rec store " << fid);
-
-    W_DO(_create_mrbt_rec( fid, pg_policy_t(policy), 
-			   len_hint, sd, hdr, data, 
-			   rid, page, bIgnoreParents ));
-    DBG(<<"create_mrbt_rec created " << rid);
-    return RCOK;
-}
-
-
 /* NB: order of arguments is same as old create_rec_at_end */
 rc_t 
 file_m::create_rec_at_end(
@@ -291,6 +235,8 @@ file_m::create_rec_at_end(
     stid_t        fid = sd.stid();
 
     DBG(<<"create_rec_at_end store " << fid
+            << " hdr=" << hdr
+            << " data=" << data
             << " page is fixed: " << page.is_fixed()
             );
     W_DO(_create_rec(fid, t_append, len_hint,
@@ -298,34 +244,6 @@ file_m::create_rec_at_end(
     DBG(<<"create_rec_at_end created " << rid);
     return RCOK;
 }
-
-
-rc_t 
-file_m::create_mrbt_rec_at_end(
-        file_mrbt_p&         page, // in-out -- caller might have it fixed
-        uint4_t         len_hint,
-        const vec_t&    hdr,
-        const vec_t&    data,
-        sdesc_t&        sd, 
-        rid_t&          rid        // out
-)
-{
-    FUNC(file_m::create_rec_at_end);
-
-    if(hdr.size() > file_mrbt_p::data_sz - sizeof(rectag_t)) {
-        return RC(eRECWONTFIT);
-    }
-    stid_t        fid = sd.stid();
-
-    DBG(<<"create_mrbt_rec_at_end store " << fid
-            << " page is fixed: " << page.is_fixed()
-            );
-    W_DO(_create_mrbt_rec(fid, t_append, len_hint,
-        sd, hdr, data, rid, page));
-    DBG(<<"create_mrbt_rec_at_end created " << rid);
-    return RCOK;
-}
-
 
 /*
  * Called from create_rec_at_end and from create_rec
@@ -339,8 +257,10 @@ file_m::_create_rec(
     const vec_t&          hdr,
     const vec_t&          data,
     rid_t&                rid,
-    file_p&               page,        // in-output
-    const bool            bIgnoreParents
+    file_p&               page        // in-output
+#ifdef SM_DORA
+    , const bool          bIgnoreParents
+#endif
 )
 {
     smsize_t        space_needed;
@@ -352,9 +272,15 @@ file_m::_create_rec(
          */
         w_assert3(fid == sd.stid());
         smsize_t est_data_len = MAX((uint4_t)data.size(), len_hint);
-        rec_impl = file_p::choose_rec_implementation( hdr.size(), 
+        // page might be fixed but it won't be checked for space
+        // to determine implementation unless the &page is passed in 
+        // as the last argument below.
+        rec_impl = page.choose_rec_implementation( hdr.size(), 
                                                   est_data_len,
-                                                  space_needed);
+                                                  space_needed,
+          // Don't pass in page: want this to give us the ideal rec_impl
+                                                  NULL
+                                                  );
     }
     DBG(<<"create_rec with policy " << int(policy)
         << " space_needed=" << space_needed
@@ -370,12 +296,15 @@ file_m::_create_rec(
         DBGTHRD(<<"About to copy sd");
         histoid_update_t hu(&sd);
 
+        // 
+        // If the page IS fixed, we necessarily came from create_rec_at_end,
+        // but if it is NOT fixed, we could still have t_append; for one thing, the 
+        // user could have called ss_m::create_rec with this policy.
         if(page.is_fixed()) {
             w_assert2(policy == t_append);
             w_assert2(page.latch_mode() == LATCH_EX);
 
             rc_t rc = page.find_and_lock_next_slot(space_needed, slot);
-
             if(rc.is_error()) {
                 page.unfix();
                 DBG(<<"rc=" << rc);
@@ -402,11 +331,17 @@ file_m::_create_rec(
 #endif
             }
         } 
-	
+
         if(!have_page) {
+            w_assert1(!page.is_fixed());
             W_DO(_find_slotted_page_with_space(fid, policy, sd, 
-                                               space_needed, page, slot,
-                                               bIgnoreParents));
+                                               space_needed, page, slot
+#ifdef SM_DORA
+                                               , bIgnoreParents
+#endif
+                                               ));
+            // returned with success: update page information
+            w_assert1(page.is_fixed());
             hu.replace_page(&page);
         }
 
@@ -440,652 +375,65 @@ file_m::_create_rec(
     return RCOK;
 }
 
+#include <store_latch_manager.h>
 
-// here EX latches are kept because create_rec is called before
-// index related stuff
-rc_t
-file_m::_create_mrbt_rec(
-    const stid_t&         fid,
-    pg_policy_t           policy,
-    smsize_t              len_hint,
-    sdesc_t&              sd,
-    const vec_t&          hdr,
-    const vec_t&          data,
-    rid_t&                rid,
-    file_mrbt_p&          page,        // in-output
-    const bool            bIgnoreParents
-)
+/*
+ * There's an inefficiency here in that once a
+ * record creation (not strict-append) happens by
+ * dropping down to the last resort (all cached
+ * info has been exhaused) we
+ * track of the last pid of the file. Descending to the
+ * i/o layer to allocate the page doesn't give us any
+ * idea if the one we allocated is the new last page.
+ * GNATS160: we probably can modify the alloc functions to
+ * have that indication returned, which might speed up the
+ * process of regular allocation here.
+ */
+class hog_last_pid
 {
-    smsize_t        space_needed;
-    recflags_t      rec_impl; 
-
+    // The question is how best to do this. For now we use a per-store
+    // latch because it can be r/w
+    latch_t&     _latch;
+    latch_mode_t _mode;
+    lpid_t       _lastpid;
+    sdesc_t&     _sd;
+public:
+    NORET hog_last_pid(const stid_t &stid, 
+            sdesc_t &sd, latch_mode_t mode) :
+         _latch(store_latches.find_latch(stid)),
+         _mode(mode),
+        _sd(sd)
     {
-        /*
-         * compute space needed, record implementation
-         */
-        w_assert3(fid == sd.stid());
-        smsize_t est_data_len = MAX((uint4_t)data.size(), len_hint);
-        rec_impl = file_mrbt_p::choose_rec_implementation( hdr.size(), 
-							   est_data_len,
-							   space_needed);
+        w_assert1(_mode != LATCH_NL);
+        W_COERCE(_latch.latch_acquire(_mode));
+        _lastpid = lpid_t(stid, _sd.hog_last_pid());
     }
-    DBG(<<"create_rec with policy " << int(policy)
-        << " space_needed=" << space_needed
-        << " rec_impl=" << int(rec_impl)
-        << " page is fixed=" << page.is_fixed()
-        );
 
-    bool         have_page = false;
-
-    { // open scope for hu
-        slotid_t        slot = 0;
-
-        DBGTHRD(<<"About to copy sd");
-        histoid_update_t hu(&sd);
-
-        if(page.is_fixed()) {
-            w_assert2(policy == t_append);
-            w_assert2(page.latch_mode() == LATCH_EX);
-
-            rc_t rc = page.find_and_lock_next_slot(space_needed, slot);
-
-            if(rc.is_error()) {
-                page.unfix();
-                DBG(<<"rc=" << rc);
-                if (rc.err_num() != eRECWONTFIT) {
-                    // error we can't handle
-                    return RC_AUGMENT(rc);
-                }
-                w_assert3(!page.is_fixed());
-                w_assert3(!have_page);
-            } else {
-                DBG(<<"acquired slot " << slot);
-                have_page = true;
-                w_assert2(page.is_fixed());
-                hu.replace_page(&page);
-#if W_DEBUG_LEVEL > 2
-                {
-                    w_assert3(page.latch_mode() == LATCH_EX);
-                    space_bucket_t b = page.bucket();
-                    if((page.page_bucket_info.old() != b) && 
-                        page.page_bucket_info.initialized()) {
-                        W_FATAL_MSG(fcINTERNAL, << "ah ha!");
-                    }
-                }
-#endif
-            }
-        } 
-
-        if(!have_page) {
-            W_DO(_find_slotted_mrbt_page_with_space(fid, policy, sd, 
-						    space_needed, page, slot,
-						    bIgnoreParents));
-            hu.replace_page(&page);
+    NORET ~hog_last_pid() {
+        if(_mode != LATCH_NL) {
+            // Not yet released.
+            _latch.latch_release();
+            _mode = LATCH_NL;
         }
+    }
 
-#if W_DEBUG_LEVEL > 2
-        {
-            space_bucket_t b = page.bucket();
-            if((page.page_bucket_info.old() != b) && 
-                page.page_bucket_info.initialized()) {
-                    W_FATAL_MSG(fcINTERNAL, << "ah ha!");
-            }
+    const lpid_t& pid() const { return _lastpid; }
+
+    void  release(shpid_t page) 
+    { 
+        if(_mode == LATCH_SH) {
+            // invalidate.
+            // This is the case in which we don't know the *real* last page
+            // and we allocated a page - alas.
+            page = 0;
         }
-#endif
-
-        // split into 2 parts so we don't hog the histoid, and
-        // so we don't run into double-acquiring it in append_rec.
-
-        w_assert2(page.is_fixed() && page.latch_mode() == LATCH_EX);
-
-        W_DO(_create_rec_in_slot(page, slot, rec_impl, 
-            hdr, data, sd, false,
-            rid));
-
-        w_assert2(page.is_fixed() && page.latch_mode() == LATCH_EX);
-
-        hu.update();
-    } // close scope for hu
-
-    if(rec_impl == t_large_0) {
-        W_DO(append_mrbt_rec(rid, data, sd));
+        _sd.set_last_pid(page); 
+        _lastpid = lpid_t::null; // should not be using it after this
+        w_assert1(_mode != LATCH_NL);
+        _latch.latch_release();
+        _mode = LATCH_NL;
     }
-    return RCOK;
-}
-
-rc_t
-file_m::move_mrbt_rec_to_given_page(
-    smsize_t              len_hint,
-    const vec_t&          hdr,
-    const vec_t&          data,
-    rid_t&                rid, // output
-    file_p&               page,
-    bool&                 space_found
-)
-{
-    smsize_t        space_needed;
-    recflags_t      MAYBE_UNUSED rec_impl; 
-    space_found = true;
-    {
-        /*
-         * compute space needed, record implementation
-         */
-        smsize_t est_data_len = MAX((uint4_t)data.size(), len_hint);
-        rec_impl = file_mrbt_p::choose_rec_implementation( hdr.size(), 
-							   est_data_len,
-							   space_needed);
-    }
-    DBG(<< "create_rec "
-        << " space_needed=" << space_needed
-        << " rec_impl=" << int(rec_impl)
-        << " page is fixed=" << page.is_fixed()
-        );
-
-    { // open scope for hu
-        slotid_t        slot = 0;
-
-        histoid_update_t hu(page);
-
-        if(page.is_fixed()) {
-	    w_assert2(page.latch_mode()==LATCH_NLX || page.latch_mode()==LATCH_EX);
-	    
-            rc_t rc = page.find_and_lock_next_slot(space_needed, slot);
-
-            if(rc.is_error()) {
-                page.unfix();
-                DBG(<<"rc=" << rc);
-                if (rc.err_num() != eRECWONTFIT) {
-                    // error we can't handle
-                    return RC_AUGMENT(rc);
-                }
-                w_assert3(!page.is_fixed());
-		space_found = false;
-		return RCOK;
-            } else {
-                DBG(<<"acquired slot " << slot);
-		w_assert2(page.is_fixed());
-                hu.replace_page(&page); // ???
-#if W_DEBUG_LEVEL > 2
-                {
-		    w_assert3(page.latch_mode() == LATCH_NLX ||
-			      page.latch_mode() == LATCH_EX);
-                    space_bucket_t b = page.bucket();
-                    if((page.page_bucket_info.old() != b) && 
-                        page.page_bucket_info.initialized()) {
-                        W_FATAL_MSG(fcINTERNAL, << "ah ha!");
-                    }
-                }
-#endif
-            }
-        } 
-
-
-        // split into 2 parts so we don't hog the histoid, and
-        // so we don't run into double-acquiring it in append_rec.
-
-	w_assert2(page.is_fixed() &&
-		  (page.latch_mode()==LATCH_NLX || page.latch_mode()==LATCH_EX));
-
-        W_DO(_create_mrbt_rec_in_slot(page, slot, hdr, data, rid));
-
-	w_assert2(page.is_fixed() &&
-		  (page.latch_mode()==LATCH_NLX || page.latch_mode()==LATCH_EX));
-
-        hu.update();
-    } // close scope for hu
-
-    return RCOK;
-}
-
-rc_t
-file_m::create_mrbt_rec_in_given_page(
-    smsize_t              len_hint,
-    sdesc_t&              sd,
-    const vec_t&          hdr,
-    const vec_t&          data,
-    rid_t&                rid, // output
-    file_p&               page,
-    bool&                 space_found,
-    const bool            bIgnoreLatches
-)
-{
-    smsize_t        space_needed;
-    recflags_t      rec_impl; 
-    space_found = true;
-    {
-        /*
-         * compute space needed, record implementation
-         */
-        smsize_t est_data_len = MAX((uint4_t)data.size(), len_hint);
-        rec_impl = file_mrbt_p::choose_rec_implementation( hdr.size(), 
-							   est_data_len,
-							   space_needed);
-    }
-    DBG(<<"create_rec "
-        << " space_needed=" << space_needed
-        << " rec_impl=" << int(rec_impl)
-        << " page is fixed=" << page.is_fixed()
-        );
-
-    { // open scope for hu
-        slotid_t        slot = 0;
-
-        histoid_update_t hu(&sd);
-
-        if(page.is_fixed()) {
-	    w_assert2(page.latch_mode()==LATCH_EX || page.latch_mode()==LATCH_NLX);
-	    
-            rc_t rc = page.find_and_lock_next_slot(space_needed, slot);
-
-            if(rc.is_error()) {
-                page.unfix();
-                DBG(<<"rc=" << rc);
-                if (rc.err_num() != eRECWONTFIT) {
-                    // error we can't handle
-                    return RC_AUGMENT(rc);
-                }
-                w_assert3(!page.is_fixed());
-		space_found = false;
-		return RCOK;
-            } else {
-                DBG(<<"acquired slot " << slot);
-		w_assert2(page.is_fixed());
-                hu.replace_page(&page); // ???
-#if W_DEBUG_LEVEL > 2
-                {
-		    w_assert3(page.latch_mode() == LATCH_EX ||
-			      page.latch_mode() == LATCH_NLX);
-                    space_bucket_t b = page.bucket();
-                    if((page.page_bucket_info.old() != b) && 
-                        page.page_bucket_info.initialized()) {
-                        W_FATAL_MSG(fcINTERNAL, << "ah ha!");
-                    }
-                }
-#endif
-            }
-        } 
-
-
-        // split into 2 parts so we don't hog the histoid, and
-        // so we don't run into double-acquiring it in append_rec.
-
-	w_assert2(page.is_fixed() &&
-		  (page.latch_mode()==LATCH_EX || page.latch_mode()==LATCH_NLX));
-
-        W_DO(_create_rec_in_slot(page, slot, rec_impl, hdr, data, sd, false, rid));
-
-	w_assert2(page.is_fixed() &&
-		  (page.latch_mode()==LATCH_EX || page.latch_mode()==LATCH_NLX));
-
-        hu.update();
-    } // close scope for hu
-
-    if(rec_impl == t_large_0) {
-        W_DO(append_mrbt_rec(rid, data, sd, bIgnoreLatches));
-    }
-
-    return RCOK;
-}
-
-rc_t
-file_m::destroy_rec_slot(const rid_t rid, file_mrbt_p& page, const bool bIgnoreLatches)
-{
-
-    DBGTHRD(<<"destroy_rec_slot");
-
-    /*
-     * Find or create a histoid for this store.
-     */
-    w_assert2(page.is_fixed());
-    w_assert2(page.is_latched_by_me());
-    w_assert2(page.is_mine());
-
-    W_DO( page.destroy_rec(rid.slot) ); // does a page_mark for the slot
-
-    if (page.rec_count() == 0) {
-        DBG(<<"Now free page");
-        w_assert2(page.is_fixed());
-        W_DO(_free_page(page, bIgnoreLatches));
-	INC_TSTAT(page_file_mrbt_dealloc);
-        return RCOK;
-    }
-
-    DBG(<<"Update page utilization");
-    /*
-     *  Update the page's utilization info in the
-     *  cache.
-     *  (page_p::unfix updates the extent's histogram info)
-     */
-    histoid_update_t hu(page);
-    hu.update();
-    return RCOK;
-}
-
-rc_t
-file_m::_create_mrbt_rec_in_slot(
-    file_p    &page,
-    slotid_t       slot,
-    const vec_t&   hdr,
-    const vec_t&   data,
-    rid_t&         rid // out
-)
-{
-    FUNC(_create_mrbt_rec_in_slot);
-    w_assert2(page.is_fixed() /*&& page.is_file_mrbt_p()*/);
-
-    // if bIgnoreLatches = false
-    // page is already in the file and locked IX or EX
-    // slot is already locked EX
-    rid.pid = page.pid();
-    rid.slot = slot;
-
-    w_assert3(rid.slot >= 1);
-
-    /*
-     * create the record header and ...
-     */
-    rc_t             rc;
-    rectag_t         tag;
-    tag.hdr_len = hdr.size();
-
-    // it is small, so put the data in as well
-    tag.flags = t_small;
-    tag.body_len = data.size();
-    w_assert2(page.is_fixed() &&
-	      (page.latch_mode() == LATCH_NLX || page.latch_mode() == LATCH_EX));
-    rc = page.fill_slot(rid.slot, tag, hdr, data, 100);
-    if (rc.is_error())  {
-	
-#if W_DEBUG_LEVEL >= 2
-	fprintf(stderr, 
-		"line %d : hdr.sz %lld data.sz %lld usable %d, %d, nfree %d,%d\n", 
-                __LINE__, 
-                (long long) hdr.size(), (long long) data.size(), 
-                page.usable_space(),
-                page.usable_space_for_slots(), 
-                page.nfree(), page.nrsvd()
-		);
-#endif
-
-	w_assert1(rc.err_num() != eRECWONTFIT); // NEH changed to assert1
-	return RC_AUGMENT(rc);
-    }
-    
-    w_assert3(page.is_fixed());
-
-    return RCOK;
-}
-
-rc_t
-file_m::create_mrbt_rec_l(
-  const lpid_t& leaf,
-  sdesc_t& sd,
-  const vec_t& hdr,
-  const vec_t& data,
-  smsize_t len_hint,
-  rid_t& new_rid,
-  const bool bIgnoreLatches)
-{
-    FUNC(create_mrbt_rec_l);
-
-    // 0. determine latch mode
-    latch_mode_t latch = bIgnoreLatches ? LATCH_NLX : LATCH_EX;
-
-    // 1. use the already assumed to be empty page
-    shpid_t empty_page = sd.get_page_with_space(leaf);
-    file_mrbt_p current_heap_page;
-    bool space_found = false;
-    if(empty_page) {
-	lpid_t heap_page_id;
-	heap_page_id._stid = sd.stid();
-	heap_page_id.page = empty_page;
-	W_DO( current_heap_page.fix(heap_page_id, latch ));
-	lpid_t owner_leaf;
-	current_heap_page.get_owner(owner_leaf);
-	if(owner_leaf == leaf) {
-	    W_DO( create_mrbt_rec_in_given_page(len_hint,
-						sd,
-						hdr,
-						data,
-						new_rid,
-						current_heap_page,
-						space_found,
-						bIgnoreLatches) );
-	}
-    }
-
-    if(!space_found) {
-	
-	// if we come to this point this means the page kept as the empty page is
-	// either not empty or that heap page doesn't belong to this leaf anymore
-	
-	// 2. try to find a file page with empty slot and pointed by leaf
-	btree_p leaf_page;
-	W_DO( leaf_page.fix(leaf, latch) );
-	set<lpid_t> pages; // to not to look at already looked at heap pages
-	rid_t current_rid;
-	for(int i=0; !space_found && i < leaf_page.nrecs(); i++) {
-	    // get a rec from the leaf to find a heap page pointed by this leaf
-	    btrec_t rec_leaf(leaf_page, i);
-	    rec_leaf.elem().copy_to(&current_rid, sizeof(rid_t));
-	    // put the record to the heap page
-	    if(pages.find(current_rid.pid) == pages.end()) {
-		W_DO( current_heap_page.fix(current_rid.pid, latch ));
-		W_DO( create_mrbt_rec_in_given_page(len_hint,
-						    sd,
-						    hdr,
-						    data,
-						    new_rid,
-						    current_heap_page,
-						    space_found,
-						    bIgnoreLatches) );
-		pages.insert(current_rid.pid);
-	    }
-	}
-    
-	// 3. none of the heap pages are empty then create a new one
-	if(!space_found) {
-	    lpid_t new_page_id;
-	    W_DO(_alloc_mrbt_page(sd.stid(),
-				  lpid_t::eof,
-				  new_page_id,
-				  current_heap_page,
-				  true) );
-	    W_DO( current_heap_page.set_owner(leaf) );
-	    W_DO( create_mrbt_rec_in_given_page(len_hint,
-						sd,
-						hdr,
-						data,
-						new_rid,
-						current_heap_page,
-						space_found,
-						bIgnoreLatches) );
-	    sd.set_page_with_space(leaf, new_page_id.page);
-	} else {
-	    sd.set_page_with_space(leaf, current_rid.pid.page);
-	}
-
-	leaf_page.unfix();
-
-    }
-    
-    return RCOK;
-}
-
-rc_t
-file_m::create_mrbt_rec_p(
-  const lpid_t& leaf,
-  sdesc_t& sd,
-  const vec_t& hdr,
-  const vec_t& data,
-  smsize_t len_hint,
-  rid_t& new_rid,
-  const bool bIgnoreLatches)
-{
-    FUNC(create_mrbt_rec_p);
-
-    // 0. determine latch mode
-    latch_mode_t heap_latch = bIgnoreLatches ? LATCH_NLX : LATCH_EX;
-    latch_mode_t leaf_latch = bIgnoreLatches ? LATCH_NLS : LATCH_SH;
-
-    btree_p leaf_page;
-    W_DO( leaf_page.fix(leaf, leaf_latch) );
-    lpid_t root = leaf_page.root();
-    
-    // 1. use the already assumed to be empty page
-    shpid_t empty_page = sd.get_page_with_space(root);
-    file_mrbt_p current_heap_page;
-    bool space_found = false;
-    if(empty_page) {
-	lpid_t heap_page_id;
-	heap_page_id._stid = sd.stid();
-	heap_page_id.page = empty_page;
-	W_DO( current_heap_page.fix(heap_page_id, heap_latch ));
-	lpid_t owner;
-	current_heap_page.get_owner(owner);
-	if(owner == root) {
-	    W_DO( create_mrbt_rec_in_given_page(len_hint,
-						sd,
-						hdr,
-						data,
-						new_rid,
-						current_heap_page,
-						space_found,
-						bIgnoreLatches) );
-	}
-    }
-    
-    if(!space_found) {
-	
-	// if we come to this point this means the page kept as the empty page is
-	// either not empty or that heap page doesn't belong to this leaf anymore
-
-    
-	// 1. try to find a file page with empty slot and pointed by this sub-tree
-	rid_t current_rid;
-	set<lpid_t> pages; // to not to look at already looked at heap pages
-	// 1.1 start with the leaf page that the insert will take place
-	for(int i=0; !space_found && i < leaf_page.nrecs(); i++) {
-	    // get the rec from the leaf_page
-	    btrec_t rec_leaf(leaf_page, i);
-	    rec_leaf.elem().copy_to(&current_rid, sizeof(rid_t));
-	    // move it to new page
-	    if(pages.find(current_rid.pid) == pages.end()) {
-		W_DO( current_heap_page.fix(current_rid.pid, heap_latch ));
-		W_DO( create_mrbt_rec_in_given_page(len_hint,
-						    sd,
-						    hdr,
-						    data,
-						    new_rid,
-						    current_heap_page,
-						    space_found,
-						    bIgnoreLatches) );
-		pages.insert(current_rid.pid);
-	    }
-	}
-	// 1.2 if no space found then traverse the leaf pages that comes after this leaf page
-	if(!space_found && leaf_page.next() != 0) {
-	    btree_p next_leaf;
-	    lpid_t pid_next_leaf(leaf._stid, leaf_page.next());
-	    W_DO( next_leaf.fix(pid_next_leaf, leaf_latch) );
-	    int i = 0;
-	    while(!space_found) {
-		if(i >= next_leaf.nrecs()) {
-		    pid_next_leaf.page = next_leaf.next();
-		    next_leaf.unfix();
-		    if(pid_next_leaf.page != 0) {
-			i = 0;
-			W_DO( next_leaf.fix(pid_next_leaf, leaf_latch) );
-		    } else {
-			break;
-		    }
-		}
-		// get the rec from the leaf_page
-		btrec_t rec_leaf(next_leaf, i);
-		rec_leaf.elem().copy_to(&current_rid, sizeof(rid_t));
-		if(pages.find(current_rid.pid) == pages.end()) {
-		    // move it to new page
-		    W_DO( current_heap_page.fix(current_rid.pid, heap_latch ));
-		    W_DO( create_mrbt_rec_in_given_page(len_hint,
-							sd,
-							hdr,
-							data,
-							new_rid,
-							current_heap_page,
-							space_found,
-							bIgnoreLatches) );
-		    pages.insert(current_rid.pid);
-		}
-		i++;
-	    }
-	}
-	// 1.3 if still no space found then traverse the leaf pages that comes before this leaf page
-	if(!space_found && leaf_page.prev() != 0) {
-	    btree_p prev_leaf;
-	    lpid_t pid_prev_leaf(leaf._stid, leaf_page.prev());
-	    W_DO( prev_leaf.fix(pid_prev_leaf, leaf_latch) );
-	    int i = 0;
-	    while(!space_found) {
-		if(i >= prev_leaf.nrecs()) {
-		    pid_prev_leaf.page = prev_leaf.next();
-		    prev_leaf.unfix();
-		    if(pid_prev_leaf.page != 0) {
-			i = 0;
-			W_DO( prev_leaf.fix(pid_prev_leaf, leaf_latch) );
-		    } else {
-			break;
-		    }
-		}
-		// get the rec from the leaf_page
-		btrec_t rec_leaf(prev_leaf, i);
-		rec_leaf.elem().copy_to(&current_rid, sizeof(rid_t));
-		if(pages.find(current_rid.pid) == pages.end()) {
-		    // move it to new page
-		    W_DO( current_heap_page.fix(current_rid.pid, heap_latch ));
-		    W_DO( create_mrbt_rec_in_given_page(len_hint,
-							sd,
-							hdr,
-							data,
-							new_rid,
-							current_heap_page,
-							space_found,
-							bIgnoreLatches) );
-		    pages.insert(current_rid.pid);
-		}
-		i++;
-	    }
-	}
-	
-	// 2. none of the heap pages are empty then create a new one
-	if(!space_found) {
-	    lpid_t new_page_id;
-	    W_DO( _alloc_mrbt_page(sd.stid(),
-				   lpid_t::eof,
-				   new_page_id,
-				   current_heap_page,
-				   true) );
-	    W_DO( current_heap_page.set_owner(root) );
-	    // retry the insert
-	    W_DO( create_mrbt_rec_in_given_page(len_hint,
-						sd,
-						hdr,
-						data,
-						new_rid,
-						current_heap_page,
-						space_found,
-						bIgnoreLatches) );
-	    sd.set_page_with_space(root, new_page_id.page);
-	} else {
-	    sd.set_page_with_space(root, current_rid.pid.page);
-	}
-
-    }
-
-    leaf_page.unfix();
-    
-    return RCOK;
-}
-
+};
 
 rc_t
 file_m::_find_slotted_page_with_space(
@@ -1097,21 +445,44 @@ file_m::_find_slotted_page_with_space(
     sdesc_t&            sd,
     smsize_t            space_needed, 
     file_p&             page,        // output
-    slotid_t&           slot,        // output
-    const bool bIgnoreParents
+    slotid_t&           slot        // output
+#ifdef SM_DORA
+    , const bool bIgnoreParents
+#endif
 )
 {
+    /* policy:
+     *
+     * First: if t_cache:
+     * Look in the histoid_t cache for pages with room.
+     *
+     * Second: if t_compact:
+     * Look in the histoid_t histogram for pages with room.
+     *
+     * Third: if t_append:
+     * Look in the last page and if not found there, allocate a page.
+     *
+     * For append-only semantics, the mask will be exactly t_append, and
+     * when we try to insert a record on the last page, we insert it at the
+     * end of the page, and when we allocate a new page, we allocate only
+     * at the end of the file, so we have to convey to the io_m 
+     * this policy choice.
+     */
+
     uint4_t         policy = uint4_t(mask);
+
+    // page had better not be fixed when we enter here; if it were,
+    // we'd enable latch-latch deadlocks with the store_latch we
+    // acquire that protects the last-pid of the file.
+    w_assert1(!page.is_fixed());
 
     DBG(<< "_find_slotted_page_with_space needed=" << space_needed 
         << " policy =" << policy
-        << " page is fixed =" << page.is_fixed()
         );
 
-    bool                    found=false;
-    const histoid_t*        h = sd.store_utilization();
+    bool            found=false;
+    const histoid_t*h = sd.store_utilization();
 
-    w_assert2(!page.is_fixed());
 
     /*
      * First, if policy calls for it, look in the cache
@@ -1122,14 +493,18 @@ file_m::_find_slotted_page_with_space(
         while(!found) {
             pginfo_t        info;
             DBG(<<"looking in cache");
-            W_DO(h->find_page(space_needed, found, info, &page, slot,
-			      bIgnoreParents));
+            W_DO(h->find_page(space_needed, found, info, &page, slot
+#ifdef SM_DORA
+                              , bIgnoreParents
+#endif
+                              ));
 
             if(found) {
                 w_assert2(page.is_fixed());
                 DBG(<<"found page " << info.page() 
                         << " slot " << slot);
                 INC_TSTAT(fm_pagecache_hit);
+                // Caller will do the histogram-page-info update
                 return RCOK;
             } else {
                 // else no candidates -- drop down
@@ -1141,7 +516,10 @@ file_m::_find_slotted_page_with_space(
     w_assert2(!found);
     w_assert2(!page.is_fixed());
 
-    bool may_search_file = false;
+    // may_search_file_for_new_page will determine whether we instruct the
+    // i/o layer to search the file for an unallocated but reserved
+    // page when/if we decide we need to allocate a page.
+    bool may_search_file_for_new_page = false;
 
     /*
      * Next, if policy calls for it, search the file for space.
@@ -1163,27 +541,29 @@ file_m::_find_slotted_page_with_space(
             // histograms says there are 
             // some sufficiently empty pages in the file 
             // It's worthwhile to search the file for some space.
-
             lpid_t                 lpid;
 
-            W_DO(first_page(stid, lpid, NULL/*allocated pgs only*/) );
+            W_DO(first_file_page(stid, lpid, NULL/*allocated pgs only*/, NL) );
             DBG(<<"first allocated page of " << stid << " is " << lpid);
 
             // scan the file for pages with adequate space
             bool                 eof = false;
+            bool                 next_page_with_space_called = false;
             while ( !eof ) {
                 w_assert3(!page.is_fixed());
                 W_DO( page.fix(lpid, LATCH_SH, 0/*page_flags */));
 
                 INC_TSTAT(fm_search_pages);
-
                 DBG(<<"usable space=" << page.usable_space()
                         << " needed= " << space_needed);
 
+                bool need_unfix = true;
                 if (page.usable_space_for_slots() >= sizeof(file_p::slot_t) 
                      &&
                    page.usable_space() >= space_needed) 
                 {
+                    w_assert2(page.is_fixed());
+                    // latch_lock_get_slot leaves page fixed iff found.
                     W_DO(h->latch_lock_get_slot( 
                         lpid.page, &page, space_needed,
                         false, // not append-only 
@@ -1193,10 +573,33 @@ file_m::_find_slotted_page_with_space(
                         DBG(<<"found page " << page.pid().page 
                                 << " slot " << slot);
                         INC_TSTAT(fm_search_hit);
+                        // Caller will do the histogram-page-info update
                         return RCOK;
+                    } else {
+                        w_assert0(!found);
+                        w_assert0(page.is_fixed()==found);
+                        need_unfix = false;
                     }
+                } else if(next_page_with_space_called) {
+                    INC_TSTAT(fm_bogus_pbucketmap);
                 }
-                page.unfix(); // avoid latch-lock deadlocks.
+                // Didn't use it but make sure it's 
+                // in the histo, since we're scanning the file...
+                // NOTE: we don't worry here about doing the
+                // histograms-heap update for pages with space under
+                // the threshold; for those, it would remove the page
+                // from the heap if it's there.  
+                // Our assumption is that we've been accurately removing
+                // these pages all along; the real problem is finding
+                // pages with space that we haven't yet seen.
+                //
+                if(need_unfix) {
+                    if (page.free_space4bucket() 
+                            >= h->size_threshhold()) {
+                        histoid_update_t updateit(page);
+                    }
+                    page.unfix(); // avoid latch-lock deadlocks.
+                }
 
                 // read the next page
                 DBG(<<"get next page after " << lpid 
@@ -1204,376 +607,172 @@ file_m::_find_slotted_page_with_space(
                 W_DO(next_page_with_space(lpid, eof,
                         file_p::free_space2bucket(space_needed) + 1));
                 DBG(<<"next page is " << lpid);
+                next_page_with_space_called = true;
             }
             // This should never happen now that we bump ourselves up
             // to the next bucket.
             INC_TSTAT(fm_search_failed);
             found = false;
         } else {
-            DBG(<<"not found in file histogram - so don't search file");
+            // histogram says no pages in file with space.
+            DBG(<<"not found in file histogram");
         }
         w_assert3(!found);
         if(!found) {
             // If a page exists in the allocated extents,
-            // allocate one and use it.
-            may_search_file = true;
+            // allocate one and use it.  Be willing to search
+            // the file for such a page.
+            may_search_file_for_new_page = true;
             // NB: we do NOT support alloc-in-file-with-search
             // -but-don't-alloc-any-new-extents 
             // because io layer doesn't offer that option
         }
     } // policy & t_compact
 
-    w_assert3(!found);
-    w_assert3(!page.is_fixed());
+    w_assert1(!found);
+    w_assert1(!page.is_fixed());
 
     /*
      * Last, if policy calls for it, append (possibly strict) 
      * to the file.  
-     * may_search_file==true indicates not strictly appending; 
+     * may_search_file_for_new_page==true indicates not strictly appending; 
      * strict append is when
-     *     policy is exactly t_append, in which case may_search_file 
-     *        had better be false
+     *     policy is exactly t_append, in which case 
+     *     may_search_file_for_new_page had better be false
      */
+
     if(policy & t_append) 
     {
-#if   W_DEBUG_LEVEL > 1
         if(policy == t_append) {
-            w_assert1(may_search_file == false);
-        }
-#endif
-
-        if(may_search_file) {
-            INC_TSTAT(fm_append);
-        } else {
+            w_assert1(may_search_file_for_new_page == false);
             INC_TSTAT(fm_appendonly);
+        } else {
+            // can go either way here:
+            // w_assert1(may_search_file_for_new_page == false);
+            INC_TSTAT(fm_append);
         }
-        lpid_t        lastpid = lpid_t(stid, sd.hog_last_pid());
+        // hog the last pid until we leave scope.
+        // If we're in strict-append, don't let anyone else into
+        // this critical section until we're done with the append.
+        // If we're not in strict-append, it doesn't much matter
+        // if other non-strict-appenders are here; all of them
+        // will invalidate the cached store descriptor before
+        // leaving.
+        hog_last_pid  hog(stid, sd, 
+                may_search_file_for_new_page? LATCH_SH : LATCH_EX);
 
-        DBG(<<"try to append to file lastpid.page=" << lastpid.page);
+        DBG(<<"try to append to file hog.pid().page=" << hog.pid().page);
 
         // might not have last pid cached
-        if(lastpid.page) {
-            DBG(<<"look in last page - which is " << lastpid );
-            found = io->is_valid_page_of(lastpid, stid.store);
-
-            // TODO: might get a deadlock here!!!!!
-
-            INC_TSTAT(fm_lastpid_cached);
-            sd.free_last_pid();
-
-            if (found) {
-                W_DO(h->latch_lock_get_slot( 
-                                            lastpid.page, &page, space_needed,
-                                            !may_search_file, // append-only
-                                            found, slot));
+        if(hog.pid().page) {
+            DBG(<<"look in last page - which is " << hog.pid() );
+#if W_DEBUG_LEVEL > 1
+            { bool result;
+            W_COERCE(io->is_valid_page_of(hog.pid(), stid.store, result));
+            w_assert2(result==true);
             }
-            if(found) {
-                w_assert3(page.is_fixed());
-                DBG(<<"found page " << page.pid().page 
-                        << " slot " << slot);
-                INC_TSTAT(fm_lastpid_hit);
-                w_assert2(io->is_valid_page_of(page.pid(), stid.store));
-                return RCOK;
-            }
-            DBG(<<"no slot in last page ");
-            lastpid.page = 0;
-        } else {
-            sd.free_last_pid();
-        }
-
-        DBGTHRD(<<"allocate new page may_search_file="<< may_search_file  );
-
-        /* Allocate a new page */
-        lpid_t        newpid;
-        /*
-         * Argument may_search_file determines behavior of _alloc_page:
-         * if true, it searches existing extents in the file besides
-         * the one indicated by the near_pid (lastpid here) argument,
-         * It appends extents if it can't satisfy the request
-         * with the first extent inspected. 
-         *
-         * Furthermore, if may_search_file determines the treatment
-         * of that first extent inspected: if may_search_file is true,
-         * it looks for ANY free page in that extent; else it only
-         * looks for free pages at the "end" of the extent, preserving
-         * append_t policy.
-         */
-        W_DO(_alloc_page(stid,  lastpid, newpid,  page, may_search_file)); 
-        w_assert3(page.is_fixed());
-        w_assert3(page.latch_mode() == LATCH_EX);
-        // Now have long-term IX lock on the page
-
-        if(may_search_file) {
-            sd.set_last_pid(0); // don't know last page
-                // and don't want to look for it now
-        } else {
-            sd.set_last_pid(newpid.page);
-        }
-
-        // Page is already latched, but we don't have a
-        // lock on a slot yet.  (Doesn't get doubly-latched by
-        // calling latch_lock_get_slot, by the way.)
-        W_DO(h->latch_lock_get_slot(
-                newpid.page, &page, space_needed,
-                !may_search_file,
-                found, slot));
-
-        if(found) {
-            w_assert3(page.is_fixed());
-            DBG(<<"found page " << page.pid().page 
-                    << " slot " << slot);
-            INC_TSTAT(fm_alloc_pg);
-            w_assert2(io->is_valid_page_of(page.pid(), stid.store));
-            return RCOK;
-        }
-        page.unfix();
-    }
-    w_assert3(!found);
-    w_assert3(!page.is_fixed());
-
-    INC_TSTAT(fm_nospace);
-    DBG(<<"not found");
-    return RC(eSPACENOTFOUND);
-}
-
-
-rc_t
-file_m::_find_slotted_mrbt_page_with_space(
-    const stid_t&        stid,
-    pg_policy_t          mask,   // might be t_append
-    // and if it's exactly t_append, we had better not
-    // create a record in the middle of the file.
-    // mask & t_append == t_append means strict append semantics.
-    sdesc_t&            sd,
-    smsize_t            space_needed, 
-    file_mrbt_p&        page,        // output
-    slotid_t&           slot,        // output
-    const bool          bIgnoreParents
-)
-{
-    uint4_t         policy = uint4_t(mask);
-
-    DBG(<< "_find_slotted_mrbt_page_with_space needed=" << space_needed 
-        << " policy =" << policy
-        << " page is fixed =" << page.is_fixed()
-        );
-
-    bool                    found=false;
-    const histoid_t*        h = sd.store_utilization();
-
-    w_assert2(!page.is_fixed());
-
-    /*
-     * First, if policy calls for it, look in the cache
-     * The cache is the histoid_t taken from the store descriptor.
-     */
-    if(policy & t_cache) {
-        INC_TSTAT(fm_cache);
-        while(!found) {
-            pginfo_t        info;
-            DBG(<<"looking in cache");
-            W_DO(h->find_page(space_needed, found, info, &page, slot,
-			      bIgnoreParents));
-
-            if(found) {
-                w_assert2(page.is_fixed());
-                DBG(<<"found page " << info.page() 
-                        << " slot " << slot);
-                INC_TSTAT(fm_pagecache_hit);
-                return RCOK;
-            } else {
-                // else no candidates -- drop down
-                w_assert2(!page.is_fixed());
-                break;
-            }
-        }
-    }
-    w_assert2(!found);
-    w_assert2(!page.is_fixed());
-
-    bool may_search_file = false;
-
-    /*
-     * Next, if policy calls for it, search the file for space.
-     * We're going to be a little less aggressive here than when
-     * we searched the cache.  If we read a page in from disk, 
-     * we want to be sure that it will have enough space.  So we
-     * bump ourselves up to the next bucket.
-     */
-    if(policy & t_compact) 
-    {
-        INC_TSTAT(fm_compact);
-        DBG(<<"looking at file histogram");
-        smsize_t sn = page_p::bucket2free_space(
-                      page_p::free_space2bucket(space_needed)) + 1;
-        W_DO(h->exists_page(sn, found));
-        if(found) {
-            INC_TSTAT(fm_histogram_hit);
-
-            // histograms says there are 
-            // some sufficiently empty pages in the file 
-            // It's worthwhile to search the file for some space.
-
-            lpid_t                 lpid;
-
-            W_DO(first_page(stid, lpid, NULL/*allocated pgs only*/) );
-            DBG(<<"first allocated page of " << stid << " is " << lpid);
-
-            // scan the file for pages with adequate space
-            bool                 eof = false;
-            while ( !eof ) {
-                w_assert3(!page.is_fixed());
-                W_DO( page.fix(lpid, LATCH_SH, 0/*page_flags */));
-
-                INC_TSTAT(fm_search_pages);
-
-                DBG(<<"usable space=" << page.usable_space()
-                        << " needed= " << space_needed);
-
-                if (page.usable_space_for_slots() >= sizeof(file_p::slot_t) 
-                     &&
-                   page.usable_space() >= space_needed) 
-                {
-                    W_DO(h->latch_lock_get_slot( 
-                        lpid.page, &page, space_needed,
-                        false, // not append-only 
-                        found, slot));
-                    if(found) {
-                        w_assert3(page.is_fixed());
-                        DBG(<<"found page " << page.pid().page 
-                                << " slot " << slot);
-                        INC_TSTAT(fm_search_hit);
-                        return RCOK;
-                    }
-                }
-                page.unfix(); // avoid latch-lock deadlocks.
-
-                // read the next page
-                DBG(<<"get next page after " << lpid 
-                        << " for space " << space_needed);
-                W_DO(next_page_with_space(lpid, eof,
-                        file_p::free_space2bucket(space_needed) + 1));
-                DBG(<<"next page is " << lpid);
-            }
-            // This should never happen now that we bump ourselves up
-            // to the next bucket.
-            INC_TSTAT(fm_search_failed);
-            found = false;
-        } else {
-            DBG(<<"not found in file histogram - so don't search file");
-        }
-        w_assert3(!found);
-        if(!found) {
-            // If a page exists in the allocated extents,
-            // allocate one and use it.
-            may_search_file = true;
-            // NB: we do NOT support alloc-in-file-with-search
-            // -but-don't-alloc-any-new-extents 
-            // because io layer doesn't offer that option
-        }
-    } // policy & t_compact
-
-    w_assert3(!found);
-    w_assert3(!page.is_fixed());
-
-    /*
-     * Last, if policy calls for it, append (possibly strict) 
-     * to the file.  
-     * may_search_file==true indicates not strictly appending; 
-     * strict append is when
-     *     policy is exactly t_append, in which case may_search_file 
-     *        had better be false
-     */
-    if(policy & t_append) 
-    {
-#if   W_DEBUG_LEVEL > 1
-        if(policy == t_append) {
-            w_assert1(may_search_file == false);
-        }
 #endif
 
-        if(may_search_file) {
-            INC_TSTAT(fm_append);
-        } else {
-            INC_TSTAT(fm_appendonly);
-        }
-        lpid_t        lastpid = lpid_t(stid, sd.hog_last_pid());
-
-        DBG(<<"try to append to file lastpid.page=" << lastpid.page);
-
-        // might not have last pid cached
-        if(lastpid.page) {
-            DBG(<<"look in last page - which is " << lastpid );
-            w_assert2(io->is_valid_page_of(lastpid, stid.store));
-
-            // TODO: might get a deadlock here!!!!!
-
             INC_TSTAT(fm_lastpid_cached);
-            sd.free_last_pid();
 
+            w_assert1(page.is_fixed()==false);
+            // latch_lock_get_slot leaves page fixed iff found.
             W_DO(h->latch_lock_get_slot( 
-                        lastpid.page, &page, space_needed,
-                        !may_search_file, // append-only
+                        hog.pid().page, &page, space_needed,
+                        !may_search_file_for_new_page, // append-only
                         found, slot));
             if(found) {
                 w_assert3(page.is_fixed());
                 DBG(<<"found page " << page.pid().page 
                         << " slot " << slot);
                 INC_TSTAT(fm_lastpid_hit);
-                w_assert2(io->is_valid_page_of(page.pid(), stid.store));
+#if W_DEBUG_LEVEL > 1
+                { bool result;
+                W_COERCE(io->is_valid_page_of(page.pid(), stid.store, result));
+                w_assert2(result==true);
+                }
+#endif
+                // Caller will do the histogram-page-info update
                 return RCOK;
             }
             DBG(<<"no slot in last page ");
-        } else {
-            sd.free_last_pid();
+            w_assert2(page.is_fixed()==false);
         }
 
-        DBGTHRD(<<"allocate new page may_search_file="<< may_search_file  );
+        DBGTHRD(<<"allocate new page may_search_file_for_new_page="
+                << may_search_file_for_new_page  );
 
         /* Allocate a new page */
         lpid_t        newpid;
         /*
-         * Argument may_search_file determines behavior of _alloc_page:
+         * Argument may_search_file_for_new_page determines behavior 
+         * of _alloc_page:
          * if true, it searches existing extents in the file besides
-         * the one indicated by the near_pid (lastpid here) argument,
+         * the one indicated by the near_pid (hog.pid() here) argument,
          * It appends extents if it can't satisfy the request
          * with the first extent inspected. 
          *
-         * Furthermore, if may_search_file determines the treatment
-         * of that first extent inspected: if may_search_file is true,
+         * Furthermore, if may_search_file_for_new_page 
+         * determines the treatment
+         * of that first extent inspected: if 
+         * may_search_file_for_new_page is true,
          * it looks for ANY free page in that extent; else it only
          * looks for free pages at the "end" of the extent, preserving
          * append_t policy.
          */
-        W_DO(_alloc_mrbt_page(stid,  lastpid, newpid,  page, may_search_file)); 
+        W_DO(_alloc_page(stid,  hog.pid()/*hint*/, newpid,  page, 
+                    may_search_file_for_new_page)); 
+        /*
+         * _alloc_page only IX-locked the page, so in theory it's
+         * possible that someone else slipped in here and used all the
+         * slots on the page, except that we have got the page
+         * EX-latched.
+         */
+
         w_assert3(page.is_fixed());
         w_assert3(page.latch_mode() == LATCH_EX);
         // Now have long-term IX lock on the page
 
-        if(may_search_file) {
-            sd.set_last_pid(0); // don't know last page
-                // and don't want to look for it now
-        } else {
-            sd.set_last_pid(newpid.page);
-        }
+        // update the last pid and release the store latch 
+        hog.release(newpid.page);
 
         // Page is already latched, but we don't have a
         // lock on a slot yet.  (Doesn't get doubly-latched by
         // calling latch_lock_get_slot, by the way.)
+        //
+        // latch_lock_get_slot leaves page fixed iff found.
+        // In this context, we had *better* find a slot here, since
+        // we are hanging onto the latched page.
         W_DO(h->latch_lock_get_slot(
                 newpid.page, &page, space_needed,
-                !may_search_file,
+                !may_search_file_for_new_page, // reverse sense b/c
+                // latch_lock_get_slot wants to know if this is
+                // append-only semantics here
                 found, slot));
+
+        // There's a multitude of reasons for latch_lock_get_slot
+        // returning RCOK but !found, including: couldn't
+        // immediately latch or lock the page, page moved to another
+        // store, etc. The latter isn't likely with this being a newly
+        // allocated page, however someone else *could be* in this
+        // same code and might have the page latched.
+        // w_assert0(found);
 
         if(found) {
             w_assert3(page.is_fixed());
             DBG(<<"found page " << page.pid().page 
                     << " slot " << slot);
-            INC_TSTAT(fm_alloc_pg);
-            w_assert2(io->is_valid_page_of(page.pid(), stid.store));
+#if W_DEBUG_LEVEL > 1
+            { bool result;
+            W_COERCE(io->is_valid_page_of(page.pid(), stid.store, result));
+            w_assert2(result==true);
+            }
+#endif
+            // Caller will do the histogram-page-info update
             return RCOK;
+        } else {
+            w_assert1(page.is_fixed()==false);
         }
-        page.unfix();
     }
     w_assert3(!found);
     w_assert3(!page.is_fixed());
@@ -1582,7 +781,6 @@ file_m::_find_slotted_mrbt_page_with_space(
     DBG(<<"not found");
     return RC(eSPACENOTFOUND);
 }
-
 
 /* 
  * add a record on the given page.  page is already
@@ -1603,8 +801,9 @@ file_m::_create_rec_in_slot(
     rid_t&        rid // out
 )
 {
-    FUNC(_create_rec_in_slot);
-    w_assert2(page.is_fixed() /*&& page.is_file_p()*/);
+    DBG(<< " _create_rec_in_slot rec_impl="  << rec_impl
+            << " do_append " << do_append);
+    w_assert2(page.is_fixed() && page.is_file_p());
 
     // page is already in the file and locked IX or EX
     // slot is already locked EX
@@ -1625,8 +824,7 @@ file_m::_create_rec_in_slot(
         // it is small, so put the data in as well
         tag.flags = t_small;
         tag.body_len = data.size();
-	w_assert2(page.is_fixed() &&
-		  (page.latch_mode()==LATCH_EX || page.latch_mode()==LATCH_NLX));
+        w_assert2(page.is_fixed() && page.latch_mode() == LATCH_EX);
         rc = page.fill_slot(rid.slot, tag, hdr, data, 100);
         if (rc.is_error())  {
 
@@ -1684,14 +882,13 @@ file_m::_create_rec_in_slot(
  */
 
 rc_t
-file_m::destroy_rec(const rid_t& rid, const bool bIgnoreLatches)
+file_m::destroy_rec(const rid_t& rid)
 {
     file_p       page;
     record_t*    rec;
 
     DBGTHRD(<<"destroy_rec");
-    latch_mode_t latch = bIgnoreLatches ? LATCH_NLX : LATCH_EX;
-    W_DO(_locate_page(rid, page, latch));
+    W_DO(_locate_page(rid, page, LATCH_EX, true));
 
     /*
      * Find or create a histoid for this store.
@@ -1717,13 +914,8 @@ file_m::destroy_rec(const rid_t& rid, const bool bIgnoreLatches)
     if (page.rec_count() == 0) {
         DBG(<<"Now free page");
         w_assert2(page.is_fixed());
-	if(page.tag() == page_p::t_file_p) {
-	    INC_TSTAT(page_file_dealloc);
-	} else if(page.tag() == page_p::t_file_mrbt_p) {
-	    INC_TSTAT(page_file_mrbt_dealloc);
-	}
-        W_DO(_free_page(page, bIgnoreLatches));
-	return RCOK;
+        W_DO(_free_page(page));
+        return RCOK;
     } 
 
     DBG(<<"Update page utilization");
@@ -1738,14 +930,19 @@ file_m::destroy_rec(const rid_t& rid, const bool bIgnoreLatches)
 }
 
 rc_t
-file_m::update_rec(const rid_t& rid, uint4_t start, const vec_t& data, const bool bIgnoreLatches)
+file_m::update_rec(const rid_t& rid, uint4_t start, const vec_t& data
+#ifdef SM_DORA
+                   , const bool /* bIgnoreLocks */
+#endif
+                   )
 {
     file_p    page;
     record_t*            rec;
 
-    latch_mode_t page_latch_mode = bIgnoreLatches ? LATCH_NLX : LATCH_EX;
+    latch_mode_t page_latch_mode = LATCH_EX;
+
     DBGTHRD(<<"update_rec");
-    W_DO(_locate_page(rid, page, page_latch_mode));
+    W_DO(_locate_page(rid, page, page_latch_mode, true));
 
     W_DO( page.get_rec(rid.slot, rec) );
 
@@ -1776,9 +973,10 @@ file_m::update_rec(const rid_t& rid, uint4_t start, const vec_t& data, const boo
 rc_t
 file_m::append_rec(const rid_t& rid, const vec_t& data, const sdesc_t& sd)
 {
-    file_p            page;
+    FUNC(file_m::append_rec);
+    file_p           page;
     record_t*        rec;
-    smsize_t        orig_size;
+    smsize_t         orig_size;
 
     w_assert3(rid.stid() == sd.stid());
 #if W_DEBUG_LEVEL > 2
@@ -1806,10 +1004,11 @@ file_m::append_rec(const rid_t& rid, const vec_t& data, const sdesc_t& sd)
     }
 #endif
 
+    AUTO_ROLLBACK_work
+
     // NOTE: we grabbed an EX lock in ss_m::_append_rec
     // or create_rec
-    DBGTHRD(<<"append_rec");
-    W_DO( _locate_page(rid, page, LATCH_EX) );
+    W_DO( _locate_page(rid, page, LATCH_EX, true) );
 
     /*
      * Find or create a histoid for this store.
@@ -1835,21 +1034,35 @@ file_m::append_rec(const rid_t& rid, const vec_t& data, const sdesc_t& sd)
     // see if record will remain small
     smsize_t space_needed;
     if ( rec->is_small() &&
-        file_p::choose_rec_implementation(rec->hdr_size(), 
-            orig_size + data.size(), space_needed) == t_small) {
+        page.choose_rec_implementation(rec->hdr_size(), 
+            orig_size + data.size(), space_needed, 
+          // Pass in page: keep rec impl only if it fits in this page NOW
+            &page) == t_small) {
 
-        if (page.usable_space() < data.size()) { return RC(eRECWONTFIT); }
-
-        // This is append_rec: assume we are adding a slot, not
-        // trying to reuse a free-up slot
-        if( page.usable_space_for_slots() < sizeof(file_p::slot_t)) {
-            return RC(eRECWONTFIT);
+        if (page.usable_space() < data.size()) { 
+#if W_DEBUG_LEVEL > 0
+            // Should this be an internal error?
+            w_ostrstream tmp;
+            tmp 
+                << " hdr size " << rec->hdr_size()
+                << " orig_size " << orig_size
+                << " data.size() " << data.size()
+                << " space_needed " << space_needed
+                << " stays small " << endl;
+            tmp 
+                << "page.usable_space() " << page.usable_space()
+                << "data.size() " << data.size()
+                << endl;
+#endif
+            return RC(eRECWONTFIT); 
         }
+
 
         W_DO( page.append_rec(rid.slot, data) );
         // reaquire since may have moved
-        W_COERCE( page.get_rec(rid.slot, rec) );
+        W_DO( page.get_rec(rid.slot, rec) );
     } else if (rec->is_small()) {
+        DBG(<<"GROWING RECORD " << rid );
 
         // Convert the record to a large implementation
         // copy the body to a temporary location
@@ -1898,143 +1111,12 @@ file_m::append_rec(const rid_t& rid, const vec_t& data, const sdesc_t& sd)
      *  cache.
      *  (page_p::unfix updates the extent's histogram info)
      */
-    DBG(<<"append rec");
+    DBG(<<"append rec size is now " << orig_size + data.size());
     hu.update();
+    work.ok();
+
     return RCOK;
 }
-
-
-rc_t
-file_m::append_mrbt_rec(const rid_t& rid, const vec_t& data, const sdesc_t& sd, const bool bIgnoreLatches)
-{
-    file_mrbt_p            page;
-    record_t*        rec;
-    smsize_t        orig_size;
-
-    w_assert3(rid.stid() == sd.stid());
-#if W_DEBUG_LEVEL > 2
-    // We should have an EX lock on the record
-    {
-        lock_mode_t m=NL;
-        W_DO( lm->query(rid, m, xct()->tid()) );
-        if(m != EX) {
-            lock_mode_t mp=NL;
-            W_DO( lm->query(rid.pid, mp, xct()->tid()) );
-            if(mp != EX) {
-                lock_mode_t ms=NL;
-                W_DO( lm->query(rid.pid.stid(), ms, xct()->tid()) );
-                if(ms != EX) {
-                    lock_mode_t mv=NL;
-                    W_DO( lm->query(rid.pid.stid().vol, mv, xct()->tid()) );
-                    w_assert2(mv==EX);
-                    m = mv;
-                } else m = ms;
-            } else m=mp;
-        }
-        DBG(<<" append rec to rid " << rid
-                << " with lock mode (or parent lock mode)" << m
-                << " for tid " << xct()->tid());
-    }
-#endif
-
-    // NOTE: we grabbed an EX lock in ss_m::_append_rec
-    // or create_rec
-    DBGTHRD(<<"append_mrbt_rec");
-    latch_mode_t latch = bIgnoreLatches ? LATCH_NLX : LATCH_EX;
-    W_DO( _locate_page(rid, page, latch) );
-
-    /*
-     * Find or create a histoid for this store.
-     */
-    w_assert3(page.is_fixed());
-    histoid_update_t hu(page);
-
-    W_DO( page.get_rec(rid.slot, rec));
-
-    orig_size = rec->body_size();
-
-    // make sure we don't grow the record to larger than 4GB
-    if ( (record_t::max_len - orig_size) < data.size() ) {
-#if W_DEBUG_LEVEL > 2
-        cerr << "can't grow beyond 4GB=" << int(record_t::max_len)
-                << " orig_size " << int(orig_size)
-                << " append.size() " << data.size()
-                << endl;
-#endif 
-        return RC(eBADAPPEND);
-    }
-
-    // see if record will remain small
-    smsize_t space_needed;
-    if ( rec->is_small() &&
-	 file_mrbt_p::choose_rec_implementation(rec->hdr_size(), 
-					       orig_size + data.size(), space_needed) == t_small) {
-
-        if (page.usable_space() < data.size()) { return RC(eRECWONTFIT); }
-
-        // This is append_rec: assume we are adding a slot, not
-        // trying to reuse a free-up slot
-        if( page.usable_space_for_slots() < sizeof(file_p::slot_t)) {
-            return RC(eRECWONTFIT);
-        }
-
-        W_DO( page.append_rec(rid.slot, data) );
-        // reaquire since may have moved
-        W_COERCE( page.get_rec(rid.slot, rec) );
-    } else if (rec->is_small()) {
-
-        // Convert the record to a large implementation
-        // copy the body to a temporary location
-
-        char *tmp = new char[page_s::data_sz]; //auto-del
-        w_auto_delete_array_t<char> autodel(tmp);
-
-        memcpy(tmp, rec->body(), orig_size);
-        vec_t   body_vec(tmp, orig_size);
-
-        w_assert3(sd.large_stid().store > 0);
-
-        // it is large, so create a 0-length large record
-        lg_tag_chunks_s    lg_chunks(sd.large_stid().store);
-        vec_t              lg_vec(&lg_chunks, sizeof(lg_chunks));
-
-        // put the large record root after the header and mark
-        // the record as large
-        W_DO(page.splice_data(rid.slot, 0, (slot_length_t)orig_size, lg_vec)); 
-        W_DO(page.set_rec_flags(rid.slot, t_large_0));
-        W_DO(page.set_rec_len(rid.slot, 0));
-
-        // append the original data and the new data
-        DBG( << "appending large rid " << rid.slot << " body_vec.size "
-                << body_vec.size());
-        W_DO(_append_large(page, rid.slot, body_vec));
-        DBG( << " set rec len  " << orig_size);
-        W_DO(page.set_rec_len(rid.slot, orig_size));
-        DBG( << "appending large rid " << rid.slot << " data.size "
-                << data.size());
-        W_DO(_append_large(page, rid.slot, data));
-
-    } else {
-        w_assert3(rec->is_large());
-        DBG( << "appending large rid " << rid.slot 
-                << "( orig size " << orig_size
-                << ")+ data.size "
-                << data.size()
-                );
-        W_DO(_append_large(page, rid.slot, data));
-    }
-    W_DO( page.set_rec_len(rid.slot, orig_size+data.size()) );
-
-    /*
-     *  Update the page's utilization info in the
-     *  cache.
-     *  (page_p::unfix updates the extent's histogram info)
-     */
-    DBG(<<"append mrbt rec");
-    hu.update();
-    return RCOK;
-}
-
 
 rc_t
 file_m::truncate_rec(const rid_t& rid, uint4_t amount, bool& should_forward)
@@ -2045,7 +1127,7 @@ file_m::truncate_rec(const rid_t& rid, uint4_t amount, bool& should_forward)
     should_forward = false;  // no need to forward record at this time
 
     DBGTHRD(<<"trucate_rec");
-    W_DO (_locate_page(rid, page, LATCH_EX));
+    W_DO (_locate_page(rid, page, LATCH_EX, true));
 
     /*
      * Find or create a histoid for this store.
@@ -2066,15 +1148,17 @@ file_m::truncate_rec(const rid_t& rid, uint4_t amount, bool& should_forward)
         rec = NULL; // no longer valid;
     } else {
         W_DO(_truncate_large(page, rid.slot, amount));
-        W_COERCE( page.get_rec(rid.slot, rec) );  // re-establish rec ptr
+        W_DO( page.get_rec(rid.slot, rec) );  // re-establish rec ptr
         // 
         // Now see it this record can be implemented as a small record
         //
         smsize_t len = orig_size-amount;
         smsize_t space_needed;
         recflags_t rec_impl;
-        rec_impl = file_p::choose_rec_implementation(rec->hdr_size(), len, 
-                space_needed);
+        rec_impl = page.choose_rec_implementation(rec->hdr_size(), len, 
+                space_needed, 
+          // Pass in page: reduce rec impl only if it fits in this page now
+                &page);
         if (rec_impl == t_small) {
             DBG( << "rec was large, now is small");
 
@@ -2176,203 +1260,12 @@ file_m::truncate_rec(const rid_t& rid, uint4_t amount, bool& should_forward)
 
 
 rc_t
-file_m::truncate_mrbt_rec(const rid_t& rid, uint4_t amount, bool& should_forward, const bool bIgnoreLatches)
-{
-    FUNC(file_m::truncate_mrbt_rec);
-    file_mrbt_p        page;
-    record_t*     rec;
-    should_forward = false;  // no need to forward record at this time
-
-    DBGTHRD(<<"trucate_mrbt_rec");
-    latch_mode_t latch = bIgnoreLatches ? LATCH_NLX : LATCH_EX;
-    W_DO (_locate_page(rid, page, latch));
-
-    /*
-     * Find or create a histoid for this store.
-     */
-    w_assert2(page.is_fixed());
-    histoid_update_t hu(page);
-
-    W_DO(page.get_rec(rid.slot, rec));
-
-    if (amount > rec->body_size()) 
-        return RC(eRECUPDATESIZE);
-
-    uint4_t        orig_size  = rec->body_size();
-    uint2_t        orig_flags  = rec->tag.flags;
-
-    if (rec->is_small()) {
-        W_DO( page.truncate_rec(rid.slot, amount) );
-        rec = NULL; // no longer valid;
-    } else {
-        W_DO(_truncate_large(page, rid.slot, amount));
-        W_COERCE( page.get_rec(rid.slot, rec) );  // re-establish rec ptr
-        // 
-        // Now see it this record can be implemented as a small record
-        //
-        smsize_t len = orig_size-amount;
-        smsize_t space_needed;
-        recflags_t rec_impl;
-        rec_impl = file_mrbt_p::choose_rec_implementation(rec->hdr_size(), len, 
-                space_needed);
-        if (rec_impl == t_small) {
-            DBG( << "rec was large, now is small");
-
-            vec_t data;  // data left in the body
-            uint4_t size_on_file_page;
-            if (orig_flags & t_large_0) {
-                size_on_file_page = sizeof(lg_tag_chunks_s);
-            } else {
-                size_on_file_page = sizeof(lg_tag_indirect_s);
-            }
-
-            if (len == 0) {
-                DBG( << "rec is now is zero bytes long");
-                w_assert3(data.size() == 0);
-                W_DO(page.splice_data(rid.slot, 0, (slot_length_t)size_on_file_page, data));
-                // record is now small 
-                W_DO(page.set_rec_flags(rid.slot, t_small));
-            } else {
-
-                // the the data for the record (must be on "last" page)
-                lgdata_p lgdata;
-                W_DO( lgdata.fix(rec->last_pid(page), LATCH_SH) );
-                w_assert3(lgdata.tuple_size(0) == len);
-                data.put(lgdata.tuple_addr(0), len);
-
-                /*
-                 * Remember (in lgtmp) the large rec hdr on the file_p 
-                 */
-
-        /*
-                // This is small: < 60 bytes -- Probably should put on stack 
-                char lgtmp[sizeof(lg_tag_chunks_s)+sizeof(lg_tag_indirect_s)];
-        */
-                char  *lgtmp = new char[sizeof(lg_tag_chunks_s)+
-                                        sizeof(lg_tag_indirect_s)];
-                if (!lgtmp)
-                        W_FATAL(fcOUTOFMEMORY);
-                w_auto_delete_array_t<char>        autodel_lgtmp(lgtmp);
-
-                lg_tag_chunks_s* lg_chunks = NULL;
-                lg_tag_indirect_s* lg_indirect = NULL;
-                if (orig_flags & t_large_0) {
-                    memcpy(lgtmp, rec->body(), sizeof(lg_tag_chunks_s));
-                    lg_chunks = (lg_tag_chunks_s*) lgtmp;
-                } else {
-                    memcpy(lgtmp, rec->body(), sizeof(lg_tag_indirect_s));
-                    lg_indirect = (lg_tag_indirect_s*) lgtmp;
-                }
-
-                // splice body on file_p with data from lg rec
-                rc_t rc = page.splice_data(rid.slot, 0, 
-                                           (slot_length_t)size_on_file_page, data);
-                if (rc.is_error()) {
-                    if (rc.err_num() == eRECWONTFIT) {
-                        // splice failed ==> not enough space on page
-                        should_forward = true;
-                        DBG( << "record should be forwarded after trunc");
-                    } else {
-                        return RC_AUGMENT(rc);
-                    }                          
-                } else {
-                    rec = 0; // no longer valid;
-
-                    // remove rest of data in lg rec
-                    DBG( << "removing lgrec portion of truncated rec");
-                    if (orig_flags & t_large_0) {
-                        // remove the 1 lgdata page
-                        w_assert3(lg_indirect == NULL);
-                        lg_tag_chunks_h lg_hdl(page, *lg_chunks);
-                        W_DO(lg_hdl.truncate(1));
-                    } else {
-                        // remove the 1 lgdata page and any indirect pages
-                        w_assert3(lg_chunks == NULL);
-                        lg_tag_indirect_h lg_hdl(page, *lg_indirect, 1/*page_cnt*/);
-                        W_DO(lg_hdl.truncate(1));
-                    }
-                    // record is now small 
-                    W_DO(page.set_rec_flags(rid.slot, t_small));
-                }
-            }
-        }
-    }
-    /*
-     *  Update the page's utilization info in the
-     *  cache.
-     *  (page_p::unfix updates the extent's histogram info)
-     */
-    DBG(<<"truncate mrbt rec");
-    hu.update();
-    /* 
-     * Update the extent histo info before logging anything
-     */
-    W_DO(page.update_bucket_info());
-
-    W_DO( page.set_rec_len(rid.slot, orig_size-amount) );
-
-    return RCOK;
-}
-
-
-rc_t
-file_m::read_hdr(const rid_t& s_rid, int& len,
-                 void* buf, const bool bIgnoreLatches)
-{
-    rid_t rid(s_rid);
-    file_p page;
-    
-    DBGTHRD(<<"read_hdr");
-    latch_mode_t latch = bIgnoreLatches ? LATCH_NLS : LATCH_SH;
-    W_DO(_locate_page(rid, page, latch) );
-    record_t* rec;
-    W_DO( page.get_rec(rid.slot, rec) );
-    
-    w_assert1(rec->is_small());
-    if (rec->is_small())  {
-        if (len < rec->tag.hdr_len)  {
-            return RC(eBADLENGTH); // not long enough
-        }
-        if (len > rec->tag.hdr_len) 
-            len = rec->tag.hdr_len;
-        memcpy(buf, rec->hdr(), len);
-    }
-    
-    return RCOK;
-}
-
-rc_t
-file_m::read_rec(const rid_t& s_rid,
-                 int start, uint4_t& len, void* buf,
-		 const bool bIgnoreLatches)
-{
-    rid_t rid(s_rid);
-    file_p page;
-    
-    DBGTHRD(<<"read_rec");
-    latch_mode_t latch = bIgnoreLatches ? LATCH_NLS : LATCH_SH;
-    W_DO( _locate_page(rid, page, latch) );
-    record_t* rec;
-    W_DO( page.get_rec(rid.slot, rec) );
-    
-    w_assert1(rec->is_small());
-    if (rec->is_small())  {
-        if (start + len > rec->body_size())  
-            len = rec->body_size() - start;
-        memcpy(buf, rec->body() + start, (uint)len);
-    }
-    
-    return RCOK;
-}
-
-rc_t
 file_m::splice_hdr(rid_t rid, slot_length_t start, slot_length_t len, 
-		   const vec_t& hdr_data, const bool bIgnoreLatches)
+        const vec_t& hdr_data)
 {
     file_p page;
     DBGTHRD(<<"splice_hdr");
-    latch_mode_t latch = bIgnoreLatches ? LATCH_NLX : LATCH_EX;
-    W_DO( _locate_page(rid, page, latch) );
+    W_DO( _locate_page(rid, page, LATCH_EX, false) );
 
     record_t* rec;
     W_DO( page.get_rec(rid.slot, rec) );
@@ -2385,39 +1278,74 @@ file_m::splice_hdr(rid_t rid, slot_length_t start, slot_length_t len,
 }
 
 rc_t
-file_m::first_page(const stid_t& fid, lpid_t& pid, bool* allocated)
+file_m::first_file_page(const stid_t& fid, lpid_t& pid, bool* allocated, lock_mode_t mode)
 {
-    rc_t rc = io->first_page(fid, pid, allocated);
-    if (rc.is_error()) {
-        w_assert3(rc.err_num() != eEOF);
-        if(rc.err_num() == eLOCKTIMEOUT) {
-            // pid will have been returned.
-            // Lock it while blocking and try again
-            DBG(<<"");
-            W_DO(lm->lock(pid, IX, t_long, WAIT_SPECIFIED_BY_XCT));
-        } else {
-            DBG(<<"rc="<< rc);
-            return RC_AUGMENT(rc);
+    FUNC(file_m::first_page);
+    // was strictly NL when calling io->first_page; 
+    // now we have an option, for GNATS160
+    // was strictly IX when acquiring lock below, however,
+    // that was dead code since io_m would not return eLOCKTIMEOUT
+    // if no lock mode was used.
+    // 
+    // Now we have an option, for GNATS160
+    // Caller must be careful what mode it asks for.
+    rc_t rc;
+    do {
+        DBGTHRD(<<"calling io->first_page fid " << fid << " mode " << mode);
+        rc = io->first_page(fid, pid, allocated, mode);
+        DBGTHRD(<<"io->first_page returns " << rc);
+        if (rc.is_error()) {
+            w_assert3(rc.err_num() != eEOF);
+            if(rc.err_num() == eLOCKTIMEOUT) {
+                mode = IX;
+                // pid will have been returned.
+                // Lock it while blocking and try again
+                // NOTE that this might end up locking a page
+                // that is no longer the right one; we retry in
+                // the loop to ensure that we have it right, but
+                // we are left with a spurious lock.
+                // NOTE: The first extent won't change but the
+                // the first page could change.
+                DBGTHRD(<<"get lock in mode " << mode << " on pid " << pid);
+                W_DO(lm->lock(pid, mode, t_long, WAIT_SPECIFIED_BY_XCT));
+            } else {
+                DBG(<<"rc="<< rc);
+                return RC_AUGMENT(rc);
+            }
         }
-    }
+    } while (rc.is_error());
     DBGTHRD(<<"first_page is " <<pid);
     return RCOK;
 }
 
+
+// If "allocated" is NULL then only allocated pages will be
+// returned.  If "allocated" is non-null then all pages will be
+// returned and the bool pointed to by "allocated" will be set to
+// indicate whether the page is allocated.
+//
+// Called from scan_file_i
 rc_t
-file_m::last_page(const stid_t& fid, lpid_t& pid, bool* allocated)
+file_m::last_file_page(const stid_t& fid, lpid_t& pid, bool* allocated,
+        lock_mode_t mode)
 {
     FUNC(file_m::last_page);
     rc_t rc;
+    // was strictly IX; now we have an option, for GNATS160
+    if(mode<IX)
+        mode = IX;
     do {
-        rc = io->last_page(fid, pid, allocated, IX);
+        rc = io->last_page(fid, pid, allocated, mode);
         if (rc.is_error()) {
             w_assert3(rc.err_num() != eEOF);
             if(rc.err_num() == eLOCKTIMEOUT) {
                 // pid will have been returned.
                 // Lock it while blocking and try again
-                DBG(<<"");
-                W_DO(lm->lock(pid, IX, t_long, WAIT_SPECIFIED_BY_XCT));
+                // NOTE that this might end up locking a page
+                // that is no longer the right one; we retry in
+                // the loop to ensure that we have it right, but
+                // we are left with a spurious lock.
+                W_DO(lm->lock(pid, mode, t_long, WAIT_SPECIFIED_BY_XCT));
             } else {
                 DBG(<<"rc="<< rc);
                 return RC_AUGMENT(rc);
@@ -2428,17 +1356,12 @@ file_m::last_page(const stid_t& fid, lpid_t& pid, bool* allocated)
     return RCOK;
 }
 
-// If "allocated" is NULL then only allocated pages will be
-// returned.  If "allocated" is non-null then all pages will be
-// returned and the bool pointed to by "allocated" will be set to
-// indicate whether the page is allocated.
 rc_t
 file_m::next_page_with_space(lpid_t& pid, bool& eof, space_bucket_t b)
 {
     eof = false;
 
     DBGTHRD(<<"find next_page_with_space ");
-
     rc_t rc = io->next_page_with_space(pid, b);
     DBGTHRD(<<"next_page_with_space returns " << rc);
     if (rc.is_error())  {
@@ -2448,7 +1371,12 @@ file_m::next_page_with_space(lpid_t& pid, bool& eof, space_bucket_t b)
             return RC_AUGMENT(rc);
         }
     }
-#if W_DEBUG_LEVEL > 2
+#if 0 && W_DEBUG_LEVEL > 2
+    // NOTE: the vol_t::next_page_with_space is based on the
+    // extlink_t::pbucketmap, which is advisory. By the time
+    // we return from vol_t::next_page_with_space, this page
+    // could have been grabbed and used by another thread.
+    // So we might not have enough space here.
    if(pid.page) {
         file_p page;
         w_assert3(!page.is_fixed());
@@ -2461,7 +1389,14 @@ file_m::next_page_with_space(lpid_t& pid, bool& eof, space_bucket_t b)
                 <<" page.bucket=" << int(page.bucket())
                 <<" need bucket" << int(b)
         );
-        if( page.bucket() < b) {
+        smsize_t  fs4b = page.free_space4bucket();
+        space_bucket_t b2 = page.free_space2bucket(fs4b);
+
+        if( b2 < b) {
+            w_assert3(0);
+        }
+        space_bucket_t b3 = page.bucket();
+        if( b3 < b) {
             w_assert3(0);
         }
    }
@@ -2469,40 +1404,96 @@ file_m::next_page_with_space(lpid_t& pid, bool& eof, space_bucket_t b)
     DBG(<<"next page with bucket >= " << int(b) << " is " << pid);
     return RCOK;
 }
+
+// If "allocated" is NULL then only allocated pages will be
+// returned.  If "allocated" is non-null then all pages will be
+// returned and the bool pointed to by "allocated" will be set to
+// indicate whether the page is allocated.
 rc_t
-file_m::next_page(lpid_t& pid, bool& eof, bool* allocated)
+file_m::next_file_page(lpid_t& pid, bool& eof, bool* allocated, lock_mode_t mode)
 {
     eof = false;
-    rc_t rc = io->next_page(pid, allocated);
-    if (rc.is_error())  {
+    // was strictly NL; now we have an option, for GNATS160
+    rc_t rc;
+    do {
+        rc = io->next_page(pid, allocated, mode);
+        if (rc.is_error()) {
             if (rc.err_num() == eEOF) {
-            eof = true;
-        } else {
-            return RC_AUGMENT(rc);
+                eof = true;
+            } else 
+                if(rc.err_num() == eLOCKTIMEOUT) {
+                // pid will have been returned.
+                // Lock it while blocking and try again
+                // NOTE that this might end up locking a page
+                // that is no longer the right one; we retry in
+                // the loop to ensure that we have it right, but
+                // we are left with a spurious lock.
+                W_DO(lm->lock(pid, mode, t_long, WAIT_SPECIFIED_BY_XCT));
+            } else 
+            {
+                DBG(<<"rc="<< rc);
+                return RC_AUGMENT(rc);
+            }
         }
+    } while ( (!eof) && rc.is_error());
+    return RCOK;
+}
+
+rc_t 
+file_m::verify_rid(const rid_t& rid) 
+{
+    // Arg. Must verify that the page is still allocated and allocated
+    // to this store!
+    bool ok=false;
+    snum_t storenum = rid.pid.stid().store;
+    W_DO( io->is_valid_page_of(rid.pid, storenum, ok) );
+    if(!ok) {
+        return RC(eBADPID);
     }
     return RCOK;
 }
 
 rc_t
-file_m::_locate_page(const rid_t& rid, file_p& page, latch_mode_t mode)
+file_m::_locate_page(const rid_t& rid, file_p& page, latch_mode_t mode,
+        bool checkmembership)
 {
+    FUNC(_locate_page);
     DBGTHRD(<<"file_m::_locate_page rid=" << rid);
-
     /*
      * pin the page 
+     * NOTE: if the rid given is bogus, the page type might
+     * not even be correct.
+     * The assert that catches this is in the MAKEPAGECODE and is
+     * an assert3.
      */
     W_DO(page.fix(rid.pid, mode));
 
     w_assert2(page.pid().page == rid.pid.page);
     // make sure page belongs to rid.pid.stid
     
+    if (page.tag() != page_p::t_file_p) {
+        page.unfix();
+        return RC(eBADPID);
+    }
     if (page.pid() != rid.pid) {
         page.unfix();
         return RC(eBADPID);
     }
 
+    // Must verify that the store is still legit.
+    // Arg. This means an extra page fix.
+    store_flag_t         store_flags;
+    W_DO( io->get_store_flags(rid.pid.stid(), store_flags) );
+
+    if(checkmembership) {
+        // Arg. Must verify that the page is still allocated and allocated
+        // to this store!
+        W_DO(verify_rid(rid));
+    }
+
     if (rid.slot < 0 || rid.slot >= page.num_slots())  {
+        DBGTHRD(<<"file_m::_locate_page rid=" << rid
+                << " page has " << page.num_slots() << " slots");
         return RC(eBADSLOTNUMBER);
     }
 
@@ -2523,7 +1514,7 @@ file_m::_locate_page(const rid_t& rid, file_p& page, latch_mode_t mode)
 // we are doing the same, since they both find the record count to be 0.)
 //
 rc_t
-file_m::_free_page(file_p& page, const bool bIgnoreLatches)
+file_m::_free_page(file_p& page)
 {
     w_assert2(page.is_fixed());
     lpid_t pid = page.pid();
@@ -2532,56 +1523,20 @@ file_m::_free_page(file_p& page, const bool bIgnoreLatches)
     if (page.rec_count() == 0) {
 
         lpid_t first_pid;
-        W_DO(first_page(pid.stid(), first_pid, NULL));
+        W_DO(first_file_page(pid.stid(), first_pid, NULL, NL));
 
         if (pid != first_pid) {
             DBGTHRD(<<"free_page: not first page -- go ahead");
 
             histoid_remove_t hr(page); // removes it from the heap if possible
 
-            rc_t rc = smlevel_0::io->free_page(pid, false /*check store mmb*/);
+            rc_t rc = smlevel_0::io->free_page(pid);
             // Could result in a lock timeout, propagated up
             // from the volume layer, when it tries to get an
             // immediate (don't wait) EX lock on the page and
             // IX lock on the extent.
             // If we failed with the immediate locks, now try 
             // longer-term locks:
-
-            // FRJ: actually, we *can't* resolve it because unfixing
-            // the page here doesn't unfix the page in
-            // alloc_file_page_log::undo
-            // and if we hang onto the fixed page while we do the
-            // lock_force, we can deadlocok.
-            if (0 && rc.err_num() == eLOCKTIMEOUT) {
-                page.unfix();
-                rc = lm->lock_force(pid, EX, t_long, WAIT_SPECIFIED_BY_XCT);
-                if(!rc.is_error()) {
-		    latch_mode_t latch = bIgnoreLatches ? LATCH_NLX : LATCH_EX;
-                    // got lock. nothing should go wrong with the latch
-                    W_DO(page.conditional_fix(pid, latch));
-
-                    // Re-check.   Because we unfixed the page and
-                    // re-fixed it, we have to check that it's
-                    // still part of this store.  That's done by
-                    // passing in "true" to io_m::free_page
-                    if (page.rec_count() == 0) {
-                        rc = smlevel_0::io->free_page(pid, 
-                                true/*chk store memb*/ );
-                        // Could fail to get the lock - eDEADLOCK 
-                        // this time.
-                        if(rc.is_error()) {
-                            if(rc.err_num() == eDEADLOCK) {
-                                // Ok give up and let other xct free the
-                                // page. We could have two xcts trying to
-                                // free the page at the same time.
-                                return RCOK;
-                            }
-                            w_assert1(rc.err_num() != eLOCKTIMEOUT);
-                        } 
-                    }
-                    // else leave it as eOK
-                }
-            } // if 0 && eLOCKTIMEOUT
 
             // Bail on eOK or any unacceptable failure
             if(rc.err_num() != eDEADLOCK && rc.err_num() != eLOCKTIMEOUT)
@@ -2592,6 +1547,12 @@ file_m::_free_page(file_p& page, const bool bIgnoreLatches)
             // to free the page at the same time.
             // Drop down and return RCOK.
         }
+#ifdef W_TRACE
+        else {
+            DBG(<<" is first page: do not free");
+                  
+        }
+#endif
     }
     return RCOK;
 }
@@ -2628,13 +1589,8 @@ file_m::_undo_alloc_file_page(file_p& page)
     // page was discarded from the bp before it was
     // made durable as a file_p (i.e., if it was
     // not formatted), its tag is left over
-    // from its prior life. 
-    // There's a gap in the file_p allocation code 
-    // in which that could be the case, and this doesn't
-    // cope with it properly.  See GNATS 129. Fixing that
-    // will address this.
-
-    if(page.tag() == page_p::t_file_p || page.tag() == page_p::t_file_mrbt_p) {
+    // from its prior life.  Similarly for its pid.
+    if(page.tag() == page_p::t_file_p) {
         return _free_page(page);
     } 
     return RCOK;
@@ -2657,7 +1613,7 @@ private:
     bool         _was_fixed;
     bool         _is_fixed;
     file_p&      _page;
-    void  _reset();
+    void         _reset();
 public:
     NORET alloc_file_page_filter_t(store_flag_t flg, file_p &pg);
     NORET ~alloc_file_page_filter_t();
@@ -2665,6 +1621,8 @@ public:
     void  reject();
     void  check() const;
     bool  accepted() const;
+    w_rc_t formatit() const;
+    bool  logit() const ;
 };
 
 NORET alloc_file_page_filter_t::alloc_file_page_filter_t(
@@ -2679,6 +1637,7 @@ void  alloc_file_page_filter_t::_reset()
     _was_fixed = false;
     _is_fixed = false;
 }
+
 bool  alloc_file_page_filter_t::accept(const lpid_t& pid) 
 {
     _pid =  pid;
@@ -2701,16 +1660,19 @@ bool  alloc_file_page_filter_t::accept(const lpid_t& pid)
     }
 #endif
 
+    DBGTHRD(<< " alloc_file_page_filter_t::accept " << pid );
+
     // Instead of doing the normal conditional_fix, we do _fix
     // so we can bypass the page format; if we do the format,
     // we'll run into problems initializing the lsn on the page, since
     // the assumption is that we have a last_lsn from allocating the
-    // page!
-    w_rc_t rc = _page.page_p::_fix(true, _pid, _page.t_file_p,
+    // page! But if this is our first update of the transaction, we
+    // won't have that _last_lsn.
+    w_rc_t rc = _page.page_p::_fix(true/*cond'l*/, _pid, _page.t_file_p,
             LATCH_EX, 
             _page.t_virgin, 
             _flags,
-            false /* ignore_store_id default value */,
+            true /* ignore_store_id default value is false */,
             1 /* refbit default value */);
 
     if(rc.is_error()) {
@@ -2720,7 +1682,14 @@ bool  alloc_file_page_filter_t::accept(const lpid_t& pid)
         INC_TSTAT(fm_alloc_page_reject);
         return false;
     }
+    INC_TSTAT(file_p_fix_cnt);
+    DBGTHRD(<< " accepted " << pid );
     // fprintf(stderr, "accept %d err %d\n", _pid.page, rc.err_num());
+#if W_DEBUG_LEVEL > 2
+    // funky ifdef above is so I find it when cleaning up...
+    memset((void *)&_page.persistent_part(), '\017', 
+            sizeof(_page.persistent_part())); // trash the whole page
+#endif
     _is_fixed = true;
     check();
     return true;
@@ -2748,6 +1717,21 @@ void  alloc_file_page_filter_t::reject()
     _reset();
 }
 
+bool alloc_file_page_filter_t::logit() const 
+{
+    return ((_flags & st_tmp) == 0);
+}
+w_rc_t alloc_file_page_filter_t::formatit() const 
+{
+    DBGTHRD(<< " allocated page " << _pid << "; formatit");
+    w_rc_t rc;
+    // Now we format, since it couldn't be done during accept()
+    rc = _page.format(_pid, _page.t_file_p, _page.t_virgin, _flags);
+    DBGTHRD(<< " allocated page " << _pid << "; format done rc="
+            << rc);
+    return rc;
+}
+
 rc_t
 file_m::_alloc_page(
     stid_t fid,
@@ -2757,6 +1741,7 @@ file_m::_alloc_page(
     bool search_file     // if false, it indicates strict append
 )
 {
+    FUNC(_alloc_page);
     /* 
      * near_p indicates a page already allocated to the file.
      * If search_file==false, we can still look for a page in that
@@ -2799,14 +1784,21 @@ file_m::_alloc_page(
 
 
     {
+        // Get ready to roll back to here if we get an error between
+        // here and ... where this scope is closed.
+        AUTO_ROLLBACK_work
+
         // Filter EX-latches the page; we hold the ex latch
         // and return the page latched.
         alloc_file_page_filter_t ok(store_flags, page);
         W_DO(io->alloc_a_file_page(&ok, fid, near_p, allocPid, IX,search_file));
+        SSMTEST("io_m::alloc_file_page.5");
         w_assert1(page.is_mine()); // EX-latched
-        // Now we format, since it couldn't be done during accept()
-        W_DO(page.format(allocPid, page.t_file_p, page.t_virgin, store_flags));
+        // format moved into ok.formatit() callback
+
+        work.ok();
     }
+    INC_TSTAT(fm_alloc_pg);
 
 
     /*
@@ -2819,63 +1811,13 @@ file_m::_alloc_page(
      * the lsn of the next log record to be written, so it does NOT
      * point to the log record of the alloc_file_page for *this* page.
      */
-    w_assert2(page.lsn().valid());
+    w_assert2(page.lsn().valid() || !smlevel_0::logging_enabled);
+    w_assert2(page.tag() == page.t_file_p);
+    w_assert2(page.pid() == allocPid);
     w_assert2(page.is_mine()); // EX-latched
 
-    INC_TSTAT(page_file_alloc);
 
-    return RCOK;
-}
-
-
-//  same as _alloc_page except takes a file_mrbt_p and sets the tag accordingly
-rc_t
-file_m::_alloc_mrbt_page(
-    stid_t fid,
-    const lpid_t& near_p,
-    lpid_t& allocPid,
-    file_mrbt_p &page,         // leave it fixed here
-    bool search_file     // if false, it indicates strict append
-)
-{
-
-    store_flag_t store_flags;
-    {
-        /* get the store flags before we descend into the io layer */
-        W_DO( io->get_store_flags(fid, store_flags));
-        if (store_flags & st_insert_file)  {
-            store_flags = (store_flag_t) (store_flags|st_tmp); 
-            // is st_tmp and st_insert_file
-        }
-    }
-
-
-    {
-        // Filter EX-latches the page; we hold the ex latch
-        // and return the page latched.
-        alloc_file_page_filter_t ok(store_flags, page);
-        W_DO(io->alloc_a_file_page(&ok, fid, near_p, allocPid, IX,search_file));
-        w_assert1(page.is_mine()); // EX-latched
-        // Now we format, since it couldn't be done during accept()
-        W_DO(page.format(allocPid, page.t_file_mrbt_p, page.t_virgin, store_flags));
-    }
-
-
-    /*
-     * We expect that even st_tmp pages will have a valid lsn,
-     * because the page allocation had to be logged.
-     * Valid means it has a file# that's not 0, that is, something
-     * was logged for the page, or it was initialized with the
-     * transaction's latest lsn.
-     * Note that this latest lsn has not been written yet; it's
-     * the lsn of the next log record to be written, so it does NOT
-     * point to the log record of the alloc_file_page for *this* page.
-     */
-    w_assert2(page.lsn().valid());
-    w_assert2(page.is_mine()); // EX-latched
-
-    INC_TSTAT(page_file_mrbt_alloc);
-    
+    DBGTHRD(<<" _alloc_page done");
     return RCOK;
 }
 
@@ -2888,6 +1830,8 @@ file_m::_append_large(file_p& page, slotid_t slot, const vec_t& data)
 
     DBG(<<" data length " << left_to_append);
     record_t*       rec;
+
+    AUTO_ROLLBACK_work
 
     W_DO( page.get_rec(slot, rec) );
 
@@ -2967,7 +1911,7 @@ file_m::_append_large(file_p& page, slotid_t slot, const vec_t& data)
                             page, slot, lg_hdl.page_count()));
 
                 // record may have moved, so reacquire
-                W_COERCE( page.get_rec(slot, rec) );
+                W_DO( page.get_rec(slot, rec) );
                 w_assert2(rec->tag.flags & (t_large_1|t_large_2));
 
             } else {
@@ -3015,7 +1959,7 @@ file_m::_append_large(file_p& page, slotid_t slot, const vec_t& data)
             }
         }
         W_DO(_append_to_large_pages(num_pages, new_pages, data, 
-				    left_to_append) );
+                                        left_to_append) );
         w_assert3(left_to_append >= append_cnt);
         left_to_append -= append_cnt;
 
@@ -3024,6 +1968,7 @@ file_m::_append_large(file_p& page, slotid_t slot, const vec_t& data)
     w_assert3(data.size() <= space_last_page ||
             pages_so_far == ((data.size()-space_last_page-1) /
                              lgdata_p::data_sz + 1));
+    work.ok();
     return RCOK;
 }
 
@@ -3062,7 +2007,7 @@ file_m::_append_to_large_pages(int num_pages, const lpid_t new_pages[],
          */
 
         /* NB: Causes page to be formatted: */
-	W_DO(lgdata.fix(new_pages[i], LATCH_EX, lgdata.t_virgin, store_flags) );
+        W_DO(lgdata.fix(new_pages[i], LATCH_EX, lgdata.t_virgin, store_flags) );
     
 
         //  args:          vec,  starting offset, #bytes
@@ -3084,7 +2029,7 @@ file_m::_convert_to_large_indirect(file_p& page, slotid_t slot,
 // is being appended to and it's body_size() is not accurate. 
 {
     record_t*    rec;
-    W_COERCE(page.get_rec(slot, rec));
+    W_DO(page.get_rec(slot, rec));
 
     // const since only page update calls can update a page
     const lg_tag_chunks_h old_lg_hdl(page, *(lg_tag_chunks_s*)rec->body()) ;
@@ -3092,12 +2037,14 @@ file_m::_convert_to_large_indirect(file_p& page, slotid_t slot,
     lg_tag_indirect_h lg_hdl(page, lg_indirect, rec_page_count);
     W_DO(lg_hdl.convert(old_lg_hdl));
 
+    AUTO_ROLLBACK_work
     // overwrite the lg_tag_chunks_s with a lg_tag_indirect_s
     vec_t lg_vec(&lg_indirect, sizeof(lg_indirect));
     W_DO(page.splice_data(slot, 0, sizeof(lg_tag_chunks_s), lg_vec));
 
     //change type of object
     W_DO(page.set_rec_flags(slot, lg_hdl.indirect_type(rec_page_count)));
+    work.ok();
 
     return RCOK;
 }
@@ -3106,7 +2053,7 @@ rc_t
 file_m::_truncate_large(file_p& page, slotid_t slot, uint4_t amount)
 {
     record_t*   rec;
-    W_COERCE( page.get_rec(slot, rec) );
+    W_DO( page.get_rec(slot, rec) );
 
     uint4_t         bytes_last_page = _bytes_last_page(rec->body_size());
     int             dealloc_count = 0; // number of pages to deallocate
@@ -3169,121 +2116,6 @@ file_m::_truncate_large(file_p& page, slotid_t slot, uint4_t amount)
     }
     return RCOK;
 }
-
-
-MAKEPAGECODE(file_mrbt_p, file_p)
-
-rc_t file_mrbt_p::format(const lpid_t& pid, tag_t tag, uint4_t flags, 
-			 store_flag_t store_flags)
-{
-    // pin: taken from file_p::format
-    
-    w_assert3(tag == t_file_mrbt_p);
-
-    file_p_hdr_t ctrl;
-
-/* NOTE: We tried to put DEADBEEF into file page headers
- *  when the page was deleted so we could use asserts about
- *  pages (not being deleted).
- * The problem is that set_hdr was never used before; never worked.
- *  Using set: either reclaim or overwrite, depending on whether
- *  the slot exists. It should exist if formatted, so we don't want
- *  to reclaim it, but I had problems using overwrite too, and I don't
- *  know why.
- */
-    ctrl.cluster = DUMMY_CLUSTER_ID;                // dummy cluster ID
-    vec_t file_p_hdr_vec;
-    file_p_hdr_vec.put(&ctrl, sizeof(ctrl));
-
-    /* first, don't log it */
-    W_DO( page_p::_format(pid, tag, flags, store_flags) );
-
-    // always set the store_flag here -- see comments 
-    // in bf::fix(), which sets the store flags to st_regular
-    // for all pages, and lets the type-specific store manager
-    // override (because only file pages can be insert_file)
-    //
-    // persistent_part().set_page_storeflags(store_flags);
-    this->set_store_flags(store_flags); // through the page_p, through the bfcb_t
-
-    // initialize header
-    lpid_t owner;
-    file_p_hdr_vec.put((char*)(&owner), sizeof(lpid_t));
-    W_COERCE(page_p::reclaim(0, file_p_hdr_vec, false/*don't log_it*/));
-
-    /* Now, log as one (combined) record: -- 2nd 0 arg 
-     * is to handle special case of reclaim */
-    rc_t rc = log_page_format(*this, 0, 0, &file_p_hdr_vec); // file_p
-    if(rc.is_error()) {
-        discard();
-        return rc;
-    }
-
-    return RCOK;
- }
-
-/*********************************************************************
- *
- *  file_mrbt_p::shift(idx, rsib)
- *
- *  Shift all entries starting at "idx" to first entry of page "rsib".
- *  Stolen from zkeyed_p. Adapted to file_mrbt_p.
- *
- *********************************************************************/
-rc_t
-file_mrbt_p::shift(slotid_t idx, file_mrbt_p* rsib)
-{
-    FUNC(file_mrbt_p::shift);
-    //w_assert1(idx >= 0 && idx < nrecs());
-
-    int n = num_slots() - idx;
-
-    DBG(<<"file_mrbt_p::SHIFT "  
-	<< " from page " << pid().page << " idx " << idx
-        << " #recs " << n
-        );
-
-    int start_simple_move=0;
-    rc_t rc;
-
-    /* 
-     * grot performance hack: do in chunks of up to 
-     * tmp_chunk_size slots at a time
-     */
-    const int tmp_chunk_size = 20;    // XXX magic number
-    vec_t *tp = new vec_t[tmp_chunk_size];
-    if (!tp)
-    {
-        return RC(fcOUTOFMEMORY);
-    }
-
-    w_auto_delete_array_t<vec_t>    ad_tp(tp);
-
-    for (int i = start_simple_move; i < n && (! rc.is_error()); ) {
-        int j;
-
-        // NB: this next for-loop increments variable i !!!
-        for (j = 0; j < tmp_chunk_size && i < n; j++, i++)  {
-            tp[j].set(page_p::tuple_addr(1 + idx + i),
-                  page_p::tuple_size(1 + idx + i));
-        }
-
-        // i has been incremented j times, hence the
-        // subtraction for the 1st arg to insert_expand():
-        rc = rsib->insert_expand(1 + i - j, j, tp); // do it & log it
-    }
-    if (! rc.is_error())  {
-        DBG(<<"Removing " << n << " slots starting with " << 1+idx
-            << " from page " << pid().page);
-        rc = remove_compress(1 + idx, n);
-    }
-    DBG(<< " page " << pid().page << " has " << num_slots() << " slots");
-    DBG(<< " page " << rsib->pid().page << " has " << num_slots() << " slots");
-
-    return rc.reset();
-
-}
-
 
 rc_t
 file_p::fill_slot(
@@ -3391,6 +2223,8 @@ file_p::format(const lpid_t& pid, tag_t tag, uint4_t flags,
     vec_t file_p_hdr_vec;
     file_p_hdr_vec.put(&ctrl, sizeof(ctrl));
 
+    DBG(<<"file_p::format -- don't log");
+
     /* first, don't log it */
     W_DO( page_p::_format(pid, tag, flags, store_flags) );
 
@@ -3400,13 +2234,20 @@ file_p::format(const lpid_t& pid, tag_t tag, uint4_t flags,
     // override (because only file pages can be insert_file)
     //
     // persistent_part().set_page_storeflags(store_flags);
+    DBG(<<"file_p::format -- set store flags");
     this->set_store_flags(store_flags); // through the page_p, through the bfcb_t
 
-    W_COERCE(page_p::reclaim(0, file_p_hdr_vec, false/*don't log_it*/));
+    DBG(<<"file_p::format -- page reclaim don't log");
+    w_rc_t rc = page_p::reclaim(0, file_p_hdr_vec, false/*don't log_it*/);
+    if(rc.is_error()) {
+        DBG(<<"reclaim got error " << rc);
+        discard();
+        return rc;
+    }
 
     /* Now, log as one (combined) record: -- 2nd 0 arg 
      * is to handle special case of reclaim */
-    rc_t rc = log_page_format(*this, 0, 0, &file_p_hdr_vec); // file_p
+    rc = log_page_format(*this, 0, 0, &file_p_hdr_vec); // file_p
     if(rc.is_error()) {
         discard();
         return rc;
@@ -3435,25 +2276,36 @@ rc_t
 file_p::_find_and_lock_free_slot(
     bool                     append_only,
     uint4_t                  space_needed,
-    slotid_t&                idx,
-    const bool               bIgnoreParents
-)
+    slotid_t&                idx
+#ifdef SM_DORA
+    , const bool bIgnoreParents
+#endif
+    )
 {
     FUNC(find_and_lock_free_slot);
-    w_assert3(is_file_p() || is_file_mrbt_p());
+    w_assert3(is_file_p());
     slotid_t start_slot = 1;  // first slot to check if free
     // _find_and_lock_free_slot should never be using slot 0 on
     // a file page because that's the header slot; even though
     // the header is unused.  We will hit assertions if we use slot 0.
     rc_t rc;
 
-    DBG(<< "space_needed " << space_needed);
+    DBG(<< " page " << pid() << " space_needed " << space_needed
+            << " page has nslots=" << nslots());
     for (;;) 
     {
         if(append_only) {
+            // get the next slot at end of page if room, else
+            // return eRECWONTFIT
             W_DO(page_p::next_slot(space_needed, idx));
+            DBG(<<"next_slot with start_slot " << start_slot
+                    << " returns " << idx);
         } else {
+            // get the next slot after start_slot with room (possibly
+            // a new slot), or return eRECWONTFIT
             W_DO(page_p::find_slot(space_needed, idx, start_slot));
+            DBG(<<"find_slot with start_slot " << start_slot
+                    << " returns " << idx);
         }
         // could be nslots() - new slot
         w_assert3(idx <= nslots());
@@ -3462,7 +2314,11 @@ file_p::_find_and_lock_free_slot(
         rid_t rid(pid(), idx);
 
         // IP: For DORA it may ignore to acquire other locks than the RID
-	rc = lm->lock(rid, EX, t_long, WAIT_IMMEDIATE, 0, 0, 0, bIgnoreParents);
+        rc = lm->lock(rid, EX, t_long, WAIT_IMMEDIATE
+#ifdef SM_DORA
+                      , 0, 0, 0, bIgnoreParents
+#endif
+                      );
 
         if (rc.is_error())  {
             if (rc.err_num() == eLOCKTIMEOUT) {
@@ -3474,8 +2330,28 @@ file_p::_find_and_lock_free_slot(
                 // attempting to get many locks on a page where
                 // we've already noticed contention.
 
-                DBG(<< __LINE__ << " rc=" << rc);
+                DBG(<< "rid " << rid 
+                        << " nslots " << nslots()
+                        << " start_slot " << start_slot
+                        << " rc=" << rc
+                        );
                 if(start_slot == nslots()) {
+                    // In this case, the last slot on the page
+                    // is locked by someone else; that doesn't
+                    // mean we can't allocate yet-another, and,
+                    // in fact, if we got this far, it means
+                    // find_slot indeed thinks there *is* room on 
+                    // the page.
+                    // Here's a corner case: the last slot was just
+                    // destroyed by another xct, leaving the page
+                    // essentially empty. We could try to allocate
+                    // one *more* slot, but there's really no way
+                    // to get next_slot or find_slot to
+                    // return it (the highest it will return is
+                    // nslots()), so we'd have to go through
+                    // some contortions in this loop to make that
+                    // work. So we settle for not a very pretty
+                    // handling of the corner case.
                     return RC(eRECWONTFIT);
                 } else {
                     start_slot = nslots();  // force new slot allocation
@@ -3491,7 +2367,7 @@ file_p::_find_and_lock_free_slot(
                     << " for rid " << rid);
             break;
         }
-    }
+    } // for
     return RCOK;
 }
 
@@ -3534,7 +2410,7 @@ rc_t
 file_p::splice_data(slotid_t idx, slot_length_t start, slot_length_t len, const vec_t& data)
 {
     record_t*   rec;
-    W_COERCE( get_rec(idx, rec) );
+    W_DO( get_rec(idx, rec) );
     int         base = rec->body_offset();
 
     return page_p::splice(idx, base + start, len, data);
@@ -3545,12 +2421,12 @@ file_p::append_rec(slotid_t idx, const vec_t& data)
 {
     record_t*   rec;
 
-    W_COERCE( get_rec(idx, rec) );
+    W_DO( get_rec(idx, rec) );
 
     if (rec->is_small()) {
         W_DO( splice_data(idx, (int)rec->body_size(), 0, data) );
         // TODO: why are we doing this? (the get_rec again)
-        W_COERCE( get_rec(idx, rec) );
+        W_DO( get_rec(idx, rec) );
     } else {
         // not implemented here.  see file::append_rec
         return RC(smlevel_0::eNOTIMPLEMENTED);
@@ -3563,7 +2439,7 @@ rc_t
 file_p::truncate_rec(slotid_t idx, uint4_t amount)
 {
     record_t*   rec;
-    W_COERCE( get_rec(idx, rec) );
+    W_DO( get_rec(idx, rec) );
 
     vec_t        empty(rec, 0);  // zero length vector 
 
@@ -3579,7 +2455,7 @@ rc_t
 file_p::set_rec_len(slotid_t idx, uint4_t new_len)
 {
     record_t*   rec;
-    W_COERCE( get_rec(idx, rec) );
+    W_DO( get_rec(idx, rec) );
 
     vec_t   hdr_update(&(new_len), sizeof(rec->tag.body_len));
     int     size_location = ((char*)&rec->tag.body_len) - ((char*)rec);
@@ -3592,7 +2468,7 @@ rc_t
 file_p::set_rec_flags(slotid_t idx, uint2_t new_flags)
 {
     record_t*   rec;
-    W_COERCE( get_rec(idx, rec) );
+    W_DO( get_rec(idx, rec) );
 
     vec_t   flags_update(&(new_flags), sizeof(rec->tag.flags));
     int     flags_location = ((char*)&(rec->tag.flags)) - ((char*)rec);
@@ -3635,14 +2511,24 @@ recflags_t
 file_p::choose_rec_implementation(
     uint4_t         est_hdr_len,
     smsize_t        est_data_len,
-    smsize_t&       rec_size // output: size of stuff going into slotted pg
+    smsize_t&       rec_size, // output: size of stuff going into slotted pg
+    file_p*         page
     )
 {
     est_hdr_len = sizeof(rectag_t) + align(est_hdr_len);
     w_assert2(is_aligned(est_hdr_len));
     w_assert2(is_aligned(sizeof(rectag_t)));
 
-    if ( (est_data_len+est_hdr_len) <= file_p::data_sz) {
+    smsize_t        est_total_len = est_data_len+est_hdr_len;
+    smsize_t        available_for_small = file_p::data_sz;
+
+    if(page != NULL && page->is_mine()) {
+        available_for_small = page->usable_space();
+        // Problem: we don't know if we have enough room for a new
+        // slot. Caller will have to deal with that.
+    }
+
+    if ( est_total_len <= available_for_small) {
         // NOTE: file_p::data_sz has already taken into account one slot_t
         // and space for the file_p_hdr_t
         rec_size = est_hdr_len + est_data_len + sizeof(slot_t);
@@ -3653,35 +2539,9 @@ file_p::choose_rec_implementation(
     }
      
     W_FATAL(eNOTIMPLEMENTED);
-    return t_badflag;  // keep compiler quite
+    return t_badflag;  // keep compiler quite -- on the other hand, other compilers
+    // complain about this line!
 }
-
-
-recflags_t 
-file_mrbt_p::choose_rec_implementation(
-    uint4_t         est_hdr_len,
-    smsize_t        est_data_len,
-    smsize_t&       rec_size // output: size of stuff going into slotted pg
-    )
-{
-    est_hdr_len = sizeof(rectag_t) + align(est_hdr_len);
-    w_assert2(is_aligned(est_hdr_len));
-    w_assert2(is_aligned(sizeof(rectag_t)));
-
-    if ( (est_data_len+est_hdr_len) <= file_mrbt_p::data_sz) {
-        // NOTE: file_mrbt_p::data_mrbt_sz has already taken into account one slot_t
-        // and space for the file_p_hdr_t
-        rec_size = est_hdr_len + est_data_len + sizeof(slot_t);
-        return(t_small);
-    } else {
-        rec_size = est_hdr_len + align(sizeof(lg_tag_chunks_s))+sizeof(slot_t);
-        return(t_large_0);
-    }
-     
-    W_FATAL(eNOTIMPLEMENTED);
-    return t_badflag;  // keep compiler quite
-}
-
 
 MAKEPAGECODE(file_p, page_p)
 
@@ -3693,7 +2553,7 @@ file_m::get_du_statistics(
     file_stats_t& file_stats,
     bool          audit)
 {
-  FUNC(file_m::get_du_statistics);
+    FUNC(file_m::get_du_statistics);
     lpid_t        lpid;
     bool          eof = false;
     file_p         page;
@@ -3735,7 +2595,7 @@ file_m::get_du_statistics(
             SmStoreMetaStats _stats;
             _stats.Clear();
 
-            W_COERCE( io->get_store_meta_stats(fid, _stats) );
+            W_DO( io->get_store_meta_stats(fid, _stats) );
             DBG(<<"unalloc_file_pg_cnt +=" << _stats.numReservedPages);
             file_stats.unalloc_file_pg_cnt += _stats.numReservedPages;
 
@@ -3744,14 +2604,14 @@ file_m::get_du_statistics(
             //       Why do we not set the file_pg_cnt ? 
             // NOTE: we do not audit this file
             _stats.Clear();
-            W_COERCE( io->get_store_meta_stats(lfid, _stats) );
+            W_DO( io->get_store_meta_stats(lfid, _stats) );
             DBG(<<"unalloc_file_pg_cnt +=" << _stats.numReservedPages);
             file_stats.unalloc_file_pg_cnt += _stats.numReservedPages;
             return RCOK;
         }
     }
 
-    W_DO(first_page(fid, lpid, &allocated) );
+    W_DO(first_file_page(fid, lpid, &allocated, NL) );
     DBG(<<"first page of " << fid << " is " 
             << lpid << " (allocate=" << allocated << ")");
 
@@ -3794,13 +2654,13 @@ file_m::get_du_statistics(
         }
 
         // read the next page
-        W_DO(next_page(lpid, eof, &allocated) );
+        W_DO(next_file_page(lpid, eof, &allocated, NL) );
         DBG(<<"next page of " << fid << " is " << lpid << " (allocate=" << allocated << ")");
 
     }
 
     DBG(<<"analyze large object file " << lfid);
-    W_DO(first_page(lfid, lpid, &allocated) );
+    W_DO(first_file_page(lfid, lpid, &allocated, NL) );
 
     DBG(<<"first page of " << lfid << " is " << lpid << " (allocate=" << allocated << ")");
 
@@ -3817,7 +2677,7 @@ file_m::get_du_statistics(
             <<" lg_pg_cnt = " << lg_pg_cnt
             <<" lg_page_unalloc_cnt = " << lg_page_unalloc_cnt
         );
-        W_DO(next_page(lpid, eof, &allocated) );
+        W_DO(next_file_page(lpid, eof, &allocated, NL) );
         DBG(<<"next page of " << lfid 
                 << " is " << lpid << " (allocated=" << allocated << ")");
     }
@@ -3998,7 +2858,7 @@ file_m::update_rectag(const rid_t& rid, uint4_t len, uint2_t flags)
 {
     file_p page;
     
-    W_DO(_locate_page(rid, page, LATCH_EX) );
+    W_DO(_locate_page(rid, page, LATCH_EX, false) );
     
     W_DO( page.set_rec_len(rid.slot, len) );
     W_DO( page.set_rec_flags(rid.slot, flags) );

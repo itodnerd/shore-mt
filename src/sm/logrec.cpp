@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
-     $Id: logrec.cpp,v 1.155 2010/06/15 17:30:07 nhall Exp $
+     $Id: logrec.cpp,v 1.162 2010/10/27 17:04:23 nhall Exp $
 
     SHORE -- Scalable Heterogeneous Object REpository
 
@@ -133,20 +133,7 @@ logrec_t::cat_str() const
     default:
       return 0;
     }
-#if W_DEBUG_LEVEL > 2
-    cerr << "unexpected log record flags: ";
-        if( _cat & t_undo ) cerr << "t_undo ";
-        if( _cat & t_redo ) cerr << "t_redo ";
-        if( _cat & t_logical ) cerr << "t_logical ";
-        if( _cat & t_cpsn ) cerr << "t_cpsn ";
-        if( _cat & t_status ) cerr << "t_status ";
-        cerr << endl;
-#endif 
-        
-    W_FATAL(smlevel_0::eINTERNAL);
-    return "????";
 }
-
 
 /*********************************************************************
  *
@@ -190,7 +177,9 @@ logrec_t::fill(const lpid_t* p, uint2_t tag, smsize_t l)
     /* adjust _cat */
     xct_t *x = xct();
     if(smlevel_0::in_recovery_undo() ||
-        (x && x->state() == smlevel_1::xct_aborting)) 
+        (x && ( x->rolling_back() ||
+			   x->state() == smlevel_1::xct_aborting))
+	) 
     {
         _cat |= t_rollback;
     }
@@ -203,7 +192,7 @@ logrec_t::fill(const lpid_t* p, uint2_t tag, smsize_t l)
         memset(_data+l, 0, align(l)-l);
     }
     unsigned int tmp = align(l) + hdr_sz + sizeof(lsn_t);
-    tmp = (tmp + 7) & -8; // force 8-byte alignment
+    tmp = (tmp + 7) & unsigned(-8); // force 8-byte alignment
     w_assert1(tmp <= max_sz);
     _len = tmp;
     if(type() != t_skip) {
@@ -275,6 +264,7 @@ void logrec_t::redo(page_p* page)
     if(page) page->set_dirty();
 }
 
+static __thread logrec_t::kind_t undoing_context = logrec_t::t_max_logrec; // for accounting TODO REMOVE
 
 
 /*********************************************************************
@@ -289,6 +279,7 @@ void logrec_t::redo(page_p* page)
 void
 logrec_t::undo(page_p* page)
 {
+    undoing_context = logrec_t::kind_t(_type);
     FUNC(logrec_t::undo);
     DBG( << "Undo  log rec: " << *this 
         << " size: " << _len  << " prevlsn: " << _prev);
@@ -296,6 +287,7 @@ logrec_t::undo(page_p* page)
 #include "undo_gen.cpp"
     }
     xct()->compensate_undo(_prev);
+    undoing_context = logrec_t::t_max_logrec;
 }
 
 /*********************************************************************
@@ -330,6 +322,30 @@ xct_freeing_space_log::xct_freeing_space_log()
 }
 
 
+/*********************************************************************
+ *
+ *  xct_end_group_log
+ *
+ *  Status Log to mark the end of transaction and space recovery
+ *  for a group of transactions.
+ *
+ *********************************************************************/
+xct_list_t::xct_list_t(
+    const xct_t*                        xct[],
+    int                                 cnt)
+    : count(cnt)
+{
+    w_assert1(count <= max);
+    w_assert9( SIZEOF(*this) <= logrec_t::data_sz);
+    for (uint i = 0; i < count; i++)  {
+        xrec[i].tid = xct[i]->tid();
+    }
+}
+
+xct_end_group_log::xct_end_group_log(const xct_t *list[], int listlen)
+{
+    fill(0, 0, (new (_data) xct_list_t(list, listlen))->size());
+}
 /*********************************************************************
  *
  *  xct_end_log
@@ -367,6 +383,7 @@ xct_prepare_st_log::xct_prepare_st_log(const gtid_t *g,
     fill(0, 0, (new (_data) prepare_info_t(g, h))->size());
 
 }
+
 void
 xct_prepare_st_log::redo(page_p *) 
 {
@@ -431,11 +448,15 @@ xct_prepare_alk_log::redo(page_p *)
 }
 
 
-xct_prepare_fi_log::xct_prepare_fi_log(int num_ex, int num_ix, int num_six, int numextent, 
-        const lsn_t &first) 
+xct_prepare_fi_log::xct_prepare_fi_log(
+        int num_ex, int num_ix, int num_six, int numextent, 
+        const lsn_t &first,
+        int rsvd, int ready, int used
+        ) 
 {
     fill(0, 0, (new (_data) 
-        prepare_lock_totals_t(num_ex, num_ix, num_six, numextent, first))->size());
+        prepare_end_t(num_ex, num_ix, num_six, numextent, first,
+                      rsvd, ready, used))->size());
 }
 void 
 xct_prepare_fi_log::redo(page_p *) 
@@ -448,14 +469,19 @@ xct_prepare_fi_log::redo(page_p *)
      *  are aborted during the undo phase
      */
     xct_t *                        xd = xct_t::look_up(_tid);
-    const prepare_lock_totals_t* pt = 
-            (prepare_lock_totals_t*) _data;
+    const prepare_end_t* endinfo = (prepare_end_t*) _data;
+    const prepare_lock_totals_t* pt =  &endinfo->_lock;
     me()->attach_xct(xd);
-    W_COERCE(xd->check_lock_totals(pt->num_EX, pt->num_IX, pt->num_SIX, pt->num_extents));
+    W_COERCE(xd->check_lock_totals(pt->num_EX, 
+                pt->num_IX, pt->num_SIX, pt->num_extents));
     xd->change_state(xct_t::xct_prepared);
 
     w_assert9( xd->first_lsn() == lsn_t::null );
     xd->set_first_lsn(pt->first_lsn);
+
+    const prepare_log_resv_t* pl =  &endinfo->_log;
+    xd->prepare_restore_log_resv(pl->_rsvd, pl->_ready, pl->_used, 
+            endinfo->size());
 
     me()->detach_xct(xd);
     w_assert9(xd->state() == xct_t::xct_prepared);
@@ -519,7 +545,7 @@ comment_log::undo(page_p * W_IFDEBUG9(page))
  *  on another record
  *
  *********************************************************************/
-compensate_log::compensate_log(lsn_t rec_lsn)
+compensate_log::compensate_log(const lsn_t& rec_lsn)
 {
     fill(0, 0, 0);
     set_clr(rec_lsn);
@@ -2008,6 +2034,7 @@ free_pages_in_ext_log::free_pages_in_ext_log(const page_p& page, snum_t snum, ex
 void free_pages_in_ext_log::redo(page_p* /*page*/)
 {
     pages_in_ext_t* thePages = (pages_in_ext_t*)_data;
+	// We cannot recover from failure here:
     W_COERCE( smlevel_0::io->_recover_pages_in_ext(vid(), thePages->snum, thePages->ext, thePages->pmap, false) );
 }
 
@@ -2015,6 +2042,7 @@ void free_pages_in_ext_log::redo(page_p* /*page*/)
 void free_pages_in_ext_log::undo(page_p* /*page*/)
 {
     pages_in_ext_t* thePages = (pages_in_ext_t*)_data;
+	// We cannot recover from failure here:
     W_COERCE( smlevel_0::io->recover_pages_in_ext(vid(), thePages->snum, thePages->ext, thePages->pmap, true) );
 }
 
@@ -2355,7 +2383,7 @@ public:
                     const cvec_t* vec) : 
            _init(tag, page_flag, store_flag) 
        {
-           w_assert3(tag != page_p::t_file_p && tag != page_p::t_file_mrbt_p);
+           w_assert3(tag != page_p::t_file_p);
            w_assert2(cnt == 1);
            new (data) page_insert_t(idx, cnt, vec);
        }
@@ -2368,15 +2396,15 @@ public:
                     const cvec_t* vec) : 
            _init(tag, page_flag, store_flag) 
        {
-           w_assert3(tag == page_p::t_file_p || tag == page_p::t_file_mrbt_p);
+           w_assert3(tag == page_p::t_file_p);
            zvec_t zv;
            if(vec==0) vec = &zv;
            new (data) page_reclaim_t(idx, *vec);
        }
 
     int size()  { return _init.size() + 
-        ((_init.page_tag() == page_p::t_file_p ||
-	  _init.page_tag() == page_p::t_file_mrbt_p) ? reclaim()->size() : insert()->size());
+        ((_init.page_tag() == 
+          page_p::t_file_p)? reclaim()->size() : insert()->size());
         }
 };
 
@@ -2406,14 +2434,12 @@ page_format_log::page_format_log(const page_p& p,
                 ||
                 p.tag() == page_p::t_btree_p 
                 ||
-                p.tag() == page_p::t_file_p
-		||
-                p.tag() == page_p::t_file_mrbt_p 
+                p.tag() == page_p::t_file_p 
                 );
 
     } 
 #endif
-    if (p.tag() == page_p::t_file_p || p.tag() == page_p::t_file_mrbt_p)  {
+    if (p.tag() == page_p::t_file_p) {
         // the 2nd part is a page_reclaim_t
         // only available to file_p
         w_assert2(cnt==0);
@@ -2456,7 +2482,7 @@ page_format_log::redo(page_p* page)
 {
     page_format_t* df = (page_format_t*) _data;
     df->init()->redo_init(page, pid());
-    if(page->tag() == page_p::t_file_p  || page->tag() == page_p::t_file_mrbt_p) {
+    if(page->tag() == page_p::t_file_p) {
         // reclaim is reverse of page_mark,
         // and reclaim() is really a page_mark_t *
         df->reclaim()->undo(page);
@@ -2471,7 +2497,7 @@ page_format_log::undo(page_p* page)
     page_format_t* df = (page_format_t*) _data;
 
     // There is no undo for page_init.
-    if(page->tag() == page_p::t_file_p || page->tag() == page_p::t_file_mrbt_p) {
+    if(page->tag() == page_p::t_file_p) {
         // reclaim is reverse of page_mark,
         // and reclaim() is really a page_mark_t *
         df->reclaim()->redo(page);
@@ -2480,10 +2506,14 @@ page_format_log::undo(page_p* page)
     }
 }
 
-alloc_file_page_log::alloc_file_page_log(const lpid_t& p)
+alloc_file_page_log::alloc_file_page_log(const lpid_t& p, const lsn_t &
+        rec_lsn
+        )
 {
-    // fill size is 0; all we need is the page id
+    // fill size is 0; all we need are the page id and the
+    // next undo_lsn
     fill(&p, 0, 0);
+    set_undoable_clr(rec_lsn);
 }
 
 void
@@ -2512,37 +2542,216 @@ alloc_file_page_log::undo(page_p* W_IFDEBUG1(already_fixed))
                 << " because " << rc);
     }
 
-    if(page.lsn() > lsn_ck()) {
-        // Page was updated after this and made durable.
-        //
-        w_assert3(page.pid() == this->pid());
-        w_assert3(page.pid()._stid.store == this->pid()._stid.store);
-        // Is it possible, per the
-        // comment in _undo_alloc_file_page(), that
-        // the page was discarded and could be anything?
-        // Yes. The assert is bogus:
-        // w_assert1(page.tag() == page_p::t_file_p);
+    DBG(<< "pagelsn() " << page.lsn() 
+            << " lsn_ck " << lsn_ck());
+    // Page was updated after this and made durable.
+    //
+    w_assert1(page.pid() == this->pid());
+    w_assert1(page.pid()._stid.store == this->pid()._stid.store);
+    // Is it possible, per the
+    // comment in _undo_alloc_file_page(), that
+    // the page was discarded and could be anything?
+    // Yes. The assert is bogus:
+    // w_assert1(page.tag() == page_p::t_file_p);
 
-        file_p *fp = (file_p *)&page;
-        rc = file_m::_undo_alloc_file_page(*fp);
-        if(rc.is_error()) {
-            W_FATAL_MSG(eINTERNAL,<< "undo alloc of page " << this->pid()
-                << " because " << rc);
-        }
-    } else {
-        // We don't have to undo this b/c the page was discarded before
-        // the page format and subsequent updates were made durable.
-        //
-        // This is handled differently from most log records
-        // b/c the page we give in the log record is the
-        // one being (de)allocated, but it is not being updated.
-        // If we use the generic page-fixing-for-log-record-undo code
-        // in xct_impl.cpp, the fix will use ignore_store_id=false,
-        // and we need to use ignore_store_id=true above.
-        //
-        // We use this page ONLY to check that it's not still in use.
-        // 
+    file_p *fp = (file_p *)&page;
+    rc = file_m::_undo_alloc_file_page(*fp);
+    if(rc.is_error()) {
+        W_FATAL_MSG(eINTERNAL,<< "undo alloc of page " << this->pid()
+            << " because " << rc);
     }
 
 }
 
+#if LOGREC_ACCOUNTING 
+
+class logrec_accounting_impl_t {
+private:
+    static __thread w_base_t::uint8_t bytes_written_fwd [t_max_logrec];
+    static __thread w_base_t::uint8_t bytes_written_bwd [t_max_logrec];
+    static __thread w_base_t::uint8_t bytes_written_bwd_cxt [t_max_logrec];
+    static __thread w_base_t::uint8_t insertions_fwd [t_max_logrec];
+    static __thread w_base_t::uint8_t insertions_bwd [t_max_logrec];
+    static __thread w_base_t::uint8_t insertions_bwd_cxt [t_max_logrec];
+    static __thread double            ratio_bf       [t_max_logrec];
+    static __thread double            ratio_bf_cxt   [t_max_logrec];
+
+    static const char *type_str(int _type);
+    static void reinit();
+public:
+    logrec_accounting_impl_t() {  reinit(); }
+    ~logrec_accounting_impl_t() {}
+    static void account(logrec_t &l, bool fwd);
+    static void account_end(bool fwd);
+    static void print_account_and_clear();
+};
+static logrec_accounting_impl_t dummy;
+void logrec_accounting_impl_t::reinit() 
+{
+    for(int i=0; i < t_max_logrec; i++) {
+        bytes_written_fwd[i] = 
+        bytes_written_bwd[i] = 
+        bytes_written_bwd_cxt[i] = 
+        insertions_fwd[i] = 
+        insertions_bwd[i] =
+        insertions_bwd_cxt[i] =  0;
+        ratio_bf[i] = 0.0;
+        ratio_bf_cxt[i] = 0.0;
+    }
+}
+// this doesn't have to be thread-safe, as I'm using it only
+// to figure out the ratios
+void logrec_accounting_t::account(logrec_t &l, bool fwd)
+{
+    logrec_accounting_impl_t::account(l,fwd);
+}
+void logrec_accounting_t::account_end(bool fwd)
+{
+    logrec_accounting_impl_t::account_end(fwd);
+}
+
+void logrec_accounting_impl_t::account_end(bool fwd)
+{
+    // Set the context to end so we can account for all
+    // overhead related to that.
+    if(!fwd) {
+        undoing_context = logrec_t::t_xct_end;
+    }
+}
+void logrec_accounting_impl_t::account(logrec_t &l, bool fwd)
+{
+    unsigned b = l.length();
+    int      t = l.type();
+    int      tcxt = l.type();
+    if(fwd) {
+        w_assert0((undoing_context == logrec_t::t_max_logrec)
+               || (undoing_context == logrec_t::t_xct_end));
+    } else {
+        if(undoing_context != logrec_t::t_max_logrec) {
+            tcxt = undoing_context;
+        } else {
+            // else it's something like a compensate  or xct_end
+            // and we'll chalk it up to t_xct_abort, which
+            // is not undoable.
+            tcxt = t_xct_abort;
+        }
+    }
+    if(fwd) {
+        bytes_written_fwd[t] += b;
+        insertions_fwd[t] ++;
+    }
+    else {
+        bytes_written_bwd[t] += b;
+        bytes_written_bwd_cxt[tcxt] += b;
+        insertions_bwd[t] ++;
+        insertions_bwd_cxt[tcxt] ++;
+    }
+    if(bytes_written_fwd[t]) {
+        ratio_bf[t] = double(bytes_written_bwd_cxt[t]) / 
+            double(bytes_written_fwd[t]);
+    } else {
+        ratio_bf[t] = 1;
+    }
+    if(bytes_written_fwd[tcxt]) {
+        ratio_bf_cxt[tcxt] = double(bytes_written_bwd_cxt[tcxt]) / 
+            double(bytes_written_fwd[tcxt]);
+    } else {
+        ratio_bf_cxt[tcxt] = 1;
+    }
+}
+
+const char *logrec_accounting_impl_t::type_str(int _type) {
+    switch (_type)  {
+#        include "logstr_gen.cpp"
+    default:
+      return 0;
+    }
+}
+
+void logrec_accounting_t::print_account_and_clear()
+{
+    logrec_accounting_impl_t::print_account_and_clear();
+}
+void logrec_accounting_impl_t::print_account_and_clear()
+{
+    w_base_t::uint8_t anyb=0;
+    for(int i=0; i < t_max_logrec; i++) {
+        anyb += insertions_bwd[i];
+    }
+    if(!anyb) {
+        reinit();
+        return;
+    }
+    // don't bother unless there was an abort.
+    // I mean something besides just compensation records
+    // being chalked up to bytes backward or insertions backward.
+    if( insertions_bwd[t_compensate] == anyb ) {
+        reinit();
+        return;
+    }
+    
+    char out[200]; // 120 is adequate
+    sprintf(out, 
+        "%s %20s  %8s %8s %8s %12s %12s %12s %10s %10s PAGESIZE %d\n",
+        "LOGREC",
+        "record", 
+        "ins fwd", "ins bwd", "rec undo",
+        "bytes fwd", "bytes bwd",  "bytes undo",
+        "B:F",
+        "BUNDO:F",
+        SM_PAGESIZE
+        );
+    fprintf(stdout, "%s", out);
+    w_base_t::uint8_t btf=0, btb=0, btc=0;
+    w_base_t::uint8_t itf=0, itb=0, itc=0;
+    for(int i=0; i < t_max_logrec; i++) {
+        btf += bytes_written_fwd[i];
+        btb += bytes_written_bwd[i];
+        btc += bytes_written_bwd_cxt[i];
+        itf += insertions_fwd[i];
+        itb += insertions_bwd[i];
+        itc += insertions_bwd_cxt[i];
+
+        if( insertions_fwd[i] + insertions_bwd[i] + insertions_bwd_cxt[i] > 0) 
+        {
+            sprintf(out, 
+            "%s %20s  %8lu %8lu %8lu %12lu %12lu %12lu %10.7f %10.7f PAGESIZE %d \n",
+            "LOGREC",
+            type_str(i) ,
+            insertions_fwd[i],
+            insertions_bwd[i],
+            insertions_bwd_cxt[i],
+            bytes_written_fwd[i],
+            bytes_written_bwd[i],
+            bytes_written_bwd_cxt[i],
+            ratio_bf[i],
+            ratio_bf_cxt[i],
+            SM_PAGESIZE
+            );
+            fprintf(stdout, "%s", out);
+        }
+    }
+    sprintf(out, 
+    "%s %20s  %8lu %8lu %8lu %12lu %12lu %12lu %10.7f %10.7f PAGESIZE %d\n",
+    "LOGREC",
+    "TOTAL", 
+    itf, itb, itc,
+    btf, btb, btc,
+    double(btb)/double(btf),
+    double(btc)/double(btf),
+    SM_PAGESIZE
+    );
+    fprintf(stdout, "%s", out);
+    reinit();
+}
+
+__thread w_base_t::uint8_t logrec_accounting_impl_t::bytes_written_fwd [t_max_logrec];
+__thread w_base_t::uint8_t logrec_accounting_impl_t::bytes_written_bwd [t_max_logrec];
+__thread w_base_t::uint8_t logrec_accounting_impl_t::bytes_written_bwd_cxt [t_max_logrec];
+__thread w_base_t::uint8_t logrec_accounting_impl_t::insertions_fwd [t_max_logrec];
+__thread w_base_t::uint8_t logrec_accounting_impl_t::insertions_bwd [t_max_logrec];
+__thread w_base_t::uint8_t logrec_accounting_impl_t::insertions_bwd_cxt [t_max_logrec];
+__thread double            logrec_accounting_impl_t::ratio_bf       [t_max_logrec];
+__thread double            logrec_accounting_impl_t::ratio_bf_cxt   [t_max_logrec];
+
+#endif

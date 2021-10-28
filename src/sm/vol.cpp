@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: vol.cpp,v 1.249 2010/06/15 17:30:07 nhall Exp $
+ $Id: vol.cpp,v 1.265 2011/09/08 18:10:56 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -80,12 +80,6 @@ template class w_auto_delete_array_t<extlink_t>;
 template class w_auto_delete_array_t<stnode_t>;
 template class w_auto_delete_array_t<ext_log_info_t>;
 #endif
-
-
-// For debugging: tracking down oddities
-extern "C" void volstophere()
-{
-}
 
 /*********************************************************************
  *
@@ -150,18 +144,19 @@ extlink_t::get_page_bucket(int pgindex) const
 * one operation would be better. 
 */
 
-inline void
+inline w_rc_t
 extlink_p::set_byte(slotid_t idx, 
         u_char bits, enum page_p::logical_operation op)
 {
     // idx is the index of the extlink_t in this page
     // Since the offset of pmap is 0, this is ok
 
-    W_COERCE(page_p::set_byte(idx * sizeof(extlink_t), bits, op));
+    W_DO(page_p::set_byte(idx * sizeof(extlink_t), bits, op));
+    return RCOK;
 }
 
 
-inline void
+inline w_rc_t
 extlink_p::set_bytes(slotid_t idx, 
     smsize_t    offset,
     smsize_t count,
@@ -172,10 +167,15 @@ extlink_p::set_bytes(slotid_t idx,
     // idx is the index of the extlink_t in this page
     // Since the offset of bits is "offset", this is ok
 
+    AUTO_ROLLBACK_work
     for (smsize_t i = 0; i < count; i++) {
-        W_COERCE(page_p::set_byte(idx * sizeof(extlink_t) + offset + i,
+        W_DO(page_p::set_byte(idx * sizeof(extlink_t) + offset + i,
                       bits[i], op));
     }
+    work.ok();
+    DBGTHRD(<<"extlink_p::set_bytes " << idx << " offset " << offset
+            << " count " << count << " op " << op);
+    return RCOK;
 }
 
 
@@ -282,11 +282,12 @@ Volume layout:
       update then the pages must be latched in ascending order to prevent
       deadlock.
    2) check if extent is still valid
-   3) acquire an IX lock on the extent (this will never block, since IX mode 
-      is the only mode ever held long-term (EX locks are acquired when an
-      extent is being released to prevent others from reusing it until all
-      the extlink_t pointers are updated or all the extents of a store are
-      freed)
+   3) acquire an IX lock on the extent (this will never block, it's always
+      requested with duration t_long and WAIT_IMMEDIATE).
+      (EX locks are acquired when an extent is being released to 
+      prevent others from reusing it until all the extlink_t pointers 
+      are updated or all the extents of a store are
+      freed -- they are also t_long, WAIT_IMMEDIATE)
    4) read/write the page
    5) unlatch page
 
@@ -305,7 +306,7 @@ Volume layout:
  *  Called from set_pmap_bits and clr_pmap_bits, which
  *  log  alloc_pages_in_ext and free_pages_in_ext.
  */
-inline        void        
+inline  w_rc_t        
 extlink_i::update_pmap(extnum_t idx,
    const Pmap &pmap,
    page_p::logical_operation how)
@@ -315,14 +316,14 @@ extlink_i::update_pmap(extnum_t idx,
     slotid_t slot = (slotid_t) (idx % extlink_p::max);
     DBGTHRD(<<"update_pmap extent  " << idx << " pmap="  << pmap
         << " how= " << int(how));
-    _page.set_bytes(slot, 0, pmap.size(), pmap.bits, how);
+    return  _page.set_bytes(slot, 0, pmap.size(), pmap.bits, how);
 }
 
 /* Update the pbucketmap in the desired fashion 
  * This pbucketmap is a hint used by histograms.
  * It doesn't have to be kept accurate and so it is not logged
  */
-inline        void        
+inline  w_rc_t        
 extlink_i::update_pbucketmap(extnum_t idx,
    uint4_t        map,
    page_p::logical_operation how)
@@ -335,9 +336,9 @@ extlink_i::update_pbucketmap(extnum_t idx,
     DBGTHRD(<<"update_pbucketmap extent  " 
         << idx << " map="  << unsigned(map)
         << " how= " << int(how));
-    _page.set_bytes(slot,  
+    W_DO( _page.set_bytes(slot,  
         w_offsetof(extlink_t, pbucketmap), sizeof(map), 
-        (uint1_t *)&map,  how);
+        (uint1_t *)&map,  how));
     
     /* FRJ: changes to the page pmap are unlogged but still set the
        rec_lsn (through fix in EX mode), 
@@ -351,6 +352,7 @@ extlink_i::update_pbucketmap(extnum_t idx,
        accurate", right?)
      */
     _page.repair_rec_lsn(was_dirty, lsn_t::null);
+    return RCOK;
 }
 
 /*********************************************************************
@@ -387,7 +389,8 @@ extlink_i::on_same_page(extnum_t ext1, extnum_t ext2)  const
 /*********************************************************************
  *
  *  extlink_i::get(idx, const extlink *&res)
- *  extlink_i::get_copy(idx, extlink &res)
+ *  extlink_i::get_copy_SH(idx, extlink &res)
+ *  extlink_i::get_copy_EX(idx, extlink &res)
  *
  *  Return the extent link at index "idx".
  *
@@ -401,12 +404,19 @@ extlink_i::on_same_page(extnum_t ext1, extnum_t ext2)  const
    modify extents that they get. */
 
 rc_t  
-extlink_i::get(extnum_t idx, extlink_t* &res)
+extlink_i::get_nonconst(extnum_t idx, extlink_t* &res)
 {
-    const extlink_t *hack = res;
-    w_rc_t        e = get(idx, hack);
-    res = (extlink_t *) hack;
-    return e;
+    lpid_t pid = get_pid(idx);
+
+    // non-const -- latch in EX mode right off the bat
+    W_DO( _page.fix(pid, LATCH_EX) ); 
+
+    slotid_t slot = (slotid_t)(idx%(extlink_p::max));
+    res = &_page.get_nonconst(slot);
+
+    // DBGTHRD(<<" get() returns " << *res  );
+    w_assert9(res->next != idx); // no loops
+    return RCOK;
 }
 
 // helper function for extlink_i::get 
@@ -419,7 +429,7 @@ extlink_i::get_pid(extnum_t idx) const {
 }
 
 rc_t
-extlink_i::get(extnum_t idx, const extlink_t* &res)
+extlink_i::get_const(extnum_t idx, const extlink_t* &res)
 {
     lpid_t pid = get_pid(idx);
 
@@ -427,22 +437,39 @@ extlink_i::get(extnum_t idx, const extlink_t* &res)
 
     // Forcing extlink_i::get to acquire a LATCH_EX (used to be LATCH_SH)
     // is a workaround for BUG_LATCH_RACE
-    // W_COERCE( _page.fix(pid, LATCH_SH) );
-    W_COERCE( _page.fix(pid, LATCH_EX) ); // BUG_LATCH_RACE workaround
+    // This was put into place by the DIAS guys; presumably by grabbing
+    // the EX latch (the first time?) we avoid upgrades later.
+    // This clearly depends on the context.
+    // This is a performance problem, clearly.
+    // Restore the LATCH_SH in the read-only case and see if we
+    // can track down the cases in which we would be upgrading.
+    W_DO( _page.fix(pid, LATCH_SH) );
+    // W_DO( _page.fix(pid, LATCH_EX) ); // BUG_LATCH_RACE workaround (gnats 40)
 
     slotid_t slot = (slotid_t)(idx%(extlink_p::max));
-    res = &_page.get(slot);
+    res = &_page.get_const(slot);
 
     // DBGTHRD(<<" get() returns " << *res  );
     w_assert9(res->next != idx); // no loops
     return RCOK;
 }
 
+
 rc_t
-extlink_i::get_copy(extnum_t idx, extlink_t &res)
+extlink_i::get_copy_SH(extnum_t idx, extlink_t &res)
 {
     const extlink_t *x;
-    W_DO(get(idx, x));
+    W_DO(get_const(idx, x));
+    res = *x;
+    w_assert9(res.next != idx); // no loops
+    return RCOK;
+}
+
+rc_t
+extlink_i::get_copy_EX(extnum_t idx, extlink_t &res)
+{
+    extlink_t *x;
+    W_DO(get_nonconst(idx, x));
     res = *x;
     w_assert9(res.next != idx); // no loops
     return RCOK;
@@ -465,7 +492,7 @@ extlink_i::fix_EX(extnum_t idx)
 
     DBGTHRD(<<"extlink_i::fix_EX(" << idx << ")" );
 
-    W_COERCE( _page.fix(pid, LATCH_EX) );
+    W_DO( _page.fix(pid, LATCH_EX) );
 
     return RCOK;
 }
@@ -497,7 +524,7 @@ extlink_i::put(extnum_t idx, const extlink_t& e)
     DBGTHRD(<<"extlink_i::put( extnum " << idx <<  " ) e =" << e );
     w_assert9(e.next != idx);
 
-    W_COERCE( _page.fix(pid, LATCH_EX) );
+    W_DO( _page.fix(pid, LATCH_EX) );
 
     slotid_t slot = (slotid_t)(idx % (extlink_p::max));
     DBGTHRD(<<"extlink_i::put in page " <<pid << " slot " << slot );
@@ -522,6 +549,7 @@ extlink_i::put(extnum_t idx, const extlink_t& e)
 rc_t
 extlink_i::set_pmap_bits(snum_t snum, extnum_t idx, const Pmap& pmap)
 {
+    FUNC(set_pmap_bits);
     DBGTHRD(<<"set_pmap_bits for extent " << idx 
         << " bits= " << pmap);
     w_assert9(idx);
@@ -532,7 +560,7 @@ extlink_i::set_pmap_bits(snum_t snum, extnum_t idx, const Pmap& pmap)
 
     lpid_t pid = _root;
     pid.page = poff;
-    W_COERCE( _page.fix(pid, LATCH_EX) );
+    W_DO( _page.fix(pid, LATCH_EX) );
     w_assert3( _page.latch_mode() == LATCH_EX );
 
     w_assert9(!pmap.is_empty());  // should alloc at least one page
@@ -540,12 +568,12 @@ extlink_i::set_pmap_bits(snum_t snum, extnum_t idx, const Pmap& pmap)
     // extlink_p::set_byte
     // idx tells what extent# -- convert that to an extlink_t
     // index relative to the page:
-    //
-    // CHECK HERE: better not be or-ing in a bit that's already
 
-    update_pmap(idx, pmap, page_p::l_or); // not logged
+    W_DO( update_pmap(idx, pmap, page_p::l_or)); // not logged
+    AUTO_ROLLBACK_work
+    DBGTHRD(<<"log allocation " );
     W_DO( log_alloc_pages_in_ext(_page, snum, idx, pmap) );
-
+    work.ok();
     return RCOK;
 }
 
@@ -578,6 +606,7 @@ extlink_i::clr_pmap_bit(snum_t snum, extnum_t idx, int bit)
 rc_t 
 extlink_i::clr_pmap_bits(snum_t snum, extnum_t idx, const Pmap& pmap)
 {
+    FUNC(clr_pmap_bits);
     DBGTHRD(<<"clr_pmap_bits for extent " << idx << " bits= " << pmap);
     w_assert9(idx);
     uint4_t poff = _root.page + idx / extlink_p::max;
@@ -588,13 +617,18 @@ extlink_i::clr_pmap_bits(snum_t snum, extnum_t idx, const Pmap& pmap)
     lpid_t pid = _root;
     pid.page = poff;
 
-    W_COERCE( _page.fix(pid, LATCH_EX) );
+    W_DO( _page.fix(pid, LATCH_EX) );
     w_assert9( _page.latch_mode() == LATCH_EX );
 
     w_assert9(!pmap.is_empty());        // should free at least one page
 
-    update_pmap(idx, pmap, page_p::l_not); // not logged
+    AUTO_ROLLBACK_work
+    DBGTHRD(<<"clr_pmap_bits idx " << idx   << "about to update_pmap");
+    W_DO( update_pmap(idx, pmap, page_p::l_not)); // not logged
+    DBGTHRD(<<"clr_pmap_bits idx " << idx  << " updated pmap");
     W_DO( log_free_pages_in_ext(_page, snum, idx, pmap) );
+    DBGTHRD(<<"clr_pmap_bits idx " << idx  << " logged ok");
+    work.ok();
 
     return RCOK;
 }
@@ -616,7 +650,7 @@ extlink_i::set_next(extnum_t ext, extnum_t new_next, bool log_it)
 
     {
         xct_log_switch_t toggle(smlevel_0::OFF);
-        W_DO( get_copy(ext, link) );
+        W_DO( get_copy_EX(ext, link) );
         link.next = new_next;
         W_DO( put(ext, link) );
     }
@@ -686,12 +720,38 @@ stnode_i::put(snum_t idx, const stnode_t& stnode)
  *
  *  stnode_i::store_operation(param)
  *
- *  Perform the store operation described by param.
+ *  Fix the storenode page and perform the store operation 
+ *     AND 
+ *  log it.
+ *
+ *  param type is in sm_io.h.
+ *
+ *  It contains:
+    typedef smlevel_0::store_operation_t        store_operation_t;
+    in sm_base.h
+    Operations:
+        t_delete_store, <---- when really deleted after space freed
+        t_create_store,  <--- store is allocated (snum_t is in use)
+        t_set_deleting,  <---- when transaction deletes store (t_deleting_store)
+                         <---- end of xct (t_store_freeing_exts)
+        t_set_store_flags, 
+        t_set_first_ext <--- first ext is allocated for store
+
+    typedef smlevel_0::store_flag_t             store_flag_t;
+        in sm_base.h:
+        logging attribute: regular, tmp, load, insert
+
+    typedef smlevel_0::store_deleting_t         store_deleting_t;
+            t_not_deleting_store = 0,  // must be 0: code assumes it
+            t_deleting_store, 
+            t_store_freeing_exts, 
+            t_unknown_deleting // for error handling
  *
  *********************************************************************/
 w_rc_t
 stnode_i::store_operation(const store_operation_param& param)
 {
+    FUNC(store_operation);
     w_assert9(param.snum());
     lpid_t pid = _root;
     pid.page += param.snum() / (stnode_p::max);
@@ -704,9 +764,9 @@ stnode_i::store_operation(const store_operation_param& param)
         case t_delete_store:
             {
                 stnode.head        = 0;
-                stnode.eff        = 0;
-                stnode.flags        = st_bad;
-                stnode.deleting        = t_not_deleting_store;
+                stnode.eff         = 0;
+                stnode.flags       = st_bad;
+                stnode.deleting    = t_not_deleting_store;
             }
             break;
         case t_create_store:
@@ -714,20 +774,26 @@ stnode_i::store_operation(const store_operation_param& param)
                 w_assert1(stnode.head == 0);
 
                 stnode.head        = 0;
-                stnode.eff        = param.eff();
-                stnode.flags        = param.new_store_flags();
-                stnode.deleting        = t_not_deleting_store;
+                stnode.eff         = param.eff();
+                stnode.flags       = param.new_store_flags();
+                stnode.deleting    = t_not_deleting_store;
             }
             break;
         case t_set_deleting:
             {
-                w_assert9(stnode.deleting != param.new_deleting_value());
-                w_assert9(param.old_deleting_value() == t_unknown_deleting
-                                || stnode.deleting == param.old_deleting_value());
+                // bogus assertion:
+                // If we crash/restart between the time the
+                // xct gets into xct_freeing_space and
+                // the time xct_end is logged, the
+                // this store operation might already have been done, 
+                // w_assert3(stnode.deleting != param.new_deleting_value());
+                w_assert3(param.old_deleting_value() == t_unknown_deleting
+                        || stnode.deleting == param.old_deleting_value());
 
-                new_param.set_old_deleting_value((store_operation_param::store_deleting_t)stnode.deleting);
+                new_param.set_old_deleting_value(
+                    (store_operation_param::store_deleting_t)stnode.deleting);
 
-                stnode.deleting        = param.new_deleting_value();
+                stnode.deleting    = param.new_deleting_value();
             }
             break;
         case t_set_store_flags:
@@ -825,19 +891,31 @@ vol_t::ext_cache_t::erase_all(snum_t snum)
         }
         for(unsigned int j=0; j < _tmp.size(); j++)
         {
-            INC_TSTAT(vol_resv_cache_erase);
             erase(snum, _tmp[j]);
         }
         // racey: w_assert1(_counts[snum] == 0);
     }
 }
 
+
+inline void                     
+vol_t::_page_cache_update(snum_t snum, extnum_t e) const 
+{
+    INC_TSTAT(vol_last_page_cache_update);
+    w_assert1(e != 0);
+    _last_page_cache[snum]=e;
+}
+
 // Prime the cache for the given store.
-// Exhaustive search of store's stnodes.
+// Exhaustive search of store's stnode & ext maps.
 w_rc_t
 vol_t::prime_cache(snum_t snum)
 {   
+    FUNC(prime_cache);
     INC_TSTAT(vol_cache_primes);
+
+    int i=0; // count extnode page fixes
+
     extnum_t ext;
     stnode_t stnode;
     {
@@ -847,50 +925,50 @@ vol_t::prime_cache(snum_t snum)
     ext = stnode.head;
 
     //
-    // for each extent found in the store, insert into cache:
-    // ext_cache:  insert ext is member of snum. Since this cache
+    // for each extent found in the store, insert into reserved-page
+    //  Since this cache
     // is most likely to be used when we're looking at allocating,
     // we'll insert only if there are some free pages in the extent.
     //
     const int eff=100; /* that's all we support at the moment*/
-    int i=0;
     while(  ext ) 
     {
         w_assert1(_is_valid_ext(ext));
 
         extlink_i ei(_epid);
         const extlink_t* link;
-        W_DO(ei.get(ext, link)); 
+        W_DO(ei.get_const(ext, link)); 
+        i++;
         w_assert1(link->owner);
 
         // How many free pages are in this extent?
         int nfree = link->num_clr() * eff/100;
         if(nfree > 0) {
-            // histo_ext_cache is used by histograms
-            if(++i < EXT_CACHE_SIZE) histo_ext_cache_update(ext, snum);
              
             //This cache is used for finding reserved pages.
             //We could try stuff in the extents with the most 
             //free pages first, but I think for now we'll just 
             //go in physical order.  When we rewrite the
             //allocation, we'll deal with this.
-            _free_ext_cache.insert(snum, ext);
+            _resvd_page_cache.insert(snum, ext);
         }
 
         extnum_t next = link->next;
         if(next) {
-            W_DO(ei.get((ext = next), link));
+            i++;
+            W_DO(ei.get_const((ext = next), link));
         } else {
             // last extent in the store
-            page_cache_update(snum, ext);
+            _page_cache_update(snum, ext);
             ext=0;
         }
     }
+    ADD_TSTAT(vol_cache_prime_fix, i);
 
     if(0) 
     {
         int s1, s2, m1, m2;
-        _free_ext_cache.get_sizes(s1, m1, s2, m2 );
+        _resvd_page_cache.get_sizes(s1, m1, s2, m2 );
 
         // casts make it work for LP32
         fprintf(stderr, 
@@ -904,11 +982,8 @@ vol_t::prime_cache(snum_t snum)
         fprintf(stderr, 
                 "\tcount_map max size is  %d, curr size is %d\n", 
                 m2, s2);
-        fprintf(stderr, 
-                "\thisto_ext_cache max size is  %d, curr size is %llu\n", 
-                EXT_CACHE_SIZE, 
-                (unsigned long long)_histo_ext_cache.size());
     }
+    DBGTHRD(<<"prime_cache done snum " << snum);
     return RCOK;
 }
 
@@ -933,7 +1008,7 @@ vol_t::num_free_exts(extnum_t& nfree)
     nfree = 0;
     for (uint i = _hdr_exts; i < _num_exts; i++)  {
         const extlink_t* ep;
-        W_DO(ei.get(i, ep));
+        W_DO(ei.get_const(i, ep));
         if (ep->owner == 0)  {
             ++nfree;
         }
@@ -962,7 +1037,7 @@ vol_t::num_used_exts(extnum_t& nused)
     extnum_t _nused = _hdr_exts;
     for (uint i = _hdr_exts; i < _num_exts; i++)  {
         const extlink_t* ep;
-        W_DO(ei.get(i, ep));
+        W_DO(ei.get_const(i, ep));
         if (ep->owner != 0)  {
             ++_nused;
         }
@@ -985,7 +1060,7 @@ rc_t
 vol_t::sync()
 {
     smthread_t* t = me();
-    W_COERCE_MSG(t->fsync(_unix_fd), << "volume id=" << vid());
+    W_DO_MSG(t->fsync(_unix_fd), << "volume id=" << vid());
     return RCOK;
 }
 
@@ -1067,7 +1142,7 @@ vol_t::mount(const char* devname, vid_t vid)
     {
         rc_t rc = read_vhdr(_devname, vhdr);
         if (rc.is_error())  {
-            W_COERCE_MSG(me()->close(_unix_fd), << "volume id=" << vid);
+            W_DO_MSG(me()->close(_unix_fd), << "volume id=" << vid);
             _unix_fd = -1;
             return RC_AUGMENT(rc);
         }
@@ -1081,7 +1156,6 @@ vol_t::mount(const char* devname, vid_t vid)
      *  Save info on the device
      */
     _vid = vid;
-    _histo_ext_cache.clear();
     
 #if W_DEBUG_LEVEL > 4
     w_ostrstream_buf sbuf(64);                /* XXX magic number */
@@ -1096,10 +1170,13 @@ vol_t::mount(const char* devname, vid_t vid)
     _hdr_exts = vhdr.hdr_exts(); // 0 if no volumes formatted yet
     _hdr_pages = vhdr.hdr_pages(); // 0 if no volumes formatted yet
 
+    // NOTE: this is wrong if any stores already
+    // exist on the volume, but it will be adjusted with the first
+    // operation to allocate or free an extent.
     _min_free_ext_num = _hdr_exts;
-    DBG(<<"_min_free_ext_num=" << _min_free_ext_num);
+    DBG(<<"new _min_free_ext_num=" << _min_free_ext_num);
 
-    W_COERCE( bf->enable_background_flushing(_vid));
+    W_DO( bf->enable_background_flushing(_vid));
 
     return RCOK;
 }
@@ -1116,20 +1193,21 @@ vol_t::mount(const char* devname, vid_t vid)
 rc_t
 vol_t::dismount(bool flush)
 {
+    DBG(<<" vol_t::dismount flush=" << flush);
 
     store_latches.destroy_latches(_vid);
 
     INC_TSTAT(vol_cache_clears);
-    _free_ext_cache.shutdown(); 
+    _resvd_page_cache.shutdown(); 
 
     /*
      *  Flush or force all pages of the volume cached in bf.
      */
     w_assert1(_unix_fd >= 0);
-    W_COERCE_MSG( flush ? 
-            bf->force_volume(_vid, true) : 
+    W_DO_MSG( flush ? 
+            bf->force_volume(_vid, true /* and invalidate */) : 
             bf->discard_volume(_vid), << "volume id=" << vid() );
-    W_COERCE_MSG( bf->disable_background_flushing(_vid), << "volume id=" << vid());
+    W_DO_MSG( bf->disable_background_flushing(_vid), << "volume id=" << vid());
 
     /*
      *  Close the device
@@ -1162,21 +1240,29 @@ vol_t::check_disk()
     FUNC(vol_t::check_disk);
     volhdr_t vhdr;
     W_DO( read_vhdr(_devname, vhdr));
-    smlevel_0::errlog->clog << debug_prio << "vol_t::check_disk()\n";
-    smlevel_0::errlog->clog << debug_prio 
+    smlevel_0::errlog->clog << info_prio << "vol_t::check_disk()\n";
+    smlevel_0::errlog->clog << info_prio 
         << "\tvolid      : " << vhdr.lvid() << flushl;
-    smlevel_0::errlog->clog << debug_prio 
+    smlevel_0::errlog->clog << info_prio 
         << "\tnum_exts   : " << vhdr.num_exts() << flushl;
-    smlevel_0::errlog->clog << debug_prio 
+    smlevel_0::errlog->clog << info_prio 
         << "\text_size   : " << vhdr.ext_size() << flushl;
-    smlevel_0::errlog->clog << debug_prio 
-        << "\thdr_pages   : " << vhdr.hdr_pages() << flushl;
+    shpid_t ext_pages =    (vhdr.num_exts() - 1) / extlink_p::max + 1; 
+    shpid_t stnode_pages = (vhdr.num_exts() - 1) / stnode_p::max + 1; 
+    smlevel_0::errlog->clog << info_prio 
+        << "\thdr_pages   : " << vhdr.hdr_pages() 
+        << " (extents: " << ext_pages << ", stores: " << stnode_pages << ")"
+        << flushl;
+    smlevel_0::errlog->clog << info_prio 
+        << "\thdr_exts   : " << vhdr.hdr_exts() << flushl;
+    smlevel_0::errlog->clog << info_prio 
+        << "\texts/extlink_p   : " << extlink_p::max << flushl;
 
 //jk BOTH ST AND EXT
     stnode_i st(_spid);
     extlink_i ei(_epid);
     smlevel_0::errlog->clog << info_prio 
-        << "\tstore  <status>: extent-list" << "." << endl;
+        << "\tstore  #   flags   status: [ extent-list ]" << "." << endl;
     for (extnum_t i = 1; i < _num_exts; i++)  {
         stnode_t stnode;
         W_DO(st.get(i, stnode));
@@ -1193,8 +1279,10 @@ vol_t::check_disk()
             }
             const extlink_t *link_p;
             for (snum_t j = stnode.head; j; ){
-                smlevel_0::errlog->clog << info_prio << delim << j;
-                W_DO(ei.get(j, link_p));
+                shpid_t p1 = j / extlink_p::max;
+                smlevel_0::errlog->clog << info_prio << delim << j 
+                    << "(" << p1 << ")";
+                W_DO(ei.get_const(j, link_p));
                 j = link_p->next;
                 delim=", ";
             }
@@ -1218,6 +1306,7 @@ vol_t::check_disk()
 rc_t
 vol_t::first_ext(snum_t snum, extnum_t &result)
 {
+    FUNC(first_ext);
     stnode_t stnode;
     {
         stnode_i st(_spid);
@@ -1230,7 +1319,7 @@ vol_t::first_ext(snum_t snum, extnum_t &result)
     if(result) {
         extlink_i ei(_epid);
         extlink_t link;
-        W_COERCE(ei.get_copy(result, link));
+        W_COERCE(ei.get_copy_SH(result, link));
         w_assert9(link.prev == 0);
         w_assert9(link.owner == snum);
 
@@ -1343,7 +1432,7 @@ vol_t::alloc_pages_in_ext(
     extlink_t bits_allocated; // for compressing multiple
                             // bit_set operations into one.
 
-    W_DO(ei.get_copy(ext, link)); // FIXes ext link, EX latch
+    W_DO(ei.get_copy_EX(ext, link)); // FIXes ext link, EX latch
     w_assert1(is_alloc_ext_of(ext,snum));
     w_assert1(link.owner == snum);
 #if W_DEBUG_LEVEL > 0
@@ -1403,7 +1492,7 @@ vol_t::alloc_pages_in_ext(
                 /* 
                  * ASSUMPTIONS:
                  * 1) pages do not leave stores until commit.
-                 * 2) whoever deallocated this page has an EX lock on it
+                 * 2) whoever deallocates this page has an EX lock on it
                  * 3) Calling resource managers are either:
                  *    -like file_m:  do physical undo of pages, and therefore
                  *       cannot cope with reusing (and therefore
@@ -1429,9 +1518,9 @@ vol_t::alloc_pages_in_ext(
                     // accept this page
                     m = NL;
                 } else {
-                    // file case: physically logs page changes,
-                    // and cannot re-allocate a page that this
-                    // tx deallocated, even though we have an EX lock on it.
+                    // file case: 
+                    // cannot re-allocate a page that this
+                    // tx deallocated, even if we have an EX lock on it.
                     //
                     // Skip this page if ANY tx has a lock on it, including
                     // me.
@@ -1473,6 +1562,7 @@ vol_t::alloc_pages_in_ext(
                     w_assert1(m == NL);
                 }
 
+                DBGTHRD(<< "check filter accept");
                 if(! filter->accept(pids[i])) { 
                     w_assert1(filter->accepted()==false);
                     filter->check();
@@ -1481,6 +1571,7 @@ vol_t::alloc_pages_in_ext(
                 }
                 w_assert1(filter->accepted()==true);
                 filter->check();
+                DBGTHRD(<< "filter accepted " << pids[i]);
 
             } while (m != NL);
 
@@ -1580,7 +1671,8 @@ vol_t::recover_pages_in_ext(snum_t snum, extnum_t ext, const Pmap& pmap, bool is
     extid_t        extid;
     extid.vol = _vid;
     extid.ext = ext;
-    lockid_t*        name = 0;
+
+    lockid_t*      name = 0;
 
     // NOTE: If we are in redo, this lock acquire does nothing.
     W_DO( lm->lock(extid, IX, t_long, WAIT_IMMEDIATE, 0, 0, &name) );
@@ -1589,18 +1681,26 @@ vol_t::recover_pages_in_ext(snum_t snum, extnum_t ext, const Pmap& pmap, bool is
         << " map=" << pmap 
         << " is_alloc=" << is_alloc);
 
+    // W_COERCE can be used here b/c we're in big trouble if we
+    // can't do these things, seeing how we are in redo or undo,
+    // and the log is supposed to ensure that we have room.
+    // We can't do a partial rollback if this fails.
+    // In any case, the caller uses W_COERCE.
     if (is_alloc)  {
-        W_COERCE( ei.set_pmap_bits(snum, ext, pmap) );
+        DBGTHRD(<<"recover_pages_in_ext " << ext);
+        W_DO( ei.set_pmap_bits(snum, ext, pmap) );
         if (name)
             name->set_ext_has_page_alloc(true);
     
     } else {
-        W_COERCE(ei.clr_pmap_bits(snum, ext, pmap) );
+        DBGTHRD(<<"recover_pages_in_ext " << ext);
+        W_DO(ei.clr_pmap_bits(snum, ext, pmap) );
         extlink_t link;
-        W_COERCE( ei.get_copy(ext, link) );
+        W_COERCE( ei.get_copy_SH(ext, link) );
         if (name && link.num_set() == 0)
             name->set_ext_has_page_alloc(false);
     }
+    DBGTHRD(<<"recover_pages_in_ext " << ext << "OK");
 
     return RCOK;
 }
@@ -1641,8 +1741,9 @@ vol_t::free_stores_during_recovery(store_deleting_t typeToRecover)
 
     stnode_i        si(_spid);
     stnode_t        stnode;
-    int                i = 0;
-    stid_t        stid;
+    int             i = 0;
+    stid_t          stid;
+
     stid.vol = _vid;
 
     while (is_valid_store(++i))  {
@@ -1696,8 +1797,9 @@ vol_t::free_exts_during_recovery()
  *
  *********************************************************************/
 rc_t
-vol_t::free_page(const lpid_t& pid, bool check_membership)
+vol_t::free_page(const lpid_t& pid)
 {
+    FUNC(free_page);
     extnum_t ext = pid2ext(pid);
     int offset = int(pid.page % ext_sz);
 
@@ -1710,20 +1812,6 @@ vol_t::free_page(const lpid_t& pid, bool check_membership)
     // get this lock, in that case we should just return and not free the page
     W_DO(vol_io_shared::io_lock_force(pid, EX, t_long, WAIT_IMMEDIATE));
 
-    if(check_membership) {
-        // check the extent link for this page: is the bit
-        // for this page set?  Is it still in this store?
-        // It should not have moved to another store because
-        // we have an IX lock on the page and an EX lock is required
-        // to free the page, as we can see above.
-        snum_t s = pid.store();
-        w_assert1(s);
-        if ( ! _is_valid_page_of(pid, s) ) {
-            DBGTHRD(<<"trying to free unallocated page " << pid);
-            w_assert1(0); // track these things down
-            return RC(eBADPID);
-        }
-    }
 
     extid_t        extid;
     extid.vol = pid._stid.vol;
@@ -1734,10 +1822,10 @@ vol_t::free_page(const lpid_t& pid, bool check_membership)
 
     extlink_i ei(_epid);
     extlink_t link;
-    W_DO(ei.get_copy(ext, link));
-    w_assert1(link.owner == pid.store());
+    W_DO(ei.get_copy_EX(ext, link));
     w_assert1(link.is_set(offset));
 
+    INC_TSTAT(vol_free_page);
     W_DO( ei.clr_pmap_bit(pid.store(), ext, offset) );
     if (link.num_set() == 1)  {
         // freeing the last page in an extent, mark it as so
@@ -1775,7 +1863,9 @@ vol_t::next_page(lpid_t& pid, bool* allocated)
 
     extlink_i ei(_epid);
     const extlink_t *linkp;
-    W_DO(ei.get(ext, linkp));
+
+    INC_TSTAT(vol_next_page);
+    W_DO(ei.get_const(ext, linkp));
 
     // had better be allocated, and to the right store
     w_assert1(linkp->owner == pid.store());
@@ -1789,7 +1879,7 @@ vol_t::next_page(lpid_t& pid, bool* allocated)
         if (++offset >= ext_sz)  {
             offset = 0;
             if (linkp->next) {
-                W_DO(ei.get(ext = linkp->next, linkp));
+                W_DO(ei.get_const(ext = linkp->next, linkp));
             } else {
                 pid = lpid_t::null;
                 return RC(eEOF);
@@ -1818,27 +1908,41 @@ vol_t::next_page(lpid_t& pid, bool* allocated)
  *  Find next page with adequate space - i.e., its bucket is
  *  >= "needed".   Search for exact fit; if not found in first
  *  extent page, but first fit was found, returns first fit.
+ *
+ *  NB: Use of this is racy.  Page might no longer
+ *  be a fit by the time we return it all the way up the chain to
+ *  the file level.  Granted, we now grab an EX latch on the extent
+ *  page while we search here, but there is still ample opportunity
+ *  between the time we return (unlatch) and the time we try to use
+ *  the page to find that it's no longer what we thought it was.
+ *
  */
 
 rc_t
 vol_t::next_page_with_space(lpid_t& pid, space_bucket_t needed)
 {
     FUNC(vol_t::next_page_with_space);
+    INC_TSTAT(vol_next_page_with_space);
     extnum_t ext = pid2ext(pid);
     int offset = int(pid.page % ext_sz);
 
     extlink_i ei(_epid);
     const extlink_t *linkp;
-    W_DO(ei.get(ext, linkp));
+    W_DO(ei.get_const(ext, linkp));
 
-    // had better be allocated, and to the right store
+    // extent had better be allocated to the right store
     w_assert1(linkp->owner == pid.store());
-    w_assert1(linkp->is_set(offset));
+    // This assert is not right: it's possible that
+    // when we last checked, the page was allocated and
+    // hadn't enough space, but by the time we get here,
+    // we have unfixed the page, and another tx could
+    // have deallocated that page.
+    // w_assert1(linkp->is_set(offset));
 
     DBG(<< "Find next page after " << pid << "; need bucket " 
             << int(needed));
     /*
-     *  Loop skips over allocated pages in extent
+     *  Loop skips over unallocated pages in extent
      */
     lpid_t first_fit = lpid_t::null;
     space_bucket_t b;
@@ -1854,7 +1958,7 @@ vol_t::next_page_with_space(lpid_t& pid, space_bucket_t needed)
             if (nxt) {
                 DBG(<<"first_fit=" << first_fit);
                 if( extlink_p::on_same_page(ext, nxt) || !first_fit.page) {
-                    W_DO(ei.get(ext = linkp->next, linkp));
+                    W_DO(ei.get_const(ext = linkp->next, linkp));
                 } else {
                     // Not on same page and have a first fit
                     pid = first_fit;
@@ -1937,6 +2041,28 @@ vol_t::next_page_with_space(lpid_t& pid, space_bucket_t needed)
  *  of extents found and their ids are returned in "found" and "exts"
  *  respectively.
  *
+ *  NOTE: this has to latch the extent-map pages and unlatch them
+ *  when it returns. It is not optimized for the
+ *  1-extent case.
+ *  There are two reasons we don't hold onto this extent latch
+ *  long enough to do the allocation:
+ *  1) in the case of allocating more than one extent (used only by
+ *  large-object code), we would need to return a set of extlink_i
+ *  2) even in the allocate-1 case, we have an issue with ordering
+ *  of latches to avoid deadlock; as it is, we unlatch the
+ *  extent link page for the free ext found by this method (IX-locked, long
+ *  in here), and 
+ *  THEN find the last extent in the store (where we link this ext in),
+ *  THEN do the allocation via
+ *  vol_t::alloc_exts; q.v. (comments there) which latches one page
+ *  at a time. We hold the IX lock on the extent, so in theory
+ *  some other xct could also grab an IX lock on it, but
+ *  no other thread can be in this method due to the
+ *  I/O monitor lock. So... the extent cannot
+ *  be deallocated or otherwise grabbed in the midst of all this.
+ *
+ *  TODO: we should optimize this for the allocate-1-extent case.
+ *
  *********************************************************************/
 rc_t
 vol_t::find_free_exts(
@@ -1949,8 +2075,10 @@ vol_t::find_free_exts(
     extlink_i ei(_epid);
     extid_t extid;
     extid.vol = _vid;
-    DBGTHRD(<<"find_free_exts(cnt="<<cnt<<", first_ext="<<first_ext<<")");
 
+    ADD_TSTAT(vol_find_free_exts, cnt);
+
+    DBGTHRD(<<"find_free_exts (cnt="<<cnt<<", first_ext="<<first_ext<<")");
     /*
      *  i: # extents 
      *  j: extent offset starting from first_ext.
@@ -1976,8 +2104,8 @@ vol_t::find_free_exts(
     bool alloced_min_free_ext = false;
     bool passed_zero = false;
     uint ext = first_ext;
-    DBGTHRD(<<"_min_free_ext_num=" << _min_free_ext_num
-        << " starting loop with extent " << ext);
+    DBGTHRD(<< " starting loop with extent " << ext
+        << " seeking " << cnt << " extents" );
     uint i;
     for (i = 0; i < cnt; ++i) {
         /*
@@ -2002,13 +2130,15 @@ vol_t::find_free_exts(
 
         do  {
             extlink_t link;
-            W_DO( ei.get_copy(ext, link) ); 
-            DBG( << "    ext =" << ext << ", owner=" << link.owner
-                    << ", mytid=" << xct()->tid() );
-
+            W_DO( ei.get_copy_SH(ext, link) ); 
             if (ext == _min_free_ext_num)  {
                 alloced_min_free_ext = true;
             }
+
+            DBG( << "    ext =" << ext << ", owner=" << link.owner
+                    << ", mytid=" << xct()->tid() 
+                    << " alloced_min_free_ext=" << alloced_min_free_ext
+                    );
 
             if (link.owner == 0) {
                 extid.ext = ext;
@@ -2016,7 +2146,9 @@ vol_t::find_free_exts(
                 W_DO( lm->query(extid, m) );
                 if (m == NL)  {
                     // it's free and acceptable
-                    DBG( << "found " << ext );
+                    // No race here due to page latch.
+                    // see comments above
+                    DBG( << "---------------> found " << ext );
                     break;
                 }
             }
@@ -2048,7 +2180,7 @@ vol_t::find_free_exts(
             // verify still not owned after getting the lock.
             // this should always succeed.
             const extlink_t *lp;
-            W_DO(ei.get(ext, lp));
+            W_DO(ei.get_const(ext, lp));
             w_assert1( ! lp->owner);
         }
 
@@ -2057,17 +2189,18 @@ vol_t::find_free_exts(
     found = i;
 
     if (alloced_min_free_ext)  {
+        DBGTHRD(<<"Allocated _min_free_ext" );
         extnum_t new_min_free_ext_num = exts[i - 1] + 1;
         if (new_min_free_ext_num < _num_exts)  {
             _min_free_ext_num = new_min_free_ext_num;
-            DBG(<<"_min_free_ext_num=" << _min_free_ext_num);
         }  else  {
             _min_free_ext_num = _hdr_exts;
-            DBG(<<"_min_free_ext_num=" << _min_free_ext_num);
         }
+        DBGTHRD(<<"new _min_free_ext_num=" << _min_free_ext_num);
     }
 
     w_assert9(_is_valid_ext(_min_free_ext_num));
+    DBGTHRD(<<"find_free_exts done");
             
     return RCOK;
 }
@@ -2084,7 +2217,7 @@ vol_t::find_free_exts(
  *  and hook them  up to "prev". 
  *
  *  prev must be the last extent in the store.  new extents are
- *  not allowed to inserted into the middle of the extent list.
+ *  not allowed to be inserted into the middle of the extent list.
  *
  *  first the list of extents are linked together logging all the
  *  extents which fit on an extlink_p as one log record.  this is
@@ -2102,7 +2235,8 @@ vol_t::alloc_exts(
     int                    cnt, 
     const extnum_t         exts[])
 {
-    FUNC(vol_t::alloc_exts);
+    FUNC(alloc_exts);
+
 
     W_DO( _append_ext_list(snum, prev, cnt, exts) );
 
@@ -2122,6 +2256,7 @@ vol_t::alloc_exts(
 #endif
     ADD_TSTAT(vol_alloc_exts, cnt);
 
+    DBGTHRD(<<"alloc_exts done");
     return RCOK;
 }
 
@@ -2135,6 +2270,7 @@ vol_t::alloc_exts(
 rc_t 
 vol_t::update_ext_histo(const lpid_t& pid, space_bucket_t bucket)
 {
+    FUNC(update_ext_histo);
     xct_log_switch_t toggle(smlevel_0::OFF);
 
     extlink_i ei(_epid);
@@ -2148,10 +2284,11 @@ vol_t::update_ext_histo(const lpid_t& pid, space_bucket_t bucket)
 rc_t
 extlink_i::update_histo(extnum_t ext, int offset, space_bucket_t bucket)
 {
+    FUNC(update_histo);
     W_DO(fix_EX(ext));
 
     slotid_t slot = (slotid_t)(ext%(extlink_p::max));
-    const extlink_t* link = &_page.get(slot);
+    const extlink_t* link = &_page.get_nonconst(slot); // force EX latch
 
     w_assert1(link->owner);
 
@@ -2161,14 +2298,13 @@ extlink_i::update_histo(extnum_t ext, int offset, space_bucket_t bucket)
         space_bucket_t b = link->get_page_bucket(offset);
         if(b == bucket) {
             INC_TSTAT(fm_ext_touch_nop);
-            volstophere();
             return RCOK;
         }
     }
     // make a copy of the space map
     uint4_t map = link->pbucketmap;
 
-    // Set the right bucket bits :
+    // Set the correct bucket bits :
     {
         // bucket# must fit in mask bits!
         w_assert3((bucket & space_bucket_mask)==bucket);
@@ -2185,7 +2321,7 @@ extlink_i::update_histo(extnum_t ext, int offset, space_bucket_t bucket)
             << " newmap= " << unsigned(map) );
     }
     // update the bucket bits on the extent page
-    update_pbucketmap(ext, map, page_p::l_set);
+    W_DO(update_pbucketmap(ext, map, page_p::l_set));
     INC_TSTAT(fm_ext_touch);
 
 #if W_DEBUG_LEVEL > 4
@@ -2200,17 +2336,17 @@ extlink_i::update_histo(extnum_t ext, int offset, space_bucket_t bucket)
 
 /*********************************************************************
  *
- *  rc_t vol_t::next_ext(ext, ext& result)
+ *  rc_t vol_t::get_next_ext(ext, ext& result)
  *
  *  Given an extent, return the extent that is linked to it.
  *
  *********************************************************************/
-rc_t vol_t::next_ext(extnum_t ext, extnum_t &result)
+rc_t vol_t::get_next_ext(extnum_t ext, extnum_t &result)
 {
     extlink_i ei(_epid);
     w_assert1(_is_valid_ext(ext));
     const extlink_t* link;
-    W_DO(ei.get(ext, link)); 
+    W_DO(ei.get_const(ext, link)); 
     w_assert1(link->owner);
     result = link->next;
     return RCOK;
@@ -2249,7 +2385,7 @@ rc_t vol_t::dump_exts(ostream &o, extnum_t start, extnum_t end)
             o << "                      ";
         }  else  {
             const extlink_t* link;
-            W_DO( ei.get(i, link) );
+            W_DO( ei.get_const(i, link) );
             Pmap theMap;
             link->getmap(theMap);
             W_FORM2(o,("%5d<%5d %5d>", link->owner, link->prev, link->next));
@@ -2307,10 +2443,15 @@ rc_t vol_t::dump_stores(ostream &o, int start, int end)
  *
  *  Find an unused store and return it in "snum".
  *
+ *  Uses linear search from store 0. This is a Bad Thing but we don't
+ *  worry about it for now since the number of stores tends not to be
+ *  huge.
+ *
  *********************************************************************/
 rc_t
 vol_t::find_free_store(snum_t& snum)
 {
+    FUNC(find_free_store);
     snum = 0;
     stnode_i st(_spid);
 
@@ -2322,14 +2463,34 @@ vol_t::find_free_store(snum_t& snum)
      * volume is locked in EX by another xct it will block here
      * instead of trying all the stores, returning immediately
      * (since the volume is locked) and then returning OUTOFSPACE
+     *
+     * The EX-lock grabbed for destroying a store is done by
+     * the volume layer, which already has the mutex exclusively, 
+     * so this is ok.
      */
     W_DO( vol_io_shared::io_lock_force(
                 _vid, IX, t_long, WAIT_SPECIFIED_BY_XCT) );
 
-    for (uint i = 1; i < _num_exts; i++)  {
+    // pick up unprotected global value, legitimize it.
+    snum_t min_free_store = _min_free_store; 
+    if (min_free_store < 1) min_free_store = 1;
+    if (min_free_store > _num_exts) min_free_store = 1;
+
+    // Search from min_free_store to the end and then 
+    // from 1 to min_free_store-1.
+    // Adjust _min_free_store if we find a free slot.
+    // If we run out, verify that we have searched _num_exts-1 stores.
+    int i=min_free_store; // i is the snum of the stnode we're inspecting
+    int last = _num_exts-1; // we only have _num_exts-1 because 0 is not avail.
+    int searched=0; // searched is the # stnodes we have inspected.
+    while( searched < last ) {
+        searched++;
+
         const stnode_t *_stnode;
+        DBGTHRD(<<"stnode_i::get " << i);
         W_DO(st.get(i, _stnode));
-        const stnode_t        &stnode = *_stnode;
+        const stnode_t& stnode = *_stnode;
+
         if (stnode.head == 0) {
             stid.store = i;
             /* 
@@ -2340,13 +2501,23 @@ vol_t::find_free_store(snum_t& snum)
              * force is necessary -- see comments in io_lock_force.
              */
             w_rc_t rc = lm->lock_force(stid, EX, t_long, WAIT_IMMEDIATE);
-            if (rc.is_error())  {
-                continue;
+            if ( ! rc.is_error())  {
+                // _min_free_store doesn't really have to be 
+                // protected, as it's just advisory and its value is
+                // legitimized before used.
+                _min_free_store = snum = i;
+                DBGTHRD(<<" find free store done");
+                return RCOK;
             }
-            snum = i;
-            return RCOK;
+        }
+
+        if(++i > last) { // last is _num_exts-1
+            // Never search store 0.
+            i=1;
         }
     }
+
+    w_assert0(searched==int(last));
 
     DBGTHRD(
      << " find free store: returning eOUTOFSPACE @ line " 
@@ -2401,14 +2572,15 @@ vol_t::set_store_flags(snum_t snum, store_flag_t flags, bool sync_volume)
     
 /*********************************************************************
  *
- *  vol_t::get_store_flags(snum, flags)
+ *  vol_t::get_store_flags(snum, flags, bool ok_if_deleting)
  *
  *  Return the store flags for "snum" in "flags".
  *
  *********************************************************************/
 rc_t
-vol_t::get_store_flags(snum_t snum, store_flag_t& flags)
+vol_t::get_store_flags(snum_t snum, store_flag_t& flags, bool ok_if_deleting)
 {
+    FUNC(get_store_flags);
     if (!is_valid_store(snum))    {
         DBG(<<"get_store_flags: BADSTID");
         return RC(eBADSTID);
@@ -2421,6 +2593,7 @@ vol_t::get_store_flags(snum_t snum, store_flag_t& flags)
 
     stnode_i st(_spid);
     stnode_t stnode;
+    DBG(<<"get_store_flags: snum " << snum);
     W_DO(st.get(snum, stnode));
 
     /*
@@ -2429,9 +2602,18 @@ vol_t::get_store_flags(snum_t snum, store_flag_t& flags)
      *  since it depends on the order pages made it to disk before
      *  a crash.
      */
-    if (!stnode.head && !in_recovery()) {
-        DBG(<<"get_store_flags: BADSTID");
-        return RC(eBADSTID);
+    if (!in_recovery()) {
+        DBG(<<"get_store_flags: stnode.head " << stnode.head
+                << " stnode.deleting " << stnode.deleting
+                );
+        if (!stnode.head) {
+            DBG(<<"get_store_flags: BADSTID for snum " << snum);
+            return RC(eBADSTID);
+        }
+        if ( (!ok_if_deleting) &&  stnode.deleting) {
+            DBG(<<"get_store_flags: BADSTID for snum " << snum);
+            return RC(eBADSTID);
+        }
     }
 
     flags = (store_flag_t)stnode.flags;
@@ -2451,6 +2633,7 @@ vol_t::get_store_flags(snum_t snum, store_flag_t& flags)
 rc_t
 vol_t::alloc_store(snum_t snum, int eff, store_flag_t flags)
 {
+    FUNC(alloc_store);
     w_assert9(flags & st_regular
            || flags & st_tmp
            || flags & st_insert_file);
@@ -2463,9 +2646,11 @@ vol_t::alloc_store(snum_t snum, int eff, store_flag_t flags)
     if (eff < 20 || eff > 100)
         eff = 100;
     
+    // Fill in the store node
     store_operation_param param(snum, t_create_store, flags, eff);
     W_DO( store_operation(param) );
 
+    DBGTHRD(<<"alloc_store done");
     return RCOK;
 }
 
@@ -2503,10 +2688,17 @@ vol_t::set_store_first_ext(snum_t snum, extnum_t head)
  *  prepared xct might have a share lock on the store (it's still
  *  valid to destroy it).
  *
+ *  Now this doesn't free the store but instead marks it for deletion
+ *  at the end-of-xct, and stuffs it in the list of stores to free
+ *  at end-of-xct.
+ *
+ *  Called by sm_io::destroy_store.
+ *
  *********************************************************************/
 rc_t
 vol_t::free_store(snum_t snum, bool acquire_lock)
 {
+    FUNC(free_store);
     stnode_i st(_spid);
     stnode_t stnode;
     W_DO(st.get(snum, stnode));
@@ -2520,7 +2712,7 @@ vol_t::free_store(snum_t snum, bool acquire_lock)
 
         if (acquire_lock)  {
             //jk probably don't need lock_force, but it doesn't hurt, too much
-            W_COERCE( lm->lock_force(stid, EX, t_long, WAIT_IMMEDIATE) );
+            W_DO( lm->lock_force(stid, EX, t_long, WAIT_IMMEDIATE) );
         }
 #if W_DEBUG_LEVEL > 4
         else {
@@ -2542,7 +2734,9 @@ vol_t::free_store(snum_t snum, bool acquire_lock)
         SSMTEST("store.1");
     }
 
-    _free_ext_cache.erase_all(snum); 
+    _resvd_page_cache.erase_all(snum); 
+    // not protected; that's ok.
+    if(snum < _min_free_store)  _min_free_store = snum;
     return RCOK;
 }
 
@@ -2561,6 +2755,7 @@ vol_t::free_store(snum_t snum, bool acquire_lock)
 rc_t
 vol_t::free_store_after_xct(snum_t snum)
 {
+    FUNC(free_store_after_xct);
     extnum_t                head = 0;
 
     {
@@ -2590,12 +2785,13 @@ vol_t::free_store_after_xct(snum_t snum)
     }
     // the store page should now be unlocked
 
+    DBG(<<"vol_t::free_store_after_xct " << snum);
     W_DO( _free_ext_list(head, snum) );
 
     store_operation_param param(snum, t_delete_store);
     W_DO( store_operation(param) );
 
-    _free_ext_cache.erase_all(snum); 
+    _resvd_page_cache.erase_all(snum); 
 
     return RCOK;
 }
@@ -2636,8 +2832,9 @@ pick_ei(extnum_t ext, extnum_t* exts, extlink_i** extlinks, extnum_t num_ext_pag
  *
  * frees the ext from the store.  only called after an xct is complete
  * or during recovery.
+ * so acquires no locks.
  *
- * This is called by the lock mgr when locks are freed.  The idea
+ * This is called by the lock mgr when (just before) locks are freed.  The idea
  * is this: where 2 or more xcts are using pages that get freed,
  * the last one to commit/abort (i.e., free its locks) is the one
  * that determines whether the page really gets freed or not. 
@@ -2662,7 +2859,7 @@ vol_t::free_ext_after_xct(extnum_t ext, snum_t& old_owner)
     {
         extlink_i        ei(_epid);
 
-        W_DO( ei.get_copy(ext, link) );
+        W_DO( ei.get_copy_EX(ext, link) );
         if ( link.owner == 0) {
             DBG(<<"ext " << ext << " already freed");
             return RCOK;
@@ -2690,20 +2887,11 @@ vol_t::free_ext_after_xct(extnum_t ext, snum_t& old_owner)
         next_ext = link.next;
         prev_ext = link.prev;
         old_owner = link.owner;
-
-#if W_DEBUG_LEVEL > 4
-        extid_t   extid;
-        extid.vol = _vid;
-        extid.ext = ext;
-        // We should be able to grab the EX lock on this extent.
-        W_COERCE( lm->lock(extid, EX, t_long, WAIT_IMMEDIATE) );
-        w_assert9(link.num_set() == 0);
-#endif 
     }
 
     if (ext < _min_free_ext_num) {
         _min_free_ext_num = ext;
-        DBG(<<"_min_free_ext_num=" << _min_free_ext_num);
+        DBG(<<"new _min_free_ext_num=" << _min_free_ext_num);
     }
 
     while (1)  {
@@ -2763,7 +2951,7 @@ vol_t::free_ext_after_xct(extnum_t ext, snum_t& old_owner)
                                     num_unique_ext_pages, ei1);
 
             /* free the extent if the prev and next haven't changed */
-            W_DO( ei_p->get_copy(ext, link) );
+            W_DO( ei_p->get_copy_EX(ext, link) );
             if (link.next == next_ext && link.prev == prev_ext)  {
                 //jk remove this when put's are removed to an "allocating" 
                 //log record.
@@ -2784,10 +2972,9 @@ vol_t::free_ext_after_xct(extnum_t ext, snum_t& old_owner)
                 INC_TSTAT(vol_free_exts);
 
                 // FRJ: update the entry in the extent cache
-                histo_ext_cache_update(ext, 0);
 
                 if (prev_ext)  {
-                    X_DO( prev_ei_p->get_copy(prev_ext, link), anchor );
+                    X_DO( prev_ei_p->get_copy_EX(prev_ext, link), anchor );
                     w_assert1(link.next == ext);
                     // link.next might not equal ext if a crash occured between
                     // writing a create_ext_list and the set_ext_next.
@@ -2798,13 +2985,13 @@ vol_t::free_ext_after_xct(extnum_t ext, snum_t& old_owner)
                 }
 
                 if (next_ext)  {
-                    X_DO( next_ei_p->get_copy(next_ext, link), anchor );
+                    X_DO( next_ei_p->get_copy_EX(next_ext, link), anchor );
                     w_assert1(link.prev == ext);
                     link.prev = prev_ext;
                     X_DO( next_ei_p->put(next_ext, link), anchor );
                 }
 
-                xd->compensate(anchor,false/*not undoable*/ LOG_COMMENT_USE("vol.1"));
+                xd->compensate(anchor,false/*not undoable*/ X_LOG_COMMENT_USE("vol.1"));
 
                 return RCOK;
             }  else  {
@@ -2820,6 +3007,7 @@ vol_t::free_ext_after_xct(extnum_t ext, snum_t& old_owner)
         }
     }
     
+    /*NOTREACHED*/
     return RCOK;
 }
 
@@ -2869,7 +3057,7 @@ vol_t::_free_ext_list(extnum_t ext, snum_t snum)
      */
     while (ext)  {
         extid.ext = ext;
-        W_DO( ei.get_copy(ext, link) );
+        W_DO( ei.get_copy_EX(ext, link) );
 
         w_assert2(link.owner == snum);
 
@@ -2879,7 +3067,7 @@ vol_t::_free_ext_list(extnum_t ext, snum_t snum)
 
         if (ext < _min_free_ext_num) {
             _min_free_ext_num = ext;
-            DBG(<<"_min_free_ext_num=" << _min_free_ext_num);
+            DBG(<<"new _min_free_ext_num=" << _min_free_ext_num);
         }
 
         if (!link.next || !ei.on_same_page(ext, link.next))  {
@@ -2934,7 +3122,7 @@ vol_t::free_exts_on_same_page(extnum_t head, snum_t snum, extnum_t count)
         while (ext)  {
             myCount++;
 
-            W_DO( ei.get_copy(ext, link) );
+            W_DO( ei.get_copy_EX(ext, link) );
             w_assert9(link.owner == snum);
 
             link.owner = 0;
@@ -2944,11 +3132,10 @@ vol_t::free_exts_on_same_page(extnum_t head, snum_t snum, extnum_t count)
             W_DO( ei.put(ext, link) );
 
             // FRJ: update the entry in the link cache
-            histo_ext_cache_update(ext, 0);
 
             if (ext < _min_free_ext_num) {
                 _min_free_ext_num = ext;
-                DBG(<<"_min_free_ext_num=" << _min_free_ext_num);
+                DBG(<<"new _min_free_ext_num=" << _min_free_ext_num);
             }
             DBG(<<"link.next=" << link.next
                 << " ext= " << ext);
@@ -3008,6 +3195,9 @@ rc_t
 vol_t::_append_ext_list(snum_t snum, extnum_t prev, extnum_t count, 
         const extnum_t* list)
 {
+    DBGTHRD(<< "snum " << snum 
+            << " prev " << prev
+            << " count " << count);
     extlink_i        ei(_epid);
     extlink_i        prev_ei(_epid);
     extlink_t        prev_link;
@@ -3031,14 +3221,19 @@ vol_t::_append_ext_list(snum_t snum, extnum_t prev, extnum_t count,
                         W_DO( prev_ei.fix_EX(prev) );
                     }
 
-                    W_DO(prev_ei.get_copy(prev, prev_link));
+                    // To avoid latch-upgrade problems, we
+                    // have fixed in EX mode.
+                    // Assert here that we have the page ex-latched.
+                    w_assert1(prev_ei.page().is_mine());
+
+                    W_DO(prev_ei.get_copy_EX(prev, prev_link));
                     if (prev_link.next == 0)  {
                         break;
                     }  else  {
                         ei.unfix();
                         while (prev_link.next != 0)  {
                             prev = prev_link.next;
-                            W_DO(prev_ei.get_copy(prev, prev_link));
+                            W_DO(prev_ei.get_copy_EX(prev, prev_link));
                         }
                         prev_ei.unfix();
                     }
@@ -3057,7 +3252,7 @@ vol_t::_append_ext_list(snum_t snum, extnum_t prev, extnum_t count,
                  */
 #if W_DEBUG_LEVEL > 4
                 extlink_t link;
-                W_DO( prev_ei.get_copy(prev, link) );
+                W_DO( prev_ei.get_copy_SH(prev, link) );
                 w_assert9( link.next == 0 );
 #endif 
                 W_DO( prev_ei.set_next(prev, list[0] /*,log_it=true*/) );
@@ -3090,6 +3285,7 @@ vol_t::create_ext_list_on_same_page(
         extnum_t count, 
         const extnum_t* list)
 {
+    FUNC(create_ext_list_on_same_page);
     extlink_i        ei(_epid);
     extlink_t        link;
 
@@ -3101,7 +3297,7 @@ vol_t::create_ext_list_on_same_page(
         xct_log_switch_t toggle(smlevel_0::OFF);
 
         for (extnum_t i = 0; i < count; i++)  {
-            W_DO( ei.get_copy(list[i], link) );
+            W_DO( ei.get_copy_EX(list[i], link) );
 
             w_assert9(link.owner == 0);
             w_assert9(link.prev == 0);
@@ -3114,14 +3310,12 @@ vol_t::create_ext_list_on_same_page(
 
             W_DO( ei.put(list[i], link) );
 
-            // insert/update the entry in the extent cache
-            histo_ext_cache_update(list[i], snum);
         }
 
         if (prev && ei.on_same_page(prev, list[0]))  {
 #if W_DEBUG_LEVEL > 4
             extlink_t prev_link;
-            W_DO( ei.get_copy(prev, prev_link) );
+            W_DO( ei.get_copy_SH(prev, prev_link) );
             w_assert9( prev_link.next == 0 );
 #endif 
             W_DO( ei.set_next(prev, list[0], false /*dont log*/) );
@@ -3144,6 +3338,7 @@ vol_t::create_ext_list_on_same_page(
 snum_t
 vol_t::max_store_id_in_use() const
 {
+    FUNC(max_store_id_in_use);
     snum_t snum = _num_exts;
 
     stnode_i st(_spid);
@@ -3193,7 +3388,7 @@ vol_t::get_volume_meta_stats(SmVolumeMetaStats& volume_stats)
         extlink_i ei(_epid);
         const extlink_t* link;
         for (extnum_t extnum = 1; extnum < _num_exts; ++extnum)  {
-            W_DO( ei.get(extnum, link) );
+            W_DO( ei.get_const(extnum, link) );
             if (link->owner != 0)  {
                 volume_stats.IncrementPages(ext_sz, link->num_set());
             }
@@ -3247,7 +3442,7 @@ vol_t::get_file_meta_stats_batch(uint4_t max_store, SmStoreMetaStats** mapping)
     const extlink_t* link;
 
     for (extnum_t extnum = 1; extnum < _num_exts; ++extnum)  {
-        W_DO( ei.get(extnum, link) );
+        W_DO( ei.get_const(extnum, link) );
         if (link->owner != 0)  {
             if (link->owner < max_store && mapping[link->owner])  {
                 mapping[link->owner]->IncrementPages(ext_sz, link->num_set());
@@ -3290,7 +3485,7 @@ vol_t::get_store_meta_stats(snum_t snum, SmStoreMetaStats& store_stats)
         extlink_i ei(_epid);
         const extlink_t* link;
         while (extnum != 0)  {
-            W_DO( ei.get(extnum, link) );
+            W_DO( ei.get_const(extnum, link) );
             if (link->owner != snum )  {
                 return RC(eRETRY);
             }
@@ -3311,11 +3506,13 @@ vol_t::get_store_meta_stats(snum_t snum, SmStoreMetaStats& store_stats)
  *  store and verifies that the tag_t on the page is
  *  apropos to the store type.
  *
+ * For debugging
  *********************************************************************/
 
 rc_t
 vol_t::check_store_page(const lpid_t &pid, page_p::tag_t tag)
 {
+    FUNC(check_store_page);
     page_p page;
     store_flag_t sf=st_empty;
     W_DO( page.fix(pid, page_p::t_any_p, LATCH_SH, 0, sf));
@@ -3331,6 +3528,7 @@ vol_t::check_store_page(const lpid_t &pid, page_p::tag_t tag)
                 << " tag " << t
                 << " expected " << tag
                 << " lock " << m);
+        W_IGNORE(e);
     }
 #endif
     int error=0;
@@ -3341,8 +3539,6 @@ vol_t::check_store_page(const lpid_t &pid, page_p::tag_t tag)
         case page_p::t_btree_p:
         case page_p::t_rtree_p:
         case page_p::t_file_p:
-        case page_p::t_file_mrbt_p:
-        case page_p::t_ranges_p:
             if (t != tag) error++;
             break;
 
@@ -3372,9 +3568,11 @@ vol_t::check_store_page(const lpid_t &pid, page_p::tag_t tag)
     return RCOK;
 }
 
+// for debugging - called by check_volume_page_types
 rc_t
 vol_t::check_store_pages(snum_t snum, page_p::tag_t tag)
 {
+    FUNC(check_store_pages);
 
     if(snum > 0) {
         bool alloc(false);
@@ -3385,7 +3583,10 @@ vol_t::check_store_pages(snum_t snum, page_p::tag_t tag)
             DBG(<<"check_store_pages store " << snum << " tag " << tag
                     << " pid " << pid);
             W_DO(check_store_page(pid, tag));
-            W_DO(next_page(pid, &alloc));
+            w_rc_t rc= next_page(pid, &alloc);
+            // last page in the file might have been allocated.
+            // break out of the loop if there is no next page.
+            if(rc.err_num() == eEOF) alloc = false;
         }
     } else {
         // special case: store 0 is the extent map and store map
@@ -3422,8 +3623,10 @@ vol_t::check_store_pages(snum_t snum, page_p::tag_t tag)
 rc_t
 vol_t::first_page(snum_t snum, lpid_t& pid, bool* allocated)
 {
+    FUNC(first_page);
     pid = pid.null;
 
+    DBGTHRD(<<"get first ext from stnode");
     stnode_t stnode;
     {
         stnode_i st(_spid);
@@ -3443,7 +3646,7 @@ vol_t::first_page(snum_t snum, lpid_t& pid, bool* allocated)
     int first = -1;
 
     while ( (first < 0) && (ext != 0) )  {
-        W_DO(ei.get(ext, link));
+        W_DO(ei.get_const(ext, link));
         if (allocated) {
             // we care about unallocated pages as well, 
             // so pick first page of extent
@@ -3478,6 +3681,9 @@ vol_t::first_page(snum_t snum, lpid_t& pid, bool* allocated)
 rc_t                        
 vol_t::last_allocated_page( snum_t snum, lpid_t&   pid)
 {
+    FUNC(last_allocated_page);
+
+
     pid = pid.null;
     extlink_i ei(_epid);
 
@@ -3487,6 +3693,13 @@ vol_t::last_allocated_page( snum_t snum, lpid_t&   pid)
     */
     const extlink_t* linkp;
     extnum_t ext = page_cache_find(snum, ei, linkp);
+
+    // If we have to prime the cache, do it before we fix anything else
+    if(!ext) {
+        // I hate to do this holding the volume mutex but oh, well...
+        W_DO(prime_cache(snum));
+        ext = page_cache_find(snum, ei, linkp);
+    }
 
     shpid_t page = 0;
     extnum_t starting_ext = ext; 
@@ -3509,16 +3722,16 @@ vol_t::last_allocated_page( snum_t snum, lpid_t&   pid)
             }
             ext = stnode.head;
             // prep the linkp for the next loop...
-            W_DO(ei.get(ext, linkp));
+            W_DO(ei.get_const(ext, linkp));
         }
         
-        shpid_t page = 0;
+        page = 0;
         extnum_t next;
 
         // pass 1: from our starting point, search to the end of the store
         // pass 2: from the head of the store, search to the starting point
         while( (next=linkp->next) && next != starting_ext ) {
-            W_DO(ei.get((ext=next), linkp));
+            W_DO(ei.get_const((ext=next), linkp));
 
             int i = linkp->last_set(ext_sz - 1);
             if(i >= 0) page = ext * ext_sz + i;
@@ -3538,7 +3751,7 @@ vol_t::last_allocated_page( snum_t snum, lpid_t&   pid)
 
     // update the last_page cache to show that this ext is now
     // the last one in the store
-    page_cache_update(snum, ext);
+    _page_cache_update(snum, ext);
     
     pid._stid = stid_t(_vid, snum);
     pid.page = page;
@@ -3548,7 +3761,7 @@ vol_t::last_allocated_page( snum_t snum, lpid_t&   pid)
 
 /*********************************************************************
  *
- *  vol_t::_last_reserved_page(snum, lpid_t &pid, bool &allocated)
+ *  vol_t::last_reserved_page(snum, lpid_t &pid, bool &allocated)
  *
  *  Returns the last page in the last extent in the store, whether
  *  or not it's allocated, and returns its allocation status in
@@ -3561,6 +3774,7 @@ vol_t::last_allocated_page( snum_t snum, lpid_t&   pid)
 rc_t                        
 vol_t::last_reserved_page(snum_t snum, lpid_t&  pid, bool &allocated)
 {
+    FUNC(last_reserved_page);
     extlink_i ei(_epid);
     const extlink_t* linkp(NULL);
     extnum_t ext(0);
@@ -3602,43 +3816,35 @@ rc_t
 vol_t::_last_extent(snum_t snum, extnum_t &ext, 
         extlink_i &ei, const extlink_t * &linkp)
 {
+    FUNC(_last_extent);
     /* FRJ: try the previous last_page, if any. It may not be the last
               page any more, but it's probably still in the same store, and a
                      lot closer to eof than the stnode.head!
     */
     ext = page_cache_find(snum, ei, linkp);
-
-    if(!ext) {
-        // Didn't find a legit cached last-extent or near-last-extent
-        // Start at the head of the store and do a linear search
-        stnode_t stnode;
-        {
-            stnode_i st(_spid);
-            W_DO(st.get(snum, stnode));
-        }
-
-        if ( ! stnode.head) {
-            DBG(<<"last_page: BADSTID");
-            return RC(eBADSTID);
-        }
-        ext = stnode.head;
-        // prep the linkp for the next loop...
-        W_DO(ei.get(ext, linkp));
-        INC_TSTAT(vol_last_extent_search);
+    // Since we need to search the store for its last extent,
+    // let's update the reserved page cache at the same time.
+    if(!ext) { 
+        W_DO(prime_cache(snum));
+        ext = page_cache_find(snum, ei, linkp);
     }
-    
+
+    // We might not have primed the cache here, and it
+    // could be a little out-of-date.
+    int i=0;
     extnum_t start = ext;
     extnum_t next;
-    long i;
-    for(i=0; (next=linkp->next); i++ ) {
+    while( (next=linkp->next) ) {
+        DBGTHRD(<< ext << " has next: " << next);
+        i++;
         // from our starting point, search to the end of the store
-        W_DO(ei.get((ext=next), linkp));
+        W_DO(ei.get_const((ext=next), linkp));
     }
 
-    ADD_TSTAT(vol_last_extent_search_cost, i);
-    if (ext != start) 
-        page_cache_update(snum, ext);
-
+    ADD_TSTAT(vol_last_extent_search, i);
+    if(ext != start)  {
+        _page_cache_update(snum, ext);
+    }
     return RCOK;
 }
 
@@ -3652,6 +3858,7 @@ vol_t::_last_extent(snum_t snum, extnum_t &ext,
 rc_t                        
 vol_t::last_extent(snum_t fnum, extnum_t &ext, bool *empty/*=NULL*/)
 {
+    FUNC(last_extent);
     extlink_i ei(_epid);
     const extlink_t* linkp(NULL);
 
@@ -3677,6 +3884,7 @@ vol_t::last_extent(snum_t fnum, extnum_t &ext, bool *empty/*=NULL*/)
 rc_t
 vol_t::num_pages(snum_t snum, uint4_t& cnt)
 {
+    FUNC(num_pages);
     cnt = 0;
     stnode_t stnode;
     {
@@ -3693,7 +3901,7 @@ vol_t::num_pages(snum_t snum, uint4_t& cnt)
     extnum_t ext = stnode.head;
     const extlink_t* linkp;
     while (ext)  {
-        W_DO(ei.get(ext, linkp));
+        W_DO(ei.get_const(ext, linkp));
         cnt += linkp->num_set();
         ext = linkp->next;
     }
@@ -3714,6 +3922,7 @@ vol_t::num_pages(snum_t snum, uint4_t& cnt)
 rc_t
 vol_t::num_exts(snum_t snum, extnum_t& cnt)
 {
+    FUNC(num_exts);
     cnt = 0;
     stnode_t stnode;
     {
@@ -3730,7 +3939,7 @@ vol_t::num_exts(snum_t snum, extnum_t& cnt)
     extnum_t ext = stnode.head;
     const extlink_t* linkp;
     while (ext)  {
-        W_DO(ei.get(ext, linkp));
+        W_DO(ei.get_const(ext, linkp));
         ++cnt;
         ext = linkp->next;
     }
@@ -3745,12 +3954,14 @@ vol_t::num_exts(snum_t snum, extnum_t& cnt)
  *  Return true if page allocated to s. false otherwise.
  *
  *********************************************************************/
-bool vol_t::_is_valid_page_of(const lpid_t &pid, snum_t s) const 
+w_rc_t vol_t::_is_valid_page_of(const lpid_t &pid, snum_t s, bool &result) const 
 {
+    FUNC(_is_valid_page_of);
     if ( ! is_valid_page_num(pid) )  {
-        return false;
+        result = false;
+        return RCOK;
     }
-    return  _is_alloc_page_of(pid, s);
+    return  _is_alloc_page_of(pid, s, result);
 }
 
 
@@ -3764,11 +3975,12 @@ bool vol_t::_is_valid_page_of(const lpid_t &pid, snum_t s) const
  *********************************************************************/
 bool vol_t::is_alloc_ext_of(extnum_t e, snum_t s) const 
 {
+    FUNC(is_alloc_ext_of);
     w_assert9(_is_valid_ext(e));
     
     extlink_i ei(_epid);
     const extlink_t* linkp;
-    W_COERCE(ei.get(e, linkp));
+    W_COERCE(ei.get_const(e, linkp));
     return (linkp->owner == s);
 }
 
@@ -3783,6 +3995,7 @@ bool vol_t::is_alloc_ext_of(extnum_t e, snum_t s) const
  *********************************************************************/
 bool vol_t::is_alloc_store(snum_t f) const
 {
+    FUNC(is_alloc_store);
     stnode_i st(_spid);
     const stnode_t *stnode;
     W_COERCE(st.get(f, stnode));
@@ -3813,87 +4026,23 @@ vol_t::page_cache_find(snum_t snum,
     result = _last_page_cache[snum];
 
     if(result) {
-        // Check it and update the  cache if necessary
-        w_rc_t rc = ei.get(result, linkp);
+        // Check it and invalidate the  cache if necessary
+        w_rc_t rc = ei.get_const(result, linkp);
 
         if(rc.is_error() || (linkp->owner != snum)) 
         {
             // could not read it or
             // no longer part of this store, so don't use this ext
             result = 0;
-            page_cache_update(snum, result);
+            INC_TSTAT(vol_last_page_cache_invalidate);
+            _last_page_cache[snum]=0;
         }
     }
     if(result) {
-        INC_TSTAT(vol_last_page_cache_find_hit);
+        INC_TSTAT(vol_last_page_cache_hit);
     }
     return result;
 } 
-
-void                     
-vol_t::page_cache_update(snum_t snum, extnum_t e) const 
-{
-    INC_TSTAT(vol_last_page_cache_update);
-
-    _last_page_cache[snum]=e;
-}
-
-
-/* 
- * Extent cache:
- * Maps extent to store number, snum 0 means extent is free.
- *
- * Used by _is_alloc_page_of  (is page allocated to given store?).
- * Presence of <ext, snum> in this cache indicates the extent
- * is allocated to the given store, and lets us bypass reading and
- * latching the extent-link page to find out.
- * 
- */
-vol_t::histo_extent_cache::iterator
-vol_t::histo_ext_cache_find(extnum_t ext) const 
-{
-    INC_TSTAT(vol_histo_ext_cache_find);
-    histo_extent_cache::iterator end = _histo_ext_cache.end();
-    for(histo_extent_cache::iterator it = _histo_ext_cache.begin(); 
-            it != end; ++it) {
-        if(it->first == ext) {
-            ext2store_entry tmp = *it;
-            _histo_ext_cache.erase(it);
-            _histo_ext_cache.push_front(tmp);
-            INC_TSTAT(vol_histo_ext_cache_find_hit);
-            return _histo_ext_cache.begin();
-        }
-    }
-    return end;
-}
-
-void vol_t::histo_ext_cache_erase(snum_t s) const 
-{
-    histo_extent_cache::iterator end = _histo_ext_cache.end();
-again:
-    for(histo_extent_cache::iterator it = _histo_ext_cache.begin(); 
-            it != end; ++it) 
-    {
-        if(it->second == s) {
-            _histo_ext_cache.erase(it);
-            goto again;
-        }
-    }
-}
-
-void vol_t::histo_ext_cache_update(extnum_t ext, snum_t s) const 
-{
-    INC_TSTAT(vol_histo_ext_cache_update);
-    histo_extent_cache::iterator it = histo_ext_cache_find(ext);
-    if(it == _histo_ext_cache.end()) {
-        _histo_ext_cache.push_front(std::make_pair(ext, s));
-        if(_histo_ext_cache.size() > EXT_CACHE_SIZE)
-            _histo_ext_cache.pop_back();
-    }
-    else {
-        it->second = s;
-    }
-}
 
 
 /*********************************************************************
@@ -3905,85 +4054,35 @@ void vol_t::histo_ext_cache_update(extnum_t ext, snum_t s) const
  *
  *********************************************************************/
 
-bool vol_t::_is_alloc_page_of(
+w_rc_t vol_t::_is_alloc_page_of(
         const lpid_t& pid, 
         snum_t s,
-        bool use_cache /* default=true */
+        bool &result
         ) const
 {
+    FUNC(_is_valid_page_of);
     extnum_t ext = pid2ext(pid);
     extlink_i ei(_epid);
     const extlink_t* linkp;
 
-    // FRJ: insert-heavy workloads make the extlink page latches into
-    // a bottleneck (from the days when they only support 4 readers). 
-    // To avoid the issue
-    // altogether, each volume maintains a small cache mapping
-    // extnum_t to snum_t.
-    
-    //Note: entries are only added when an extent is allocated. This
-    //captures the common case where records are added far more often
-    //than they're deleted. If the page latch bottleneck pops up
-    //again, it might be due to contention for an extent that was not
-    //recently allocated.
-    //BUG: filed as GNATS 104: turned off cache as workaround
-    use_cache = false;
-    if(use_cache) {
-        histo_extent_cache::iterator it = histo_ext_cache_find(ext);
-
-        // was it found? 
-        // If so, its store number tells us whether it's still in the
-        // given store.
-        if(it != _histo_ext_cache.end())  {
-            bool result = it->second == s;
-            DBGTHRD(<<" is_alloc_page_of(" << pid << ", "<< s << ")="
-                    << int(result)
-            );
-            // Now let's verify:
-            //GNATS 104: fails this test. For now, we have the
-            //use_cache turned off
-            bool result2 = _is_alloc_page_of(pid, s, false);
-            w_assert0(result == result2);
-            
-            return result;
-        }
-
-        // FRJ: the volume mutex was a major bottleneck because we
-        // pinned a page while holding it. Fortunately, we don't
-        // actually *do* anything with the volume once we've
-        // constructed the extlink_i, so we can safely release the
-        // mutex before trying to pin the page 
-    }
-    // Not found in the cache.  Now look at the extent link.
+    // The problem here is that the _resvd_page_cache does us no good in this
+    //function. If the extent is found to be in the store, that doesn't
+    //mean the page is allocated, and we have to read the extent link anyway;
+    //and if the extent isn't found in the cache, we have to read the
+    //extent link because a cache miss doesn't mean it's not allocated.
+    //
+    //GNATS 104: need to do something else here if we want to speed things up.
 
     // Don't have a way to deal with errors here... filed as GNATS 118
-    W_COERCE(ei.get(ext, linkp));
+    W_DO(ei.get_const(ext, linkp));
     
     shpid_t base_pid = ext2pid(ext);
 
-    bool result = (linkp->owner==s) && linkp->is_set(int(pid.page - base_pid));
+    result = (linkp->owner==s) && linkp->is_set(int(pid.page - base_pid));
     DBGTHRD(<<" is_alloc_page_of(" << pid << ", "<< s << ")="
                     << int(result));
-    return result;
-}
-
-/*********************************************************************
- *
- *  vol_t::is_alloc_page(pid)
- *
- *  Return true if the page "pid" is allocated. false otherwise.
- *
- *********************************************************************/
-bool vol_t::is_alloc_page(const lpid_t& pid) const
-{
-    extnum_t ext = pid2ext(pid);
-    extlink_i ei(_epid);
-    const extlink_t* linkp;
-
-    // Don't have a way to deal with errors here... BUGBUG GNATS 118
-    W_COERCE(ei.get(ext, linkp));
-
-    return linkp->is_set(int(pid.page - ext2pid(ext)));
+    INC_TSTAT(vol_check_owner_fix);
+    return RCOK;
 }
 
 
@@ -4000,9 +4099,9 @@ bool vol_t::is_alloc_page(const lpid_t& pid) const
 void 
 vol_t::fake_disk_latency(long start) 
 {  
-  long delta = gethrtime() - start;
   if(!_apply_fake_disk_latency)
     return;
+  long delta = gethrtime() - start;
   delta = _fake_disk_latency - delta;
   if(delta <= 0)
     return;
@@ -4062,11 +4161,11 @@ vol_t::read_page(shpid_t pnum, page_s& page)
 
     smthread_t* t = me();
 
-#if ZERO_INIT
+#ifdef ZERO_INIT
     /*
      * When a write into the buffer pool of potentially uninitialized 
      * memory occurs (such as padding)
-     * there is a purify/valgrind supressed to keep the SM from being gigged
+     * there is a purify/valgrind supression to keep the SM from being gigged
      * for the SM-using application's legitimate behavior.  However, this
      * uninitialized memory writes to a page in the buffer pool
      * colors the corresponding bytes in the buffer pool with the 
@@ -4076,14 +4175,16 @@ vol_t::read_page(shpid_t pnum, page_s& page)
      */
     memset(&page, '\0', sizeof(page));
 #endif
-    long start = gethrtime();
+    long start = 0;
+    if(_apply_fake_disk_latency) start = gethrtime();
+
         /* XXX return errors to caller */
     w_rc_t err = t->pread(_unix_fd, (char *) &page, sizeof(page), offset);
     if(err.err_num() == sthread_t::stSHORTIO && err.sys_err_num() == 0) {
-      // read past end of OS file. return all zeros
-      memset(&page, 0, sizeof(page));
+        // read past end of OS file. return all zeros
+        memset(&page, 0, sizeof(page));
     } else {
-      W_COERCE_MSG(err, << "volume id=" << vid()
+        W_COERCE_MSG(err, << "volume id=" << vid()
               << " err_num " << err.err_num()
               << " sys_err_num " << err.sys_err_num()
               );
@@ -4092,15 +4193,12 @@ vol_t::read_page(shpid_t pnum, page_s& page)
     fake_disk_latency(start);
     
     /*
-     *  place the vid on the page since since vid can change
-     *  page.pid.vol = vid();
-     *  NOTE: now done in byteswap code in io_m
+     *  place the vid and the page # on the page 
      */
-    /*
-     * cannot check this condition ... 
-     * invalid for unformatted page.
-     * w_assert1(pnum == page.pid.page);
-     */
+    page.pid._stid.vol = vid();
+    // Leave it 0 so we can later make assertions
+    // based on knowing that the page is new.
+    // page.pid.page = pnum;
 
     INC_TSTAT(vol_reads);
 
@@ -4141,7 +4239,8 @@ vol_t::write_many_pages(shpid_t pnum, const page_s* const pages, int cnt)
 
     smthread_t* t = me();
 
-    long start = gethrtime();
+    long start = 0;
+    if(_apply_fake_disk_latency) start = gethrtime();
 
     // do the actual write now
     W_COERCE_MSG(t->pwrite(_unix_fd, pages, sizeof(page_s)*cnt, offset), << "volume id=" << vid());
@@ -4183,20 +4282,22 @@ vol_t::format_dev(
     int fd;
     w_rc_t e;
     e = me()->open(devname, flags, 0666, fd);
-    if (e.is_error())
+    if (e.is_error()) {
+        DBG(<<" open " << devname <<  " failed " << e);
         return e;
+    }
     
     extnum_t num_exts = (num_pages - 1) / ext_sz + 1;
 
     volhdr_t vhdr;
     vhdr.set_format_version(volume_format_version);
     vhdr.set_device_quota_KB(num_pages*(page_sz/1024));
-    vhdr.set_ext_size(0);
-    vhdr.set_num_exts(num_exts);
-    vhdr.set_hdr_exts(0);
-    vhdr.set_hdr_pages(0);
-    vhdr.set_epid(0);
-    vhdr.set_spid(0);
+    vhdr.set_ext_size(0); // pages/extent
+    vhdr.set_num_exts(num_exts); // # extents on volume
+    vhdr.set_hdr_exts(0); // extents used for hdr pages
+    vhdr.set_hdr_pages(0); // hdr pages
+    vhdr.set_epid(0); // first extent-map page
+    vhdr.set_spid(0); // first store-map page
     vhdr.set_page_sz(page_sz);
    
     // determine if the volume is on a raw device
@@ -4204,16 +4305,19 @@ vol_t::format_dev(
     rc_t rc = me()->fisraw(fd, raw);
     if (rc.is_error()) {
         W_IGNORE(me()->close(fd));
+        DBG(<<" fisraw " << fd << " failed " << rc);
         return RC_AUGMENT(rc);
     }
     rc = write_vhdr(fd, vhdr, raw);
     if (rc.is_error())  {
         W_IGNORE(me()->close(fd));
+        DBG(<<" write_vhdr  fd " << fd << " failed " << rc);
         return RC_AUGMENT(rc);
     }
 
     W_COERCE_MSG(me()->close(fd), << "device name=" << devname);
 
+    DBG(<<" format " << devname << " done ");
     return RCOK;
 }
 
@@ -4224,7 +4328,7 @@ vol_t::format_dev(
  *  vol_t::format_vol(devname, lvid, num_pages, skip_raw_init, 
  *                    apply_fake_io_latency, fake_disk_latency)
  *
- *  Format the volume "devname" for logical volume id "lvid" and
+ *  Format the volume "devname" for long volume id "lvid" and
  *  a size of "num_pages". "Skip_raw_init" indicates whether to
  *  zero out all pages in the volume during format.
  *
@@ -4287,8 +4391,10 @@ vol_t::format_vol(
     if (!raw) flags |= smthread_t::OPEN_TRUNC;
     int fd;
     rc = me()->open(devname, flags, 0666, fd);
-    if (rc.is_error())
+    if (rc.is_error()) {
+        DBG(<<" open " << devname << " failed " << rc );
         return rc;
+    }
     
     /*
      *  Compute:
@@ -4359,7 +4465,7 @@ vol_t::format_vol(
         page_s* buf = new page_s; // auto-del
         if (! buf) return RC(eOUTOFMEMORY);
         w_auto_delete_t<page_s> auto_del(buf);
-#if ZERO_INIT
+#ifdef ZERO_INIT
         // zero out data portion of page to keep purify/valgrind happy.
         // Unfortunately, this isn't enough, as the format below
         // seems to assign an uninit value.
@@ -4392,8 +4498,9 @@ vol_t::format_vol(
                     }
                     ep.put(j, link);
                 }
+                // re-scan, checking assertions:
                 for (j = 0; extnum_t(j) < ep.max; j++)  {
-                    link = ep.get(j);
+                    link = ep.get_nonconst(j);
                     w_assert1(link.owner == 0);
                     if (extnum_t(j) + i < hdr_exts) {
                         w_assert1(link.next == ((extnum_t(j) + i + 1 
@@ -4424,7 +4531,7 @@ vol_t::format_vol(
             extnum_t i;
             DBG(<<" formatting store node region for " << num_exts<< " stores");
             for (i = 0; i < num_exts; i += fp.max, spid.page++)  {
-                DBGTHRD(<<"");
+                DBGTHRD(<<"extent i " << i << " page " << spid.page);
                 W_COERCE( fp.format(spid, 
                                     stnode_p::t_stnode_p, 
                                     fp.t_virgin, st_regular));
@@ -4512,7 +4619,7 @@ vol_t::format_vol(
         }
 
     } else {
-#ifdef WANT_HUGE_FILES
+#ifdef COMMENT
         /*
          * Since the volume is not a raw device, seek to the last byte
          * and write out a 0.  This way, for any page read from the
@@ -4538,6 +4645,7 @@ DBG(<<"format_vol: seeking to offset " << where << " to write last page " );
     }
 
     W_COERCE(me()->close(fd));
+    DBG(<<"format_vol: done" );
 
     return RCOK;
 }
@@ -4755,8 +4863,8 @@ vol_t::read_vhdr(const char* devname, volhdr_t& vhdr)
 rc_t vol_t::get_du_statistics(struct volume_hdr_stats_t& st, bool audit)
 {
     volume_hdr_stats_t new_stats;
-    uint4_t unalloc_ext_cnt;
-    uint4_t alloc_ext_cnt;
+    uint4_t unalloc_ext_cnt=0;
+    uint4_t alloc_ext_cnt=0;
     W_DO(num_free_exts(unalloc_ext_cnt) );
     W_DO(num_used_exts(alloc_ext_cnt) );
     new_stats.unalloc_ext_cnt = (unsigned) unalloc_ext_cnt;
@@ -4777,6 +4885,10 @@ rc_t vol_t::get_du_statistics(struct volume_hdr_stats_t& st, bool audit)
     return RCOK;
 }
 
+/**\brief
+ * Use attempt at first so we can get a rough idea of
+ * the contention on this mutex.
+ */
 void                        
 vol_t::acquire_mutex(vol_t::lock_state* _me, bool for_write) 
 {
@@ -4784,16 +4896,16 @@ vol_t::acquire_mutex(vol_t::lock_state* _me, bool for_write)
     if(for_write) {
         INC_TSTAT(need_vol_lock_w);  
         if(_mutex.attempt_write() ) {
+            INC_TSTAT(nowait_vol_lock_w);  
             return;
         }
-        INC_TSTAT(await_vol_lock_w);  
         _mutex.acquire_write();
     } else {
         INC_TSTAT(need_vol_lock_r);  
         if(_mutex.attempt_read() ) {
+            INC_TSTAT(nowait_vol_lock_r);  
             return;
         }
-        INC_TSTAT(await_vol_lock_r);  
         _mutex.acquire_read();
     }
     assert_mutex_mine(_me);
@@ -4802,7 +4914,7 @@ vol_t::acquire_mutex(vol_t::lock_state* _me, bool for_write)
 
 /*********************************************************************
  *
- * vol_t::fill_histo(ext, snum)
+ * vol_t::init_histo(store_histo_t*, snum)
  *
  * scan the extent list for the store snum, and
  * update the histogram for this store.  Does not lock
@@ -4815,6 +4927,7 @@ rc_t
 vol_t::init_histo(store_histo_t* h,  snum_t snum,
         pginfo_t *pages, int& numpages)
 {
+    FUNC(init_histo);
     w_assert1(snum > 0);
 
     extnum_t ext=0;
@@ -4829,19 +4942,18 @@ vol_t::init_histo(store_histo_t* h,  snum_t snum,
 
     if(ext) {
         extlink_i        ei(_epid);
-        extid_t                extid;
-        const extlink_t*link;
+        extid_t          extid;
+        const extlink_t* link;
 
         extid.vol = _vid;
 
         while (ext)  {
             extid.ext = ext;
-            W_DO( ei.get(ext, link) );
+            W_DO( ei.get_const(ext, link) );
 
             if(link->owner != snum) {
                 // actually store changed, but this is close enough
                 numpages = n;
-                volstophere();
                 w_assert1(0); // GNATS 104 
                 return  RC(ePAGECHANGED);
             }

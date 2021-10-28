@@ -1,3 +1,34 @@
+// -*- mode:c++; c-basic-offset:4 -*-
+/*<std-header orig-src='shore' incl-file-exclusion='OUT_OF_LOG_SPACE_CPP'>
+
+ $Id: out_of_log_space.cpp,v 1.9 2010/07/26 23:37:19 nhall Exp $
+
+SHORE -- Scalable Heterogeneous Object REpository
+
+Copyright (c) 1994-99 Computer Sciences Department, University of
+                      Wisconsin -- Madison
+All Rights Reserved.
+
+Permission to use, copy, modify and distribute this software and its
+documentation is hereby granted, provided that both the copyright
+notice and this permission notice appear in all copies of the
+software, derivative works or modified versions, and any portions
+thereof, and that both notices appear in supporting documentation.
+
+THE AUTHORS AND THE COMPUTER SCIENCES DEPARTMENT OF THE UNIVERSITY
+OF WISCONSIN - MADISON ALLOW FREE USE OF THIS SOFTWARE IN ITS
+"AS IS" CONDITION, AND THEY DISCLAIM ANY LIABILITY OF ANY KIND
+FOR ANY DAMAGES WHATSOEVER RESULTING FROM THE USE OF THIS SOFTWARE.
+
+This software was developed with support by the Advanced Research
+Project Agency, ARPA order number 018 (formerly 8230), monitored by
+the U.S. Army Research Laboratory under contract DAAB07-91-C-Q518.
+Further funding for this work was provided by DARPA through
+Rome Research Laboratory Contract No. F30602-97-2-0247.
+
+*/
+
+/*  -- do not edit anything above this line --   </std-header>*/
 
 /*
 
@@ -30,7 +61,6 @@
 
 #include <sm_vas.h>
 
-// DEAD static pthread_mutex_t oven = PTHREAD_MUTEX_INITIALIZER;
 static tid_t    pan;
 int    ncalls = 0; // just for the heck of it.
 
@@ -72,7 +102,6 @@ w_rc_t out_of_log_space (
 		o << curr << ends;
 		fprintf(stderr, "stats: %s\n" , o.c_str()); 
 	}
-	xct_t *oldxct(NULL);
 	{
 		w_ostrstream o;
 		o << "Active xcts: " << xct_t::num_active_xcts();
@@ -91,38 +120,8 @@ w_rc_t out_of_log_space (
 
 		fprintf(stderr, "%s\n" , o.c_str()); 
 
-		oldxct = x;
 	}
 	fprintf(stderr, "Move aside log file %s to %s\n", "XXX", "YYY");
 
-#if DEAD
-     w_rc_t    rc;
-     xd = me()->xct();
-     if(xd) {
-         CRITICAL_SECTION(cs, oven);
-         ncalls++;
-         if(pan != tid_t::null) {
-             xct_t* xx = xct_t::look_up(pan);
-             if(!xx) {
-            // no longer aborting
-             cout << "No longer aborting tx " << pan 
-                << " (ncalls = " << ncalls << ")" <<endl;
-             pan = tid_t::null;
-             ncalls = 0;
-             }
-         }
-         if(pan == tid_t::null) {
-             cout << " Curr=" << curr << " Thresh=" << thresh <<endl;
-             cout << " Returning E_USERABORT for xct " << xd->tid() << endl;
-             pan = xd->tid();
-             rc = RC(E_USERABORT);
-         } else {
-             // don't do anything  - give aborting xct a chance
-             // to run
-             me()->yield();
-             xd = 0;
-         }
-     }
-#endif
      return rc;
 }

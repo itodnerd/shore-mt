@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='W_STRSTREAM_H'>
 
- $Id: w_strstream.h,v 1.18 2010/05/26 01:20:26 nhall Exp $
+ $Id: w_strstream.h,v 1.19 2010/12/08 17:37:37 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -107,13 +107,13 @@ class w_istrstream : public istrstream {
 public:
     /// Construct using strlen(s)
     w_istrstream(const char *s)
-    : istrstream(VCPP_BUG_1 s, strlen(s))
+    : istrstream(s, strlen(s))
     {
     }
 
     /// Construct using a given length
     w_istrstream(const char *s, size_t l)
-    : istrstream(VCPP_BUG_1 s, l)
+    : istrstream(s, l)
     {
     }
 

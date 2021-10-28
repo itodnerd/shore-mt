@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='SM_VAS_H'>
 
- $Id: sm_vas.h,v 1.30 2010/05/26 01:20:12 nhall Exp $
+ $Id: sm_vas.h,v 1.32 2010/09/21 14:26:17 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -38,36 +38,52 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 /**\addtogroup SSMAPI 
  *
- * \details
- * The rest of this page points to examples of code that uses 
- * the storage manager, and the modules listed below describe
- * various aspects of the functionality and methods provided by the
- * storage manager.
- *
- * \section SSMVAS Examples of Server Code
+ * \section COMPILE Compiling and Linking Server Code
  * \addtogroup SSMAPI
  *
- * \subsection EXMIN Minimal Example
+ * The compiler invocation requires certain flags to ensure the
+ * use of pthreads and the LP64 data model; it also has to
+ * include the storage manager's libraries.  
+ *
+ * When the storage manager  is built, 
+ * its "make" flags are written to a file called 
+ * - "makeflags"
+ * in the source root directory (or the installed include/ directory).  
+ * These flags usually include (subject to platform):
+ * - -DARCH_LP64 -m64
+ * - -D_POSIX_THREAD_SEMANTICS -D_REENTRANT -pthread (Linux)
+ * - -library=stlport4 -features=extensions,zla -DSOLARIS2 -mt -D_POSIX_THREAD_SEMANTICS -D_REENTRANT -lpthread (Solaris)
+ *
+ * The list of libraries must include -lrt and possibly -lnsl.
+ *
+ * \section EXAMPLES Examples
+ * \addtogroup SSMAPI
+ *
  * Any code that uses the SHORE Storage Manager requires 
  * \code
  * #include <sm_vas.h>
  * \endcode
+ * This header file encapsulates all the storage manager header files needed
+ * by a value-added server.
+ *
+ * \subsection EXMIN A Minimal Example
  * For a simple example, see \ref startstop.cpp
  *
  * \subsection EXINIT_CONFIG_OPTIONS Setting Up Run-Time Options
  * The example \ref init_config_options.cpp
- * demonstrates a more extensive handling of option, and
+ * demonstrates a more extensive handling of run-time options, and
  * is used in other examples, below.
  *
  * \subsection EXCREATE_REC Creating a file of Records
  * The example \ref create_rec.cpp
  * shows a server that creates a file of records.
-  * It must also contain, of course, the creation of options, starting up
-  * and shutting down a storage manager.
+ * Thus, it also contains code to initialize a volume and
+ * create a file.
  *
  * \subsection EXLOG_EXCEED  Use of ss_m::ss_m Arguments
  * The example \ref log_exceed.cpp
- * demonstrates the use of the ss_m::ss_m arguments.
+ * demonstrates the use of the arguments to the
+ * storage manager constructor (ss_m::ss_m).
  * It is an extension of the above example that
  * generates enough log to run out of log space.
  */
@@ -111,7 +127,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include "scan.h"
 #include "kvl_t.h" // define kvl_t for lock_base_t
 #include "lock_s.h" // define lock_base_t
-#include "key_ranges_map.h"
 
 #include "sort.h" // define sort_stream_i
 #include "sort_s.h" // key_info_t

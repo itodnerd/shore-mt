@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: sort.all,v 1.16.4.1 2009/09/14 00:10:46 nhall Exp $
+#  $Id: sort.all,v 1.21 2010/08/23 14:28:23 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -29,10 +29,12 @@
 
 set scripts [list sort.1 sort.2 sort.3 sort.4 ]
 
-# NB: sort.mkey.1 moved to long-handling below
+set do_long_scripts 1
 
 if { [is_set do_long_scripts] } {
      lappend scripts sort.long.all
 }
 echo ABOUT TO RUN $scripts
 runscripts $scripts
+
+unset do_long_scripts

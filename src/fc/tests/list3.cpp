@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: list3.cpp,v 1.24.2.4 2010/03/19 22:17:53 nhall Exp $
+ $Id: list3.cpp,v 1.28 2010/12/08 17:37:38 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -33,8 +33,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 #include <w_stream.h>
 #include <cstddef>
-
-#define W_INCL_LIST_EX
 #include <w.h>
 
 struct elem3_t {
@@ -48,7 +46,7 @@ typedef w_descend_list_t<elem3_t, unsafe_list_dummy_lock_t, int>  elem_descend_l
 int main()
 {
     elem3_t array[10];
-    elem3_t* p = NULL;
+    elem3_t* p;
 
     int i;
     for (i = 0; i < 10; i++)
@@ -67,33 +65,33 @@ int main()
 
         for (i = 0; i < 10; i++)  {
             p = u.search(i);
-            w_assert9(p && p->i == i);
+            w_assert0(p && p->i == i);
         }
 
         {
             w_list_i<elem3_t, unsafe_list_dummy_lock_t> iter(u);
             for (i = 0; i < 10; i++)  {
                 p = iter.next();
-                w_assert9(p && p->i == i);
+                w_assert0(p && p->i == i);
             }
-            w_assert9(iter.next() == 0);
+            w_assert0(iter.next() == 0);
         }
 
         p = u.first();
-        w_assert9(p && p->i == 0);
+        w_assert0(p && p->i == 0);
 
         p = u.last();
-        w_assert9(p && p->i == 9);
+        w_assert0(p && p->i == 9);
 
         for (i = 0; i < 10; i++)  {
             p = u.first();
-            w_assert9(p && p->i == i);
+            w_assert0(p && p->i == i);
             p = u.pop();
-            w_assert9(p && p->i == i);
+            w_assert0(p && p->i == i);
         }
 
         p = u.pop();
-        w_assert9(!p);
+        w_assert0(!p);
     }
 
     {
@@ -109,33 +107,33 @@ int main()
 
         for (i = 0; i < 10; i++)  {
             p = d.search(i);
-            w_assert9(p == &array[i]);
+            w_assert0(p == &array[i]);
         }
 
         {
             w_list_i<elem3_t, unsafe_list_dummy_lock_t> iter(d);
             for (i = 0; i < 10; i++)  {
                 p = iter.next();
-                w_assert9(p && p->i == 9 - i);
+                w_assert0(p && p->i == 9 - i);
             }
-            w_assert9(iter.next() == 0);
+            w_assert0(iter.next() == 0);
         }
 
         p = d.first();
-        w_assert9(p && p->i == 9);
+        w_assert0(p && p->i == 9);
 
         p = d.last();
-        w_assert9(p && p->i == 0);
+        w_assert0(p && p->i == 0);
 
         for (i = 0; i < 10; i++)  {
             p = d.first();
-            w_assert9(p && p->i == 9 - i);
+            w_assert0(p && p->i == 9 - i);
             p = d.pop();
-            w_assert9(p && p->i == 9 - i);
+            w_assert0(p && p->i == 9 - i);
         }
 
         p = d.pop();
-        w_assert9(!p);
+        w_assert0(!p);
     }
 
     return 0;

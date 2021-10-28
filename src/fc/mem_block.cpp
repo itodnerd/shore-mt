@@ -20,6 +20,36 @@
    DISCLAIM ANY LIABILITY OF ANY KIND FOR ANY DAMAGES WHATSOEVER
    RESULTING FROM THE USE OF THIS SOFTWARE.
 */
+/*<std-header orig-src='shore' incl-file-exclusion='MEM_BLOCK_CPP'>
+
+ $Id: mem_block.cpp,v 1.10 2012/01/02 21:52:21 nhall Exp $
+
+SHORE -- Scalable Heterogeneous Object REpository
+
+Copyright (c) 1994-99 Computer Sciences Department, University of
+                      Wisconsin -- Madison
+All Rights Reserved.
+
+Permission to use, copy, modify and distribute this software and its
+documentation is hereby granted, provided that both the copyright
+notice and this permission notice appear in all copies of the
+software, derivative works or modified versions, and any portions
+thereof, and that both notices appear in supporting documentation.
+
+THE AUTHORS AND THE COMPUTER SCIENCES DEPARTMENT OF THE UNIVERSITY
+OF WISCONSIN - MADISON ALLOW FREE USE OF THIS SOFTWARE IN ITS
+"AS IS" CONDITION, AND THEY DISCLAIM ANY LIABILITY OF ANY KIND
+FOR ANY DAMAGES WHATSOEVER RESULTING FROM THE USE OF THIS SOFTWARE.
+
+This software was developed with support by the Advanced Research
+Project Agency, ARPA order number 018 (formerly 8230), monitored by
+the U.S. Army Research Laboratory under contract DAAB07-91-C-Q518.
+Further funding for this work was provided by DARPA through
+Rome Research Laboratory Contract No. F30602-97-2-0247.
+
+*/
+
+/**\cond skip */
 
 #include "w.h"
 #include "mem_block.h"
@@ -35,54 +65,15 @@
 #undef assert
 void assert_failed(const char *desc, const char *f, int l) {
     fprintf(stdout, "Assertion failed: %s at line %d file %s ", desc, l,f);
-	w_assert0(0);
+    w_assert0(0);
 }
 #define assert(x)   if (!(x)) assert_failed(#x, __FILE__, __LINE__);
 
-#define TEMPLATE_ARGS chip_size, chip_count, block_size
 
 namespace memory_block {
-#if 0
+#if 0 /* keep emacs happy */
 } // keep emacs happy...
 #endif
-
-// adapted from http://chessprogramming.wikispaces.com/Population+Count#SWAR-Popcount
-typedef unsigned long long u64;
-static inline
-long popc64(u64 x) {
-    u64 k1 = 0x5555555555555555ull;
-    u64 k2 = 0x3333333333333333ull;
-    u64 k4 = 0x0f0f0f0f0f0f0f0full;
-    u64 kf = 0x0101010101010101ull;
-    x =  x       - ((x >> 1)  & k1); //put count of each 2 bits into those 2 bits
-    x = (x & k2) + ((x >> 2)  & k2); //put count of each 4 bits into those 4 bits
-    x = (x       +  (x >> 4)) & k4 ; //put count of each 8 bits into those 8 bits
-    x = (x * kf) >> 56; //returns 8 most significant bits of x + (x<<8) + (x<<16) + (x<<24) + ...
-    return x;
-}
-
-size_t        block_bits::_popc(bitmap bm) {
-#ifdef __GNUC__
-    
-#if defined(__x86_64) || defined(i386) || defined(__i386__)
-// #warning "Using __builtin_popcountll"
-    return __builtin_popcountll(bm);
-    
-#elif defined(__sparcv9)
-#warning "Using gcc inline asm to access sparcv9 'popc' instruction"
-    long rval;
-    __asm__("popc    %[in], %[out]" : [out] "=r"(rval) : [in] "r"(x));
-    return rval;
-#else
-#warning "using home-brew popc routine"
-    return popc64(bm);
-#endif
-    
-#else // !defined(__GNUC__)
-#warning "using home-brew popc routine"
-    return popc64(bm);
-#endif
-}
 
 block_bits::block_bits(size_t chip_count)
     : _usable_chips(create_mask(chip_count))
@@ -91,7 +82,10 @@ block_bits::block_bits(size_t chip_count)
     assert(chip_count <= 8*sizeof(bitmap));
 }
 
-size_t block_bits::acquire(size_t chip_count) {
+/**\brief acquire chip_count contiguous chips 
+ * by finding adjacent bits in _usable_chips
+ */
+size_t block_bits::acquire_contiguous(size_t chip_count) {
     (void) chip_count; // make gcc happy...
     
     /* find the rightmost set bit.
@@ -118,15 +112,12 @@ size_t block_bits::acquire(size_t chip_count) {
     return index;
 }
 
-void block_bits::release(size_t index, size_t chip_count) {
+void block_bits::release_contiguous(size_t index, size_t chip_count) {
     // assign this chip to the zombie set for later recycling
     (void) chip_count; // keep gcc happy
     assert(index < chip_count);
     bitmap to_free = bitmap(1) << index;
     assert(! (to_free & *usable_chips()));
-#if I_WISH
-    bitmap was_free = __sync_fetch_and_or(&_zombie_chips, to_free);
-#else
     membar_exit();
     bitmap volatile* ptr = &_zombie_chips;
     bitmap ov = *ptr;
@@ -138,9 +129,9 @@ void block_bits::release(size_t index, size_t chip_count) {
         ov = cv;
     }
     bitmap was_free = ov;
-#endif
     (void) was_free; // keep gcc happy
-    assert(! (was_free & to_free));
+
+    assert( ! (was_free & to_free));
 }
 
 block_bits::bitmap block_bits::create_mask(size_t bits_set) {
@@ -149,38 +140,38 @@ block_bits::bitmap block_bits::create_mask(size_t bits_set) {
 }
 
 void block_bits::recycle() {
-    /* recycle the block.
+    /* recycle the zombies in the block.
 
        Whatever bits have gone zombie since we last recycled become
-       the new set of usable bits. We also XOR them atomically back
+       OR-ed into the set of usable bits. We also XOR them atomically back
        into the zombie set to clear them out there. That way we don't
        leak bits if a releasing thread races us and adds more bits to the
        zombie set after we read it.
     */
     bitmap newly_usable = *&_zombie_chips;
     _usable_chips |= newly_usable;
-#if I_WISH
-    __sync_xor_and_fetch(&_zombie_chips, newly_usable);
-#else
     membar_exit();
     bitmap volatile* ptr = &_zombie_chips;
     bitmap ov = *ptr;
     while(1) {
-        bitmap nv = ov ^ newly_usable;
+        bitmap nv = ov ^ newly_usable; // XOR
         bitmap cv = atomic_cas_64(ptr, ov, nv);
         if(cv == ov)
             break;
         ov = cv;
     }
-#endif
 }
 
-void* block::acquire(size_t chip_size, size_t chip_count, size_t /*block_size*/) {
-    size_t index = _bits.acquire(chip_count);
-    return (index < chip_count)? _get(index, chip_size) : 0;
+memory_block::chip_t block_of_chips::acquire_chip(size_t chip_size, size_t chip_count, size_t) 
+{
+    size_t index = _bits.acquire_contiguous(chip_count); 
+    memory_block::chip_t result = {0};
+    if (index < chip_count) result = get(index, chip_size);
+    return result;
 }
 
-void block::release(void* ptr, size_t chip_size, size_t chip_count, size_t block_size)
+
+void block_of_chips::release_chip(chip_t ptr, size_t chip_size, size_t chip_count, size_t block_size)
 {
     /* use pointer arithmetic to find the beginning of our block,
        where the block* lives.
@@ -188,26 +179,23 @@ void block::release(void* ptr, size_t chip_size, size_t chip_count, size_t block
        Our caller is responsible to be sure this address actually
        falls inside a memory block
      */
-    union { void* v; size_t n; block* b; char* c; } u = {ptr}, v=u;
+    union { void* v; size_t n; block_of_chips* b; char* c; } u = {ptr.v}, v=u;
     u.n &= -block_size;
     size_t offset = v.c - u.b->_data;
     size_t idx = offset/chip_size;
-    assert(u.b->_data + idx*chip_size == ptr);
-    u.b->_bits.release(idx, chip_count);
+    assert(u.b->_data + idx*chip_size == ptr.v);
+    u.b->_bits.release_contiguous(idx, chip_count);
 }
 
-char* block::_get(size_t index, size_t chip_size) {
-    return _data + index*chip_size;
-}
 
-block::block(size_t chip_size, size_t chip_count, size_t block_size)
+block_of_chips::block_of_chips(size_t chip_size, size_t chip_count, size_t block_size)
     : _bits(chip_count)
     , _owner(0)
     , _next(0)
 {
     // make sure all the chips actually fit in this block
-    char* end_of_block = _get(0, chip_size)-sizeof(*this)+block_size;
-    char* end_of_chips = _get(chip_count, chip_size);
+    char* end_of_block = get(0, chip_size).c -sizeof(this)+block_size;
+    char* end_of_chips = get(chip_count, chip_size).c;
     (void) end_of_block; // keep gcc happy
     (void) end_of_chips; // keep gcc happy
     assert(end_of_chips <= end_of_block);
@@ -215,30 +203,36 @@ block::block(size_t chip_size, size_t chip_count, size_t block_size)
     /* We purposefully don't check alignment here because some parts
        of the impl cheat for blocks which will never be used to
        allocate anything (the fake_block being the main culprit).
-       The block_pool does check alignment, though.
+       The pool_of_blocks does check alignment, though.
      */
 }
 
-void* block_list::acquire(size_t chip_size, size_t chip_count, size_t block_size)
+/* chip_size, chip_count and block_size are fixed for any list. We always
+ * acquire one chip here.
+ */
+chip_t block_list::acquire(size_t chip_size, size_t chip_count, size_t block_size)
 {
-    if(void* ptr = _tail->acquire(TEMPLATE_ARGS)) {
+    // Pull a chip off the tail. If that fails, we'll reorganize and
+    // try again.
+    chip_t ptr = _tail->acquire_chip(chip_size, chip_count, block_size);
+    if(ptr.v) {
         _hit_count++;
         return ptr;
     }
 
     // darn... gotta do it the hard way
-    return _slow_acquire(TEMPLATE_ARGS);
+    return _slow_acquire(chip_size, chip_count, block_size);
 }
 
 
-block_list::block_list(block_pool* pool, size_t chip_size, size_t chip_count, size_t block_size)
-    : _fake_block(TEMPLATE_ARGS)
+block_list::block_list(pool_of_blocks* pool, size_t chip_size, size_t chip_count, size_t block_size)
+    : _fake_block(chip_size, chip_count, block_size)
     , _tail(&_fake_block)
     , _pool(pool)
     , _hit_count(0)
     , _avg_hit_rate(0)
 {
-    /* make the fake block advertize that it has nothing to give
+    /* make the fake block advertise that it has nothing to give
 
        The first time the user tries to /acquire/ the fast case will
        detect that the fake block is "full" and fall back to the slow
@@ -248,34 +242,46 @@ block_list::block_list(block_pool* pool, size_t chip_size, size_t chip_count, si
        This trick lets us minimize the number of branches required by
        the fast path acquire.
      */
-    _fake_block._bits._usable_chips = 0;
-    _fake_block._bits._zombie_chips = 0;
+    _fake_block._bits.fake_full();
 }
 
 
-void* block_list::_slow_acquire(size_t chip_size, size_t chip_count, size_t block_size)
+chip_t block_list::_slow_acquire(size_t chip_size, 
+        size_t chip_count, size_t block_size)
 {
-    _change_blocks(TEMPLATE_ARGS);
-    return acquire(TEMPLATE_ARGS);
+    // no hit by looking at the last block in the list, so me
+    // must rearrange the list or add blocks if necessary
+    _change_blocks(chip_size, chip_count, block_size);
+    // try again
+    return acquire(chip_size, chip_count, block_size);
 }
 
-block* block_list::acquire_block(size_t block_size)
+block_of_chips* block_list::acquire_block(size_t block_size)
 {
-    union { block* b; uintptr_t n; } u = {_pool->acquire_block(this)};
+    union { block_of_chips* b; uintptr_t n; } u = {_pool->acquire_block(this)};
     (void) block_size; // keep gcc happy
     assert((u.n & -block_size) == u.n);
+    // Note that the block might already have (still-)allocated
+    // chips so we do not initialize the block.
     return u.b;
     
 }
-void block_list::_change_blocks(size_t chip_size, size_t chip_count, size_t block_size)
+
+/* Rearrange the list.  This is called after we failed to 
+ * acquire a chip from the last block in the list (tail).
+ * We don't know about other blocks in the list yet.
+ */
+void block_list::_change_blocks(size_t chip_size, 
+        size_t chip_count, size_t block_size)
 {
     (void) chip_size; // keep gcc happy
 
     // first time through?
     if(_tail == &_fake_block) {
-    _tail = acquire_block(block_size);
-    _tail->_next = _tail;
-    return;
+        // remove fake block from the list.
+        _tail = acquire_block(block_size);
+        _tail->_next = _tail;
+        return;
     }
     
     /* Check whether we're chewing through our blocks too fast for the
@@ -291,65 +297,115 @@ void block_list::_change_blocks(size_t chip_size, size_t chip_count, size_t bloc
        some minimum utilization threshold, discarding all but one of
        them (keep the last for buffering purposes).
     */
-    static double const    decay_rate = 1./5; // consider (roughly) the last 5 blocks
-    // too few around suggests we should unload some extra blocks 
-    size_t const max_available = chip_count - std::max((int)(.1*chip_count), 1);
-    // more than 50% in-use suggests we've got too few blocks
-    size_t const min_allocated = (chip_count+1)/2;
-    
+
+    // decay_rate is used to compute average hit rate.
+    // consider (roughly) the last 5 blocks
+    static double const    decay_rate = 1./5; 
     _avg_hit_rate = _hit_count*(1-decay_rate) + _avg_hit_rate*decay_rate;
+
+    // min_allocated is where we would like to see the hit counts 
+    // settle.  If we find we are failing to acquire while the hit counts
+    // are below this, we must increase the #blocks in the list (ring size).
+    size_t const min_allocated = (chip_count+1)/2; // 50%
+    
+    
+    // max_available is 
+    // an integral number and less than but close to chip_count;
+    // TODO: better explanation of this:
+    // Too many chips available in a block of chips
+    // suggests we should unload some extra blocks.
+    // Choose smaller of: chip_count-1 and .9 chip_count.  
+    size_t const max_available = chip_count - std::max((int)(.1*chip_count), 1);
+
     if(_hit_count < min_allocated && _avg_hit_rate < min_allocated) {
         // too fast.. grow the ring
-        block* new_block = acquire_block(block_size);
+        block_of_chips* new_block = acquire_block(block_size);
         new_block->_next = _tail->_next;
         _tail = _tail->_next = new_block;
     }
     else {
         // compress the run, if any
-        block* prev = 0;
-        block* cur = _tail;
-        block* next;
+        block_of_chips* prev = 0;
+        block_of_chips* cur = _tail;
+        block_of_chips* next;
         while(1) {
             next = cur->_next;
+            /* make all zombies in the block usable */
             next->recycle();
-            if(next->_bits.usable_count() <= max_available)
-            break;
+
+            /* now see how many of the chips are still in use. If too few,
+             * move the tail, set hit count to 0
+             * and return so that the client ends up calling us again
+             * and acquiring another block to become the new tail.
+             */
+            if(next->_bits.usable_count() <= max_available) {
+                // cause the tail to move to avoid certain perverse
+                // behavior when the usable count is 0 but
+                // chips have been freed at the front of the
+                // list.  We don't
+                // want to forever allocate new blocks just because there's
+                // one fully-allocated block in the list.
+                // By moving the tail, it slowly circulates through the
+                // list and our first inspection will be of a *diferent* block
+                // after the newly allocated block is consumed.
+                cur = next;
+                break;
+            }
             
-            // compression possible?
+            // This block has plenty of usable chips. Enough in fact
+            // that it's worth releasing it to the underlying pool.
             if(prev) {
-            assert(prev != cur);
-            assert(cur->_bits.usable_count() > max_available);
-            assert(next->_bits.usable_count() > max_available);
-            prev->_next = next;
-            _pool->release_block(cur);
-            cur = prev; // reset
+                assert(prev != cur);
+                // assert(cur->_bits.usable_count() > max_available);
+                assert(next->_bits.usable_count() > max_available);
+                prev->_next = next;
+                _pool->release_block(cur);
+                cur = prev; // reset
             }
 
             // avoid the endless loop
-            if(next == _tail)
-            break;
+            if(next == _tail) break;
             
             prev = cur;
             cur = next;
-        }
+        } // while
 
         // recycle, repair the ring, and advance
+        // NB: if we broke out of the while loop on the first try,
+        // we will not mave moved the tail at all.
         _tail = cur;
     }
 
+    // # fast acquires(hits) since last _change_blocks
     _hit_count = 0;
 }
 
+/* recycle all blocks in the list.  This is to force 
+ * recycling of the heap after a spike of releases,
+ * w/o waiting for the next acquire.
+ */
+void block_list::recycle(size_t chip_size, 
+        size_t chip_count, size_t block_size)
+{
+    _hit_count = chip_count; // artificially set _hit_count
+    // so when we call _change_block we can't possibly
+    // add a block to the list, and we try to compress instead.
+    _change_blocks(chip_size, chip_count, block_size);
+}
+
 block_list::~block_list() {
+
     // don't free the fake block if we went unused!
     if(_tail == &_fake_block) return;
-    
+
     // break the cycle so the loop terminates
-    block* cur = _tail->_next;
+    block_of_chips* cur = _tail->_next;
     _tail->_next = 0;
 
     // release blocks until we hit the NULL
-    while( (cur=_pool->release_block(cur)) ) ;
+    while( (cur=_pool->release_block(cur)) )  {
+    }
 }
 
+/**\endcond skip */
 } // namespace memory_block

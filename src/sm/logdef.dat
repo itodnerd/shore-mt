@@ -1,6 +1,6 @@
 # <std-header style='data' orig-src='shore'>
 #
-#  $Id: logdef.dat,v 1.60.2.4 2010/01/28 04:54:08 nhall Exp $
+#  $Id: logdef.dat,v 1.67 2010/10/27 17:04:23 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -75,6 +75,7 @@
 #                      an undoable log record.                          #
 #                      --> t_logical                                    # 
 #                                                                       #
+#        fudge = observed fudge factor for log space reservations       #
 #                                                                       #
 #        arg  = arguments to constructor                                #
 #                      SPECIAL CASE: first argument is "page":          #
@@ -84,116 +85,117 @@
 #                      3) page.set_dirty() if logging is skipped        #
 #                                    #
 #########################################################################
-# type             XSRUFAL     arg                                      #
+# type             XSRUFAL  fudge    arg                                #
 #########################################################################
-comment            1011001 (const char* msg);
-compensate         1000001 (lsn_t  rec_lsn);
-skip               0000000 ();
-chkpt_begin        0000000 (const lsn_t &lastMountLSN);
-chkpt_bf_tab       0000000 (int cnt, const lpid_t* pid,
+comment            1011001 1.0 (const char* msg);
+compensate         1000001 0.0 (const lsn_t& rec_lsn);
+skip               0000000 0.0 ();
+chkpt_begin        0000000 0.0 (const lsn_t &lastMountLSN);
+chkpt_bf_tab       0000000 0.0 (int cnt, const lpid_t* pid,
                             const lsn_t* rec_lsn);
-chkpt_xct_tab      0000000 (const tid_t& youngest, 
+chkpt_xct_tab      0000000 0.0 (const tid_t& youngest, 
                             int cnt, const tid_t* tid, 
                             const smlevel_1::xct_state_t* state,
                             const lsn_t* last_lsn, const lsn_t* undo_nxt);
-chkpt_dev_tab      0000000 (int cnt, const char **dev_name, const vid_t* vid);
-chkpt_end          0000000 (const lsn_t& master, const lsn_t& min_rec_lsn);
-mount_vol          0010010 (const char *dev_name, const vid_t &vid);
-dismount_vol       0010010 (const char *dev_name, const vid_t &vid);
+chkpt_dev_tab      0000000 0.0 (int cnt, const char** dev_name, const vid_t* vid);
+chkpt_end          0000000 0.0 (const lsn_t& master, const lsn_t& min_rec_lsn);
+mount_vol          0010010 0.0 (const char *dev_name, const vid_t &vid);
+dismount_vol       0010010 0.0 (const char *dev_name, const vid_t &vid);
 #########################################################################
-# type             XSRUFAL     arg                                      #
+# type             XSRUFAL  fudge    arg                                #
 #########################################################################
-xct_abort          1000000 ();
-xct_freeing_space  1000000 ();
-xct_end            1000000 ();
-xct_prepare_st     1010000 (const gtid_t* g, const server_handle_t& h);
-xct_prepare_lk     1010000 (int num, lock_mode_t mode, lockid_t* lks);
-xct_prepare_alk    1010000 (int num, lockid_t* lks, lock_mode_t* modes);
-xct_prepare_stores 1010000 (int num, const stid_t* stids);
-xct_prepare_fi     1010000 (int numex, int numix, int numsix, int numextent, const lsn_t& first);
+xct_abort          1000000 0.0 ();
+xct_freeing_space  1000000 0.0 ();
+xct_end            1000000 0.0 ();
+xct_end_group      1000000 0.0 (const xct_t** l, int llen);
+xct_prepare_st     1010000 0.0 (const gtid_t* g, const server_handle_t& h);
+xct_prepare_lk     1010000 0.0 (int num, lock_mode_t mode, lockid_t* lks);
+xct_prepare_alk    1010000 0.0 (int num, lockid_t* lks, lock_mode_t* modes);
+xct_prepare_stores 1010000 0.0 (int num, const stid_t* stids);
+xct_prepare_fi     1010000 0.0 (int numex, int numix, int numsix, int numextent, const lsn_t& first, int rsvd, int ready, int used);
 #########################################################################
-# type             XSRUFAL     arg                                      #
+# type             XSRUFAL  fudge    arg                                #
 #########################################################################
 # page allocation log records - testable(physical) for redo
 # alloc_file_page is marked "logical" because there's no need to fix the
 # page in the automagic-handling code.
-alloc_file_page    1001011 (const lpid_t& pid);
-alloc_pages_in_ext 1011011 (const page_p& page, snum_t snum, 
+alloc_file_page    1001011 2.4 (const lpid_t& pid, const lsn_t&  rec_lsn);
+alloc_pages_in_ext 1011011 1.0 (const page_p& page, snum_t snum, 
                             extnum_t idx, const Pmap& pmap);
-free_pages_in_ext  1011011 (const page_p& page, snum_t snum, 
+free_pages_in_ext  1011011 1.5 (const page_p& page, snum_t snum, 
                             extnum_t idx, const Pmap& pmap);
 
 # page allocation log records - testable(physical) for redo
 # create_ext_list for creation of an extent list all on same page
 # free_ext_list is reverse of create_ext_list; all on same page
-create_ext_list    1010011 (const page_p& page, const stid_t& stid, 
+create_ext_list    1010011 0.0 (const page_p& page, const stid_t& stid, 
                            extnum_t prev, extnum_t next, 
                            extnum_t count, const extnum_t* list);
-free_ext_list      1010011 (const page_p& page, const stid_t& stid, 
+free_ext_list      1010011 0.0 (const page_p& page, const stid_t& stid, 
                             extnum_t head, extnum_t count);
 # set_ext_next: when extent lists cross page boundaries
-set_ext_next       1010011 (const page_p& page, extnum_t ext, 
+set_ext_next       1010011 0.0 (const page_p& page, extnum_t ext, 
                             extnum_t new_next);
-store_operation    1011011 (const page_p& page, 
+store_operation    1011011 1.0 (const page_p& page, 
                             const store_operation_param& op);
 #########################################################################
-# type             XSRUFAL     arg                                      #
+# type             XSRUFAL  fudge    arg                                #
 #########################################################################
 #page_link used by btree pages only, for now
-page_link          1011000 (const page_p& page, shpid_t new_prev, 
+page_link          1011000 1.0 (const page_p& page, shpid_t new_prev, 
                             shpid_t new_next);
 
 # page_insert used by page_p::insert_expand (inserting into a slot): generic
 # page_remove used by page_p::remove_compress (removing a slot): semi-generic
-page_insert        1011000 (const page_p& page, int idx, int cnt, 
+page_insert        1011000 1.0 (const page_p& page, int idx, int cnt, 
                             const cvec_t* vec);
-page_remove        1011000 (const page_p& page, int idx, int cnt);
+page_remove        1011000 1.0 (const page_p& page, int idx, int cnt);
 
 # A page format reflects two operations: the page init/format part and
 # the insertion of something into the first slot.
 # generic page format: the page init part isn't undoable but the
 # insert_expand/reclaim part is undoable
-page_format        1011000 (const page_p& page, int idx, int cnt, 
+page_format        1011000 1.22 (const page_p& page, int idx, int cnt, 
                             const cvec_t* vec);
 # page_mark: marks a slot as deleted
 # page_reclaim: opposite of page_mark: makes a slot in-use
-page_mark          1011000 (const page_p& page, int idx);
-page_reclaim       1011000 (const page_p& page, int idx, const cvec_t& vec);
+page_mark          1011000 1.1 (const page_p& page, int idx);
+page_reclaim       1011000 1.67 (const page_p& page, int idx, const cvec_t& vec);
 
 # shift: move data from slot to slot: very generic
 # used by btree & rtree pages
-page_shift         1011000 (const page_p& page, int idx2, 
+page_shift         1011000 1.0 (const page_p& page, int idx2, 
                             page_s::slot_length_t off2, 
                             page_s::slot_length_t len2,
                             int idx1,  page_s::slot_length_t off1);
 # splice and splicez: very generic.
 # used by btree, rtree, file, large obj pages,
 # for cut/paste/overwrite/merge_slots, etc.
-page_splice        1011000 (const page_p& page, int idx, int start, int len, 
+page_splice        1011000 1.18 (const page_p& page, int idx, int start, int len, 
                             const cvec_t& vec);
-page_splicez       1011000 (const page_p& page, int idx, int start, 
+page_splicez       1011000 1.0 (const page_p& page, int idx, int start, 
                             int len, int osave, int nsave, const cvec_t& vec);
 
 # page_set_byte: for now used only by extlink pages
-page_set_byte      1011000 (const page_p& page, int idx, u_char old, 
+page_set_byte      1011000 1.0 (const page_p& page, int idx, u_char old, 
                             u_char bits, int op);
 #
 # page_image: for now used only by rtree pages & btree pages 
-page_image         1010000 (const page_p& page);
+page_image         1010000 0.0 (const page_p& page);
 #########################################################################
-# type             XSRUFAL     arg                                      #
+# type             XSRUFAL  fudge    arg                                #
 #########################################################################
-btree_purge        1011001 (const page_p& page);
-btree_insert       1011001 (const page_p& page, int idx, 
+btree_purge        1011001 3.29 (const page_p& page);
+btree_insert       1011001 1.42 (const page_p& page, int idx, 
                             const cvec_t& key, const cvec_t& el,
                             bool unique);
-btree_remove       1011001 (const page_p& page, int idx, 
+btree_remove       1011001 2.91  (const page_p& page, int idx, 
                             const cvec_t& key, const cvec_t& el,
                             bool unique);
-rtree_insert       1011001 (const page_p& page, int idx,
+rtree_insert       1011001 1.0  (const page_p& page, int idx,
                             const nbox_t& key, const cvec_t& el);
-rtree_remove       1011001 (const page_p& page, int idx, 
+rtree_remove       1011001 1.0  (const page_p& page, int idx, 
                             const nbox_t& key, const cvec_t& el);
 #########################################################################
-# type             XSRUFAL     arg                                      #
+# type             XSRUFAL  fudge    arg                                #
 #########################################################################

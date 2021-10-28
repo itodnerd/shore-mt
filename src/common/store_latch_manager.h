@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='STID_T_H'>
 
- $Id: store_latch_manager.h,v 1.1.2.7 2010/03/19 22:19:19 nhall Exp $
+ $Id: store_latch_manager.h,v 1.3 2010/12/08 17:37:34 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -94,8 +94,8 @@ private:
     };
     typedef std::map<stid_t, latch_t*, stid_cmp> latch_map;
     latch_map _latches ;
-#define USE_OCC_LOCK_HERE 1
-#ifdef USE_OCC_LOCK_HERE
+#define USE_OCC_LOCK_SLMGR 1
+#ifdef USE_OCC_LOCK_SLMGR
     occ_rwlock _latch_lock;
 #else
     queue_based_lock_t _latch_lock;

@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='CHKPT_SERIAL_H'>
 
- $Id: chkpt_serial.h,v 1.6.2.2 2009/06/23 01:01:40 nhall Exp $
+ $Id: chkpt_serial.h,v 1.7 2010/05/26 01:20:37 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

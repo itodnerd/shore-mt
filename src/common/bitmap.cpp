@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: bitmap.cpp,v 1.27.2.3 2010/01/28 04:52:52 nhall Exp $
+ $Id: bitmap.cpp,v 1.29 2010/12/08 17:37:34 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -48,7 +48,7 @@ inline int mod8(int x)         { return x & 7; }
 inline int div32(int x)        { return x >> 5; }
 inline int mod32(int x)        { return x & 31; }
 
-#define    OVERFLOW_MASK    0x100
+const int OVERFLOW_MASK = 0x100;
     
 
 void bm_zero(u_char* bm, int size)

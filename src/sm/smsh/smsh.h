@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='SSH_H'>
 
- $Id: smsh.h,v 1.2 2010/05/26 01:20:52 nhall Exp $
+ $Id: smsh.h,v 1.3 2010/12/08 17:37:45 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -48,12 +48,6 @@ do  {                                                           \
         int err = x;                                            \
         if (err)  { SSH_ERROR(err); }                           \
 } while (0)
-
-#define COMM_ERROR(err) \
-        cerr << "communication error: code " << (err) \
-             << ", file " << __FILE__ << ", line " << __LINE__
-
-#define COMM_FATAL(err) { COMM_ERROR(err); W_FATAL(fcINTERNAL); }
 
 //
 // Start and stop client communication listening thread

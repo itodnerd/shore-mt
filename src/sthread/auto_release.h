@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='AUTO_RELEASE_H'>
 
- $Id: auto_release.h,v 1.3 2010/06/15 17:26:00 nhall Exp $
+ $Id: auto_release.h,v 1.4 2010/12/08 17:37:50 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -123,6 +123,22 @@ class auto_release_t<pthread_mutex_t>
     pthread_mutex_t*                obj;
 };
 
+/**\brief Template class that releases a held latch upon destruction.
+ * 
+ * \sa auto_release_t<>
+ */
+template<>
+class auto_release_t<latch_t> 
+{
+ public:
+    /// construct with a pointer to the mutex
+    NORET            auto_release_t(latch_t* t) : obj(t) {}
+    void             exit() { if(obj) obj->latch_release(); obj=NULL; }
+    NORET            ~auto_release_t() { exit(); }
+ private:
+    latch_t*                obj;
+};
+
 /**\brief Template class that, upon destruction, releases a read-write lock held for read.
  *
  * This template class is an analog of auto_ptr<T>  from the C++ standard
@@ -139,13 +155,18 @@ class auto_release_t<pthread_mutex_t>
 template<class T>
 class auto_release_r_t {
  public:
-    NORET            auto_release_r_t(T& t)
-        : obj(t)    { }
+    NORET            auto_release_r_t(T& t) 
+        : _disabled(false), _obj(t)    { }
     NORET            ~auto_release_r_t() {
-        obj.release_read();
+        release_disable();
     }
+    void             release_disable() { 
+                        if(!_disabled) _obj.release_read(); 
+                        _disabled=true; }
+    void             disable() { _disabled=true; }
  private:
-    T&         obj;
+    bool       _disabled;
+    T&         _obj;
 };
 
 /**\brief Template class that, upon destruction, releases a read-write lock held for write.
@@ -166,12 +187,17 @@ class auto_release_w_t
 {
  public:
     NORET            auto_release_w_t(T& t)
-        : obj(t)    { }
+        : _disabled(false), _obj(t)    { }
     NORET            ~auto_release_w_t() {
-        obj.release_write();
+        release_disable();
     }
+    void             release_disable() { 
+                        if(!_disabled) _obj.release_write(); 
+                        _disabled=true; }
+    void             disable() { _disabled=true; }
  private:
-    T&         obj;
+    bool       _disabled;
+    T&         _obj;
 };
 
     

@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: random.all,v 1.15 2010/06/08 22:28:29 nhall Exp $
+#  $Id: random.all,v 1.20 2010/12/17 19:36:29 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -34,6 +34,8 @@
 #
 #
 
+ # rtree.1 removed because it has some problem. Don't know if it's
+ # in smsh, rtrees or elsewhere. GNATS 148
 
 set myscripts [list \
  vol.reinit\
@@ -61,7 +63,6 @@ set myscripts [list \
  btree.21\
  btree.3\
  btree.30 \
- btree.31 \
  btree.32 \
  btree.33 \
  btree.4\
@@ -88,9 +89,6 @@ set myscripts [list \
  cd.perf.7\
  cd.perf.8\
  \
- multi.1\
- multi.2\
- multi.3\
  deadlock.1\
  deadlock.2\
  deadlock.4\
@@ -120,14 +118,12 @@ set myscripts [list \
  mpw\
  pin.1\
  pin.2\
- pin.3\
  pin.4\
  pin.5\
  record_create_abort.1\
  recovery.1\
  recovery.2\
  recovery.4\
- rtree.1\
  rtree.2\
  rtree.3\
  rtree.4\
@@ -154,7 +150,6 @@ set myscripts [list \
  btree.simple.1\
  file_destroy.1\
  bt.insert.5 \
- trans.all\
  lgrec.very.3 \
  lockrec_sm \
  lockrec_pin \
@@ -162,7 +157,7 @@ set myscripts [list \
  free_ext \
 ]
 
-echo $myscripts
+# echo $myscripts
 source $script_dir/vol.init
 
 set garbage [open garbage_variables w]
@@ -170,12 +165,14 @@ set garbage [open garbage_variables w]
 cleanup $garbage
 addcleanupvars {i script}
 
+set count 0
 while { 1 } {
     set i [random [llength $myscripts]]
     set script [lindex $myscripts [expr $i] ]
-    echo
-    echo "SCRIPTS (from random.all): $myscripts"
-    echo "RUNNING (from random.all): $script"
+	incr count
+    # echo "SCRIPTS (from random.all): $myscripts"
+    # echo "echo RUNNING $count : $script"
+    # echo runscripts $script
     runscripts $script
     cleanup $garbage
 }

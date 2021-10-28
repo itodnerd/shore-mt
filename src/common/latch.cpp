@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore'>
 
- $Id: latch.cpp,v 1.43 2010/06/08 22:27:42 nhall Exp $
+ $Id: latch.cpp,v 1.49 2010/12/08 17:37:34 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -73,14 +73,8 @@ const char* const  latch_t::latch_mode_str[3] = { "NL", "SH", "EX" };
 
 
 latch_t::latch_t(const char* const desc) :
-#if LATCH_CAN_BLOCK_LONG
-    _blocking(false),
-#endif
     _total_count(0) 
 {
-#if LATCH_CAN_BLOCK_LONG
-    DO_PTHREAD(pthread_mutex_init(&_block_lock, NULL));
-#endif
     setname(desc);
 }
 
@@ -96,10 +90,6 @@ latch_t::~latch_t()
 
     w_assert2(mode() == LATCH_NL);
     w_assert2(num_holders() == 0);
-#if LATCH_CAN_BLOCK_LONG
-    w_assert2(_blocked_list.is_empty());
-    w_assert2(!_blocking);
-#endif
 #endif
 }
 
@@ -111,12 +101,12 @@ latch_t::~latch_t()
  * \details
  * Every time we want to grab a latch,
  * we have to create a latch_holder_t; we do that with the
- * holder_search class, which searches this list to make sure
- * we(this thread) doesn't already hold the latch and if not,
- * it creates a new latch_holder_t for the new latch acquisition,
- * and stuffs the latch_holder_t in this list.  If we do already
- * have hold the latch in some capacity, the holder_search returns
- * that existing latch_holder_t.
+ * holder_search class, which searches the per-thread list below
+ * to make sure we `(this thread) don't already hold the latch and 
+ * if not, it creates a new latch_holder_t for the new latch acquisition,
+ * and stuffs the latch_holder_t in this list.  
+ * If we do already have hold the latch in some capacity, the 
+ * holder_search returns that existing latch_holder_t.
  * So we can tell if this thread holds a given latch, and we can
  * find all latches held by this thread, but we can't find
  * all the holders of a given latch.
@@ -332,7 +322,7 @@ void latch_t::on_thread_init(sthread_t *who)
 {
     CRITICAL_SECTION(cs, holder_list_list_lock);
     holder_list_list.insert(std::make_pair(who, 
-				&latch_holder_t::thread_local_holders));
+                &latch_holder_t::thread_local_holders));
 }
 
 void latch_t::on_thread_destroy(sthread_t *who) 
@@ -395,37 +385,25 @@ latch_t::upgrade_if_not_block(bool& would_block)
     return RCOK;
 }
 
-void latch_t::latch_release() 
+int latch_t::latch_release() 
 {
     holder_search me(this);
     // we should already hold the latch!
     w_assert2(me.value() != NULL);
-    _release(me.value());
+    return _release(me.value());
 }
 
 w_rc_t latch_t::_acquire(latch_mode_t new_mode, 
     sthread_t::timeout_in_ms timeout, 
     latch_holder_t* me) 
 {
-    FUNC(latch_t::acquire);
+    FUNC(latch_t::_acquire);
     DBGTHRD( << "want to acquire in mode " 
             << W_ENUM(new_mode) << " " << *this
             );
     w_assert2(new_mode != LATCH_NL);
     w_assert2(me);
 
-    // pin: special case for plp
-    if(new_mode == LATCH_NLS || new_mode == LATCH_NLX) {
-	if(me->_latch != this) {
-	    me->_latch = this;
-	    me->_count = 1;
-	}
-	_lock.set_plp(new_mode == LATCH_NLS);
-	me->_mode = new_mode;
-	return (RCOK);
-    }
-		
-    
     bool is_upgrade = false;
     if(me->_latch == this) 
     {
@@ -446,6 +424,17 @@ w_rc_t latch_t::_acquire(latch_mode_t new_mode,
             me->_count++; // thread-local
             // fprintf(stderr, "acquire latch %p %dx in mode %s\n", 
             //        this, me->_count, latch_mode_str[new_mode]);
+#if defined(EXPENSIVE_LATCH_COUNTS) && EXPENSIVE_LATCH_COUNTS>0
+            // These are counted in bf statistics.
+            // but if we don't count them here, we will get
+            // a misleading impression of the wait counts
+            // is_upgrade is figured w/o consideraton whether request is
+            // conditional/unconditional, but we consider it
+            // uncondl because the unconditional case is 
+            // the one we're trying to understand in the callers
+            // (bf find, bf scan, btree latch
+            INC_STH_STATS(latch_uncondl_nowait);
+#endif
             return RCOK;
         } else if(new_mode == LATCH_EX && me->_mode == LATCH_SH) {
             is_upgrade = true;
@@ -459,29 +448,61 @@ w_rc_t latch_t::_acquire(latch_mode_t new_mode,
 
     // have to acquire for real
     
-#if !LATCH_CAN_BLOCK_LONG
     if(is_upgrade) {
+        // to avoid deadlock,
+        // never block on upgrade 
         if(!_lock.attempt_upgrade())
             return RC(sthread_t::stINUSE);
 
         w_assert2(me->_count > 0);
         w_assert2(new_mode == LATCH_EX);
         me->_mode = new_mode;
+#if defined(EXPENSIVE_LATCH_COUNTS) && EXPENSIVE_LATCH_COUNTS>0
+        // These are counted in bf statistics.
+        // but if we don't count them here, we will get
+        // a misleading impression of the wait counts
+        // is_upgrade is figured w/o consideraton whether request is
+        // conditional/unconditional, but we consider it
+        // uncondl because the unconditional case is 
+        // the one we're trying to understand in the callers
+        // (bf find, bf scan, btree latch
+        INC_STH_STATS(latch_uncondl_nowait);
+#endif
     } else {
         if(timeout == WAIT_IMMEDIATE) {
+            INC_STH_STATS(needs_latch_condl);
             bool success = (new_mode == LATCH_SH)? 
                 _lock.attempt_read() : _lock.attempt_write();
             if(!success)
                 return RC(sthread_t::stTIMEOUT);
+            INC_STH_STATS(latch_condl_nowait);
         }
         else {
             // forever timeout
-	    if(new_mode == LATCH_SH) {
+            INC_STH_STATS(needs_latch_uncondl);
+            if(new_mode == LATCH_SH) {
+// NOTE: These stats are questionable in their
+// heiseneffect as well as in the fact that we might
+// not wait in the _lock.acquire_{read,write} call
+// after the attempt- call. Nevertheless, they might
+// help us in some instances to understand where the
+// contention is, and are under compiler control for
+// this reason.
+#if defined(EXPENSIVE_LATCH_COUNTS) && EXPENSIVE_LATCH_COUNTS>0
+                if(_lock.attempt_read()) {
+                    INC_STH_STATS(latch_uncondl_nowait);
+                } else
+#endif
                 _lock.acquire_read();
             }
             else {
                 w_assert2(new_mode == LATCH_EX);
                 w_assert2(me->_count == 0);
+#if defined(EXPENSIVE_LATCH_COUNTS) && EXPENSIVE_LATCH_COUNTS>0
+                if(_lock.attempt_write()) {
+                    INC_STH_STATS(latch_uncondl_nowait);
+                } else 
+#endif
                 _lock.acquire_write();
             }
         }
@@ -490,98 +511,12 @@ w_rc_t latch_t::_acquire(latch_mode_t new_mode,
     }
     atomic_inc_uint(&_total_count);// BUG_SEMANTICS_FIX
     me->_count++;// BUG_SEMANTICS_FIX
-
-#endif
-
-#if LATCH_CAN_BLOCK_LONG
-    CRITICAL_SECTION(cs, _lock);
-    while(new_mode != LATCH_NL) {
-        w_rc_t rc;
-        if(new_mode == LATCH_SH) {
-            // once we hold the latch in EX, we can't request SH any more
-            w_assert2(me->_mode != LATCH_EX);
-            if(new_mode < LATCH_EX && _blocked_list.is_empty())
-                break;
-            // wait for EX holder to leave
-        } else {
-            // we shouldn't get here if we already hold it in EX (handled above)
-            w_assert2(me->_mode != LATCH_EX);    
-            if(_mode == LATCH_NL) {
-                // lock is supposedly free...
-                w_assert2(holders() == 0);
-                w_assert2(me->_mode == LATCH_NL);
-                w_assert2(me->_count == 0);
-                break;
-            }
-
-            // We can't safely upgrade from SH to EX if there are other holders
-            if(me->_mode == LATCH_SH) {
-                // upgrade failed -- caller better be upgrade_if_not_block()
-                w_assert2(is_upgrade);
-
-                if(num_holders() == 1) // me!
-                      break;
-            
-                return RC(sthread_t::stINUSE);
-            }
-            // wait for other holders to leave
-        }
-      
-        if(timeout != WAIT_IMMEDIATE) {
-            {
-                DBGTHRD(<<"about to await " << *this);
-                _blocking = true;
-                cs.pause();
-                CRITICAL_SECTION(bcs, _block_lock);
-
-                // raced?
-                if(_blocking) {
-                    SthreadStats.latch_wait++;
-                    rc = sthread_t::block(bcs.hand_off(), timeout, &_blocked_list, name(), this);
-                }
-            } // end crit section
-            cs.resume();
-        } else {
-            rc = RC(sthread_t::stTIMEOUT);
-        }
-
-        if(rc) {
-            w_assert2(rc.err_num() == sthread_t::stTIMEOUT);
-            if(timeout > 0)
-                SthreadStats.latch_time += timeout;
-
-            return RC_AUGMENT(rc);
-        }
-    }
-    
-    // update state and return
-    if(is_upgrade) {
-        w_assert2(me->_mode == LATCH_SH);
-        w_assert2(_mode == LATCH_SH);
-        w_assert2(new_mode == LATCH_EX);
-        w_assert2(num_holders() == 1); // me
-        w_assert2(me->_count >= 1);
-    } else {
-        w_assert2(me->_count == 0);
-        _holders++;
-    }
-    me->_count++; 
-    atomic_inc_uint(_total_count); 
-    new_mode = me->_mode = new_mode;
-    
-    //    fprintf(stderr, "acquire latch %p %dx in mode %s\n", 
-    //    this, me->_count, latch_mode_str[new_mode]);
-    w_assert2(_mode == LATCH_SH || num_holders() == 1);
-#endif
-    
     DBGTHRD(<< "acquired " << *this );
-
-    
     return RCOK;  
-};
+}
 
 
-void 
+int 
 latch_t::_release(latch_holder_t* me)
 {
     FUNC(latch_t::release);
@@ -591,18 +526,10 @@ latch_t::_release(latch_holder_t* me)
     w_assert2(me->_mode != LATCH_NL);
     w_assert2(me->_count > 0);
 
-    // pin: special case for plp
-    if(me->_mode == LATCH_NLS || me->_mode == LATCH_NLX) {
-	me->_mode = LATCH_NL;
-	me->_count = 0;
-	_lock.unset_plp();
-	return;
-    }
-    
     atomic_dec_uint(&_total_count); 
     if(--me->_count) {
         DBGTHRD(<< "was held multiple times -- still " << me->_count << " " << *this );
-        return;
+        return me->_count;
     }
     
     if(me->_mode == LATCH_SH) {
@@ -614,46 +541,7 @@ latch_t::_release(latch_holder_t* me)
         _lock.release_write();
     }
     me->_mode = LATCH_NL;
-    
-#if LATCH_CAN_BLOCK_LONG
-    CRITICAL_SECTION(cs, _lock);
-    w_assert2(_mode != LATCH_NL);
-    w_assert2(me->_mode == _mode);
-    
-    bool broadcast;
-    me->_mode = LATCH_NL;
-    if(_mode == LATCH_SH) {
-        w_assert3(_holders >= 1);
-        _holders--;
-        
-        // only EX requests would have waited
-        broadcast = false;
-    } else {
-        w_assert3(_holders == 1);
-        _holders = 0;
-        
-        // all requests would have waited
-        broadcast = true;
-    }
-    
-    // deal with waking waiters?
-    if(_holders == 0) {    
-        _mode = LATCH_NL;
-        if(!_blocked_list.is_empty() || _blocking) {
-            cs.exit();
-            CRITICAL_SECTION(bcs, _block_lock);
-            _blocking = false;
-
-            if(broadcast) {
-                W_COERCE(_blocked_list.wakeup_all());
-            }
-            else {
-                W_COERCE(_blocked_list.wakeup_first());
-            }
-        }
-    }
-#endif
-
+    return 0;
 }
 
 void latch_t::downgrade() {
@@ -676,21 +564,6 @@ latch_t::_downgrade(latch_holder_t* me)
     _lock.downgrade();
     me->_mode = LATCH_SH;
     
-#if LATCH_CAN_BLOCK_LONG
-    CRITICAL_SECTION(cs, _lock);
-    w_assert3(_mode == LATCH_EX);
-    w_assert3(_holders == 1);
-    
-    _mode = me->_mode = LATCH_SH;
-    
-    // deal with waking waiters?
-    if(!_blocked_list.is_empty() || _blocking) {
-        cs.exit();
-        CRITICAL_SECTION(bcs, _block_lock);
-        _blocking = false;
-        W_COERCE(_blocked_list.wakeup_all());
-    }
-#endif
 }
 
 void latch_holder_t::print(ostream &o) const
@@ -720,7 +593,7 @@ latch_t::held_by_me() const
 bool
 latch_t::is_mine() const {
     holder_search me(this);
-    return me.value()? (me->_mode == LATCH_EX || me->_mode == LATCH_NLX) : false;
+    return me.value()? (me->_mode == LATCH_EX) : false;
 }
 
 // NOTE: this is not safe, but it can be used by unit tests
@@ -762,33 +635,33 @@ void print_all_latches()
 // It's absolutely dangerous to use in a running
 // storage manager, since these lists will be
 // munged frequently. 
-	int count=0;
-	{
-		holder_list_list_t::iterator  iter;
-		for(iter= holder_list_list.begin(); 
-			 iter != holder_list_list.end(); 
-			 iter ++) count++;
-	}
+    int count=0;
+    {
+        holder_list_list_t::iterator  iter;
+        for(iter= holder_list_list.begin(); 
+             iter != holder_list_list.end(); 
+             iter ++) count++;
+    }
     holder_list_list_t::iterator  iter;
     cerr << "ALL " << count << " LATCHES {" << endl;
     for(iter= holder_list_list.begin(); 
          iter != holder_list_list.end(); iter ++)
     {
-		DBG(<<"");
+        DBG(<<"");
         sthread_t* who = iter->first;
-		DBG(<<" who " << (void *)(who));
+        DBG(<<" who " << (void *)(who));
         latch_holder_t **whoslist = iter->second;
-		DBG(<<" whoslist " << (void *)(whoslist));
-		if(who) {
+        DBG(<<" whoslist " << (void *)(whoslist));
+        if(who) {
         cerr << "{ Thread id:" << ::dec << who->id 
          << " @ sthread/" << ::hex << w_base_t::uint8_t(who)
          << " @ pthread/" << ::hex << w_base_t::uint8_t(who->myself())
          << endl << "\t";
-		} else {
+        } else {
         cerr << "{ empty }"
          << endl << "\t";
-		}
-		DBG(<<"");
+        }
+        DBG(<<"");
         holders_print whose(*whoslist); 
         cerr <<  "} " << endl << flush;
     }

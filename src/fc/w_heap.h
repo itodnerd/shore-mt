@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='W_HEAP_H'>
 
- $Id: w_heap.h,v 1.12.2.6 2010/03/19 22:17:19 nhall Exp $
+ $Id: w_heap.h,v 1.13 2010/05/26 01:20:25 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

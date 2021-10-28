@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='STID_T_H'>
 
- $Id: stid_t.h,v 1.13 2010/05/26 01:20:12 nhall Exp $
+ $Id: stid_t.h,v 1.16 2012/01/02 17:02:10 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -55,7 +55,9 @@ typedef uint4_t    snum_t;
 #include <devid_t.h>
 #endif
 
-#define STID_T
+#include <sthread.h>
+#include <w_hashing.h>
+
 /**\brief A class that performs comparisons of snum_t for use with std::map */ 
 struct compare_snum_t 
 {
@@ -87,13 +89,16 @@ struct stid_t {
 
     bool operator==(const stid_t& s) const;
     bool operator!=(const stid_t& s) const;
-    bool operator<(const stid_t& s) const;
 
     friend ostream& operator<<(ostream&, const stid_t& s);
     friend istream& operator>>(istream&, stid_t& s);
 
     static const stid_t null;
     operator const void*() const;
+
+    w_base_t::uint4_t hash() const;
+private:
+    static const w_hashing::hash2 _hash;
 };
 
 inline stid_t::stid_t(const stid_t& s) : vol(s.vol), store(s.store)
@@ -110,6 +115,7 @@ inline stid_t::operator const void*() const
     return vol ? (void*) 1 : 0;
 }
 
+
 inline bool stid_t::operator==(const stid_t& s) const
 {
     return (vol == s.vol) && (store == s.store);
@@ -120,15 +126,9 @@ inline bool stid_t::operator!=(const stid_t& s) const
     return ! (*this == s);
 }
 
-inline bool stid_t::operator<(const stid_t& s) const
+inline w_base_t::uint4_t stid_t::hash() const
 {
-    return vol < s.vol ||
-      (vol == s.vol && store < s.store);
-}
-
-inline w_base_t::uint4_t w_hash(const stid_t &s) 
-{
-    return (s.vol.vol << 16) ^ s.store;
+    return _hash(w_base_t::uint8_t((vol.vol<<16) + store)); 
 }
 
 /*<std-footer incl-file-exclusion='STID_T_H'>  -- do not edit anything below this line -- */

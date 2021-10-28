@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='BTCURSOR_H'>
 
- $Id: btcursor.h,v 1.9.2.4 2010/01/28 04:53:57 nhall Exp $
+ $Id: btcursor.h,v 1.12 2012/01/02 17:02:16 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -61,10 +61,11 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #pragma interface
 #endif
 
+
 class btree_p;
 class btrec_t;
 
-class bt_cursor_t : smlevel_2 
+class bt_cursor_t : private smlevel_2 
 {
 public:
     NORET            bt_cursor_t(bool include_nulls);
@@ -86,13 +87,6 @@ public:
     cmp_t                cond1,
     const cvec_t&            bound1
     );
-
-    // for mrbt index scan
-    void            set_roots(vector<lpid_t>& roots);
-    bool            get_next_root();
-    bool is_mrbt;
-    void            set_slot(int slot) { _slot = slot; }
-    void            set_pid(const lpid_t& pid) { _pid = pid; }
     
     lpid_t            root()     const { return _root; }
     const lpid_t&        pid()     const { return _pid; }
@@ -121,56 +115,51 @@ public:
 
     bool            is_valid() const { return _slot >= 0; } 
     bool            is_backward() const { return _backward; }
-    rc_t             make_rec(const btree_p& page, int slot);
-    void             free_rec();
-    void             update_lsn(const btree_p&page);
+    rc_t            make_rec(const btree_p& page, int slot);
+    void            free_rec();
+    void            update_lsn(const btree_p&page);
     int             klen() const   { return _klen; } 
-    char*            key()     { return _eof ? 0 : _space; }
+    char*           key()     { return _eof ? 0 : _space; }
     bool            eof()     { return _eof;  }
-    int                elen() const     { return _elen; }
-    char*            elem()     { return _eof ? 0 :  _space + _klen; }
+    int             elen() const     { return _elen; }
+    char*           elem()     { return _eof ? 0 :  _space + _klen; }
 
     void            delegate(void*& ptr, int& kl, int& el);
 
 private:
-    lpid_t            _root;
-
-    // for mrbt index scan
-    vector<lpid_t> _roots;
-    int _next_root;
-    
-    bool            _unique;
+    lpid_t               _root;
+    bool                _unique;
     smlevel_0::concurrency_t    _cc;
-    int                _nkc;
-    const key_type_s*        _kc;
+    int                 _nkc;
+    const key_type_s*   _kc;
 
-    int                _slot;
-    char*            _space;
-    int                _splen;
-    int                _klen;
-    int                _elen;
-    lsn_t            _lsn;
-    lpid_t            _pid;
-    cmp_t            _cond1;
-    char*            _bound1_buf;
-    cvec_t*            _bound1;
-    cvec_t            _bound1_tmp; // used if cond1 is not
+    int                 _slot;
+    char*               _space;
+    int                 _splen;
+    int                 _klen;
+    int                 _elen;
+    lsn_t               _lsn;
+    lpid_t              _pid;
+    cmp_t               _cond1;
+    char*               _bound1_buf;
+    cvec_t*             _bound1;
+    cvec_t              _bound1_tmp; // used if cond1 is not
                              // pos or neg_infinity
 
-    cmp_t            _cond2;
-    char*            _bound2_buf;
-    cvec_t*            _bound2;
-    cvec_t            _bound2_tmp; // used if cond2 is not
+    cmp_t               _cond2;
+    char*               _bound2_buf;
+    cvec_t*             _bound2;
+    cvec_t              _bound2_tmp; // used if cond2 is not
                              // pos or neg_infinity
-    lock_mode_t            _mode;
-    bool            _backward; // for backward scans
-    bool            _eof; // no element left
-    bool            _include_nulls; 
+    lock_mode_t         _mode;
+    bool                _backward; // for backward scans
+    bool                _eof; // no element left
+    bool                _include_nulls; 
 };
 
 inline NORET
 bt_cursor_t::bt_cursor_t(bool include_nulls)
-    : is_mrbt(false), first_time(false), keep_going(true), _slot(-1), 
+    : first_time(false), keep_going(true), _slot(-1), 
       _space(0), _splen(0), _klen(0), _elen(0), 
       _bound1_buf(0), _bound2_buf(0), _backward(false), _eof(false),
       _include_nulls(include_nulls)
@@ -181,16 +170,16 @@ inline NORET
 bt_cursor_t::~bt_cursor_t()
 {
     if (_space)  {
-    delete[] _space;
-    _space = 0;
+        delete[] _space;
+        _space = 0;
     }
     if (_bound1_buf) {
-    delete[] _bound1_buf;
-    _bound1_buf = 0;
+        delete[] _bound1_buf;
+        _bound1_buf = 0;
     }
     if (_bound2_buf) {
-    delete[] _bound2_buf;
-    _bound2_buf = 0;
+        delete[] _bound2_buf;
+        _bound2_buf = 0;
     }
     _slot = -1;
     _pid = lpid_t::null;

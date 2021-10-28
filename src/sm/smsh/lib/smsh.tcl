@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: smsh.tcl,v 1.5 2010/06/08 22:28:26 nhall Exp $
+#  $Id: smsh.tcl,v 1.10 2010/11/08 15:07:10 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -40,8 +40,8 @@ set vlong_form_len 2000
 set script_dir ./scripts
 
 proc check_stack args {
-	st checkstack
-	# echo check_stack $args
+    st checkstack
+    # echo check_stack $args
 }
 
 
@@ -90,17 +90,21 @@ proc is_set variable {
 }
 
 proc set_config_info {} {
-    global page_size max_small_rec lg_rec_page_space buffer_pool_size lid_cache_size max_btree_entry_size exts_on_page pages_per_ext object_cc multi_server serial_bits64 preemptive multi_threaded_xct logging 
+    global page_size max_small_rec lg_rec_page_space buffer_pool_size max_btree_entry_size exts_on_page pages_per_ext object_cc logging  multi_threaded_xct
     set config [sm config_info]
 
-    foreach i { page_size max_small_rec lg_rec_page_space buffer_pool_size lid_cache_size max_btree_entry_size exts_on_page pages_per_ext object_cc multi_server serial_bits64 preemptive multi_threaded_xct logging } {
-		set $i [lindex $config [expr {[lsearch $config $i] + 1}] ]
+    # no longer supported:
+    set multi_threaded_xct 0
+
+    foreach i { page_size max_small_rec lg_rec_page_space buffer_pool_size max_btree_entry_size exts_on_page pages_per_ext object_cc logging } {
+        set $i [lindex $config [expr {[lsearch $config $i] + 1}] ]
     }
 
     addcleanupvars {page_size max_small_rec lg_rec_page_space 
-		buffer_pool_size lid_cache_size
-		max_btree_entry_size exts_on_page pages_per_ext object_cc
-		multi_server serial_bits64 preemptive multi_threaded_xct}
+        buffer_pool_size 
+        max_btree_entry_size exts_on_page pages_per_ext object_cc
+        multi_threaded_xct
+        }
 }
 
 proc _restart { a } {
@@ -216,7 +220,7 @@ set in_st_trans 0
 
 # proc for printing only the non-zero disk  stats
 proc get_dstats {volid aud} {
-	set result ""
+    set result ""
     set x [sm xct]
     if {$x == 0} {
         sm begin_xct
@@ -226,14 +230,14 @@ proc get_dstats {volid aud} {
         set n [sm get_du_statistics $volid nopretty noaudit]
         # return 1
     }
-	# nevertheless, append what stats we find
+    # nevertheless, append what stats we find
         set l [llength $n]
         set l [expr $l/2]
         for {set i 0} { $i <= $l} {incr i} {
             set j [expr {$i * 2 + 1}]
             if {[lindex $n $j] != 0} {
-				# echo [lindex $n [expr {$j-1}]] [lindex $n $j]
-				append result [lindex $n [expr {$j-1}]] "\t" [lindex $n $j] "\n"
+                # echo [lindex $n [expr {$j-1}]] [lindex $n $j]
+                append result [lindex $n [expr {$j-1}]] "\t" [lindex $n $j] "\n"
             }
         }
         if {$x == 0} {
@@ -243,7 +247,7 @@ proc get_dstats {volid aud} {
 }
 
 proc dstats {volid} {
-	verbose [get_dstats $volid audit]
+    verbose [get_dstats $volid audit]
 }
 
 # proc for printing stats w/o auditing
@@ -271,10 +275,10 @@ proc Xget_dstatsnoaudit {volid au} {
         verbose dstatsnoaudit commits tx [sm xct]
         sm commit_xct
     }
-	return $result
+    return $result
 }
 proc dstatsnoaudit {volid} {
-	verbose [get_dstats $volid noaudit]
+    verbose [get_dstats $volid noaudit]
 }
 
 # print non-zero xct stats
@@ -291,7 +295,7 @@ proc pxstats { reset } {
     }
 }
 
-# print non-zero (global) stats
+# print non-zero stats (from input argument)
 # whether or not verbose is on
 proc pnzstats { n } {
     set result ""
@@ -308,7 +312,7 @@ proc pnzstats { n } {
 
 # echo stats, that is, print them even if !verbose
 proc estats {} {
-	pnzstats [sm gather_stats]
+    pnzstats [sm gather_stats]
 }
 
 # print stats, iff verbose
@@ -332,7 +336,7 @@ proc select_stat {n whichstat} {
 }
 
 proc select_stat_value {n whichstat} {
-	# get name-value pair, pull off 2nd part of the pair
+    # get name-value pair, pull off 2nd part of the pair
     set res [lindex [select_stat $n $whichstat] 1]
 }
 
@@ -340,14 +344,14 @@ proc _checkpinstats {n msg} {
     verbose checking stats ... $msg
     set rec_pin_cnt [lindex [select_stat $n rec_pin_cnt] 1]
     set rec_unpin_cnt [lindex [select_stat $n rec_unpin_cnt] 1]
-    set page_fix_cnt [lindex [select_stat $n page_fix_cnt] 1]
-    set page_refix_cnt [lindex [select_stat $n page_refix_cnt] 1]
-    set page_unfix_cnt [lindex [select_stat $n page_unfix_cnt] 1]
+    set bf_fix_cnt [lindex [select_stat $n bf_fix_cnt] 1]
+    set bf_refix_cnt [lindex [select_stat $n bf_refix_cnt] 1]
+    set bf_unfix_cnt [lindex [select_stat $n bf_unfix_cnt] 1]
 
     # permit excess unpins and unfixes
 
     assert {expr $rec_pin_cnt <= $rec_unpin_cnt}
-    assert {expr $page_fix_cnt + $page_refix_cnt <= $page_unfix_cnt}
+    assert {expr $bf_fix_cnt + $bf_refix_cnt <= $bf_unfix_cnt}
 }
 
 proc checkpinstats {msg} {
@@ -358,13 +362,13 @@ proc checkpinstats {msg} {
 proc clearstats {} {
     set n [sm gather_stats reset]
 
-	# Now let's make sure that the reset worked!
-	set m [sm gather_stats]
+    # Now let's make sure that the reset worked!
+    set m [sm gather_stats]
     set yyy [lindex [select_stat $n rec_pin_cnt] 1]
     set xxx [lindex [select_stat $m rec_pin_cnt] 1]
-	# echo after sm gather_stats reset rec_pin_cnt is $xxx before $yyy
-	# echo BEFORE [pnzstats $n]
-	# echo AFTER [pnzstats $m]
+    # echo after sm gather_stats reset rec_pin_cnt is $xxx before $yyy
+    # echo BEFORE [pnzstats $n]
+    # echo AFTER [pnzstats $m]
     assert {expr $xxx == 0}
 
     verbose checking stats in clearstats
@@ -429,7 +433,7 @@ proc cleanup { fileid } {
             }
         }
         if { $found == 0 } {
-           puts $fileid [concat GARBAGE: $j]
+           # puts $fileid [concat GARBAGE: $j]
         }
    }
    set v [info globals]
@@ -442,7 +446,7 @@ proc cleanup { fileid } {
             }
         }
         if { $found == 0 } {
-           puts $fileid [concat MISSING OLD: $j]
+           # puts $fileid [concat MISSING OLD: $j]
         }
    }
   set variables [info globals]
@@ -474,55 +478,54 @@ proc get_cc_mode { st } {
 
 set scriptlist {}
 proc runscripts { scr } {
-	echo runscripts $scr level [info level]
+    # echo runscripts $scr level [info level]
     global scriptlist
     set save_scriptlist([info level]) $scriptlist
     set scriptlist $scr
-	echo B: [info level] $scriptlist
-	namespace eval :: {
-		foreach script $scriptlist {
-            echo RUN @ [info level] $script
-		    sm reinit_fingerprints
-            pecho "-->RUNNING @ [info level]: $script_dir/$script" 
+    # echo B: [info level] $scriptlist
+    namespace eval :: {
+        foreach script $scriptlist {
+            # echo RUN @ [info level] $script
+            sm reinit_fingerprints
+            pecho "-->RUNNING @ [info level]: $script" 
             set save_script([info level])  $script
-			if {1} {
-            set tm [time {source $script_dir/$script} 1]
-            # source $script_dir/$script
+            if {1} {
+                sm set_script_name $script
+                set tm [time {source $script_dir/$script} 1]
+                set script $save_script([info level])
+                # pecho "-->TIME @ [info level] for $script:"  $tm
+                unset tm
 
-            set script $save_script([info level])
-            pecho "-->TIME @ [info level] for $script:"  $tm
-            unset tm
+                if {$volid != 0} {
+                    sm begin_xct
+                    set vms [sm get_volume_meta_stats $volid]
+                    sm commit_xct
 
-            if {$volid != 0} {
-                sm begin_xct
-                set vms [sm get_volume_meta_stats $volid]
-                sm commit_xct
+                    verbose -->VOLUME_META_STATS after $script: $vms
+                    unset vms
 
-                verbose -->VOLUME_META_STATS after $script: $vms
-                unset vms
+                    set local [sm config_info]
+                    verbose -->CONFIG INFO after $script: $local
+                    unset local
 
-                set local [sm config_info]
-                verbose -->CONFIG INFO after $script: $local
-                unset local
+                    verbose -->VOLUME $volid AFTER  $script sent to errlog with debug_prio 
+                    sm check_volume $volid
+                    verbose -->DSTATS $volid AFTER  $script 
+                    dstats $volid
+                }
+         
+                #echo MEM_STATS after $script: [sm mem_stats]
 
-				verbose -->VOLUME $volid AFTER  $script sent to errlog with debug_prio 
-				sm check_volume $volid
-				verbose -->DSTATS $volid AFTER  $script 
-				dstats $volid
+                checkpinstats  $script
+                # puts stdout [concat -->CLEANUP @ [info level] AFTER  $script  : ]
+                cleanup stdout
             }
-     
-            #echo MEM_STATS after $script: [sm mem_stats]
-
-            checkpinstats  $script
-            puts stdout [concat -->CLEANUP @ [info level] AFTER  $script  : ]
-            cleanup stdout
-		}
-			unset save_script([info level])
-			unset script
+            unset save_script([info level])
+            unset script
         }
     }
     set scriptlist $save_scriptlist([info level])
-	st checkstack
+    st checkstack
 }
 
 proc formatlong { prefix mplier fmt x } {
@@ -530,7 +533,7 @@ proc formatlong { prefix mplier fmt x } {
     for {set i 0} { $i < $mplier } {incr i} {
          set res $prefix$res
     }
-	st checkstack
+    st checkstack
     return $res
 }
 

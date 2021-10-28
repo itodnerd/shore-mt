@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='BF_H'>
 
- $Id: bf.h,v 1.100 2010/06/08 22:28:55 nhall Exp $
+ $Id: bf.h,v 1.102 2010/08/23 14:28:18 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -112,9 +112,9 @@ public:
                                         );
 
     static rc_t                  conditional_fix(
-        page_s*&                    page,
+        page_s*&                         page,
         const lpid_t&                    pid, 
-        uint2_t                            tag,
+        uint2_t                          tag,
         latch_mode_t                     mode,
         bool                             no_read,
         store_flag_t&                    out_stflags,
@@ -286,10 +286,10 @@ inline rc_t
 bf_m::fix(
     page_s*&            ret_page,
     const lpid_t&       pid,
-    uint2_t               tag,            // page_t::tag_t
+    uint2_t             tag,            // page_t::tag_t
     latch_mode_t        mode,
     bool                no_read,
-    store_flag_t&        return_store_flags,
+    store_flag_t&       return_store_flags,
     bool                ignore_store_id, // default = false
     store_flag_t        stflags // for case no_read
 )
@@ -302,10 +302,10 @@ inline rc_t
 bf_m::conditional_fix(
     page_s*&            ret_page,
     const lpid_t&       pid,
-    uint2_t               tag,            // page_t::tag_t
+    uint2_t             tag,            // page_t::tag_t
     latch_mode_t        mode,
     bool                no_read,
-    store_flag_t&        return_store_flags,
+    store_flag_t&       return_store_flags,
     bool                ignore_store_id, // default = false
     store_flag_t        stflags // for case no_read
 )

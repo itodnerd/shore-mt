@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: sm.cpp,v 1.476.2.27 2010/01/28 04:54:14 nhall Exp $
+ $Id: vtable_smthread.cpp,v 1.2 2010/05/26 01:20:48 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

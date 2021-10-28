@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='STCORE_PTHREAD_H'>
 
- $Id: stcore_pthread.h,v 1.8.2.7 2010/03/19 22:20:01 nhall Exp $
+ $Id: stcore_pthread.h,v 1.11 2012/01/02 17:02:22 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -47,10 +47,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  *   to the above authors and the above copyright is maintained.
  */
 
-#include <pthread.h>
-#ifdef HAVE_SEMAPHORE_H
-#include <semaphore.h>
-#endif
+#include <w_pthread.h>
 
 /**\cond skip */
 typedef struct sthread_core_t {

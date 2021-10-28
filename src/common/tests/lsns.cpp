@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: lsns.cpp,v 1.1.2.2 2009/10/30 23:50:53 nhall Exp $
+ $Id: lsns.cpp,v 1.3 2010/06/18 21:22:46 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

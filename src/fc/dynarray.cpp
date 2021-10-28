@@ -20,62 +20,86 @@
    DISCLAIM ANY LIABILITY OF ANY KIND FOR ANY DAMAGES WHATSOEVER
    RESULTING FROM THE USE OF THIS SOFTWARE.
 */
+/*<std-header orig-src='shore' incl-file-exclusion='DYNARRAY_CPP'>
 
-#include "w_defines.h"
+ $Id: dynarray.cpp,v 1.5 2012/01/02 21:52:21 nhall Exp $
 
+SHORE -- Scalable Heterogeneous Object REpository
+
+Copyright (c) 1994-99 Computer Sciences Department, University of
+                      Wisconsin -- Madison
+All Rights Reserved.
+
+Permission to use, copy, modify and distribute this software and its
+documentation is hereby granted, provided that both the copyright
+notice and this permission notice appear in all copies of the
+software, derivative works or modified versions, and any portions
+thereof, and that both notices appear in supporting documentation.
+
+THE AUTHORS AND THE COMPUTER SCIENCES DEPARTMENT OF THE UNIVERSITY
+OF WISCONSIN - MADISON ALLOW FREE USE OF THIS SOFTWARE IN ITS
+"AS IS" CONDITION, AND THEY DISCLAIM ANY LIABILITY OF ANY KIND
+FOR ANY DAMAGES WHATSOEVER RESULTING FROM THE USE OF THIS SOFTWARE.
+
+This software was developed with support by the Advanced Research
+Project Agency, ARPA order number 018 (formerly 8230), monitored by
+the U.S. Army Research Laboratory under contract DAAB07-91-C-Q518.
+Further funding for this work was provided by DARPA through
+Rome Research Laboratory Contract No. F30602-97-2-0247.
+
+*/
+
+/**\cond skip */
 #include "dynarray.h"
 #include "shore-config.h"
+#include <errno.h>
 #include <sys/mman.h>
 #include <algorithm>
+#include <cstdlib>
 #include <cassert>
 #include <cstring>
-#include <cstdio>
 
 // no system I know of *requires* larger pages than this
-static size_t const MM_PAGE_SIZE = 65536;
+static size_t const MM_PAGE_SIZE = 8192;
 // most systems can't handle bigger than this, and we need a sanity check
 static size_t const MM_MAX_CAPACITY = MM_PAGE_SIZE*1024*1024*1024;
+
+static size_t align_up(size_t bytes, size_t align) {
+    size_t mask = align - 1;
+    return (bytes+mask) &~ mask;
+}
 
 #if HAVE_DECL_MAP_ALIGN 
 #define USE_MAP_ALIGN 1
 #endif
 
-int dynarray::init(size_t max_size, size_t align) 
-{
+#undef TEST_ME
+
+int dynarray::init(size_t max_size, size_t align) {
     // round up to the nearest page boundary
-    max_size = alignon(max_size, MM_PAGE_SIZE);
-    align = alignon(align, MM_PAGE_SIZE);
+    max_size = align_up(max_size, MM_PAGE_SIZE);
     
     // validate inputs
     if(max_size > MM_MAX_CAPACITY)
-    {
-        std::fprintf(stderr, "dynarray::init EFBIG\n");
-	return EFBIG;
-    }
+        return EFBIG;
     if(MM_PAGE_SIZE > max_size)
-    {
-        std::fprintf(stderr, "dynarray::init EINVAL\n");
-	return EINVAL;
-    }
-
+        return EINVAL;
     if((align & -align) != align)
-    {
-        std::fprintf(stderr, "dynarray::init EINVAL\n");
-	return EINVAL;
-    }
+        return EINVAL;
 
     /*
       The magical incantation below tells mmap to reserve address
       space within the process without actually allocating any
-      memory. We can then use mprotect() to make bits of that address
-      space usable.
+      memory. We are then free to re-map any subset of that
+      reservation using MAP_FIXED (using MAP_FIXED without a
+      reservation always fails).
 
-      Note that mprotect() is smart enough to mix and match different
+      Note that MAP_FIXED is smart enough to mix and match different
       sets of permissions, so we can extend the array simply by
-      updating 0..new_size to have R/W permissions. Similarly, we can
-      blow everything away by unmapping 0..reserved_size.
+      remapping 0..new_size with R/W permissions, and can blow
+      everything away by unmapping 0..reserved_size.
 
-      Tested on Cygwin/x86_64, Linux-2.6.18/x86 and Solaris-10/Sparc.
+      Tested on both Linux-2.6.18/x86 and Solaris-10/Sparc.
     */
 
     static int const PROTS = PROT_NONE;
@@ -89,16 +113,21 @@ int dynarray::init(size_t max_size, size_t align)
     flags |= MAP_ALIGN;
 #else
     char* align_arg = 0;
-    size_t align_extra = align;
+    size_t align_extra = align - MM_PAGE_SIZE;
+#endif
+#ifdef TEST_ME
+    std::fprintf(stderr, 
+    "thread %p dynarray::init(%p): mmap:%p %u\n", 
+    (void *)pthread_self(),
+    this,
+    align_arg,  
+    unsigned(max_size + align_extra));
 #endif
     union { void* v; uintptr_t n; char* c; }
-    	u={mmap(align_arg, max_size+align_extra, PROTS, flags, -1, 0)};
+        u={mmap(align_arg, max_size+align_extra, PROTS, flags, -1, 0)};
 
     if(u.v == MAP_FAILED)
-    {
-        fprintf(stderr, "dynarray::init MAP_FAILED %d\n", errno);        
-	return ( errno );
-    }
+        return errno;
 
 #if !USE_MAP_ALIGN
     /* Verify alignment...
@@ -114,53 +143,55 @@ int dynarray::init(size_t max_size, size_t align)
        request more than needed, then chop off the extra in a way that
        gives us the desired alignment. That extra could be the
        little bit that pushes the system over the edge and gives us
-       ENOMEM, but we have no other alternative.
+       ENOMEM, but we're kind of stuck.
      */
-#ifdef TEST_ME
-    std::fprintf(stderr, "start: %p	end:%p\n", u.c, u.c+max_size+align_extra);
-#endif // TEST ME
-
-    long aligned_base = alignon(u.n, align);
+    long aligned_base = align_up(u.n, align);
     if(long extra=aligned_base-u.n) {
-
 #ifdef TEST_ME
-	std::fprintf(stderr, "chopping off %zx bytes of prefix for start: %zx\n",
-		extra, aligned_base);
-#endif // TEST_ME
-
-	munmap(u.c, extra);
-	u.n = aligned_base;
-	align_extra -= extra;
+        std::fprintf(stderr, "chopping off %zx bytes of prefix for start: %zx\n",
+            extra, aligned_base);
+        std::fprintf(stderr, "dynarray::init: munmap:%p %u\n", u.c, unsigned( extra));
+#endif
+        munmap(u.c, extra);
+        u.n = aligned_base;
+        align_extra -= extra;
     }
-
-    if(align_extra > 0) 
-    {
+    if(align_extra > 0) {
 #ifdef TEST_ME
-	std::fprintf(stderr, "chopping %zx bytes of postfix for end: %p\n", align_extra, u.c+max_size);
-#endif // TEST ME
-
-	munmap(u.c+max_size, align_extra);
+        std::fprintf(stderr, "chopping %zx bytes of postfix for end: %p\n", align_extra, u.c+max_size);
+        std::fprintf(stderr, "dynarray::init: munmap:%p %u\n", u.c + max_size, unsigned(align_extra));
+#endif
+        munmap(u.c+max_size, align_extra);
     }
-#endif // !USE_MAP_ALIGN
+#endif
 
     _base = u.c;
     _capacity = max_size;
     _size = 0;
-    return ( 0 );
-}
 
-int dynarray::init(dynarray const &to_copy, size_t max_size) {
-    max_size = std::max(max_size, to_copy.capacity());
-    if(int err=init(max_size))
-	return err;
-
-    std::memmove(_base, to_copy._base, to_copy.size());
+#ifdef TEST_ME
+    std::fprintf(stderr, 
+        "thread %p dynarray::init(%p) _base: %p size requested %u (%u KB)    end:%p capacity %u _size %u\n", 
+            (void *)pthread_self(), this,
+            _base,
+            unsigned(max_size + align_extra),
+            (unsigned(max_size + align_extra)/1024),
+            _base+max_size+align_extra,
+            unsigned(_capacity),
+            unsigned(_size)
+            );
+#endif
     return 0;
 }
 
-int dynarray::fini() {
+
+int dynarray::fini() 
+{
+#ifdef TEST_ME
+    std::fprintf(stderr, "dynarray::fini: munmap:%p %u\n", _base,unsigned(_capacity));
+#endif
     if(int err=munmap(_base, _capacity))
-	return err;
+    return err;
         
     _base = 0;
     _size = 0;
@@ -168,34 +199,31 @@ int dynarray::fini() {
     return 0;
 }
 
-int dynarray::truncate(size_t new_size) {
-    new_size = alignon(new_size, MM_PAGE_SIZE);
-    if (_size < new_size)
-        return EINVAL;
-
-    if (mprotect(_base+new_size, _size-new_size, PROT_NONE))
-        return errno;
-
-    _size = new_size;
-    return 0;
-}
 
 int dynarray::resize(size_t new_size) {
     // round up to the nearest page boundary
-    new_size = alignon(new_size, MM_PAGE_SIZE);
+    new_size = align_up(new_size, MM_PAGE_SIZE);
 
     // validate
     if(_size > new_size)
-    {
-	return EINVAL;
+        return EINVAL;
+
+    if(new_size > _capacity) {
+        // GNATS 174:
+        // For now, just print a bunch of stuff and return an error.
+        // This will ultimately result in a throw.
+        return EFBIG;
     }
 
     static int const PROTS = PROT_READ | PROT_WRITE;
+    static int const FLAGS = MAP_FIXED | MAP_ANON | MAP_PRIVATE;
 
-    // mark the new range as RW. Don't mess w/ the existing region!!
-    if (mprotect(_base+_size, new_size-_size, PROTS))
-    {
-	return errno;
+    // remap the new range as RW. Don't mess w/ the existing region!!
+    void* result = mmap(_base+_size, new_size-_size, PROTS, FLAGS, -1, 0);
+    if(result == MAP_FAILED) return errno;
+    if(result != _base+_size) {
+        // This will result in a throw
+        return EFBIG;
     }
 
     _size = new_size;
@@ -203,16 +231,35 @@ int dynarray::resize(size_t new_size) {
 }
 
 int dynarray::ensure_capacity(size_t min_size) {
-    min_size  = alignon(min_size, MM_PAGE_SIZE);
+#ifdef TEST_ME
+    std::fprintf(stderr, 
+    "thread %p dynarray(%p)::ensure_capacity(min_size %u) from size()=%u\n",
+    (void *)pthread_self(), this, 
+    unsigned(min_size), unsigned(size())
+    );
+#endif
+
+    min_size  = align_up(min_size, MM_PAGE_SIZE);
+
+#ifdef TEST_ME
+    std::fprintf(stderr, 
+    "thread %p dynarray(%p)::ensure_capacity(aligned-up min_size %u)\n",
+    (void *)pthread_self(), this, 
+    unsigned(min_size) 
+    );
+#endif
     int err = 0;
     if(size() < min_size) {
-	size_t next_size = std::max(min_size, 2*size());
-	err = resize(next_size);
-	
-	// did we reach a limit?
-	if(err == EFBIG) 
-	    err = resize(min_size);
+        size_t next_size = std::max(min_size, 2*size());
+        err = resize(next_size);
+    
+        if(err == EFBIG)  {
+            // Try a smaller size. We cannot resize down.
+            next_size = std::max(min_size, size());
+            err = resize(next_size);
+        }
     }
     return err;
 }
+/**\endcond skip */
 

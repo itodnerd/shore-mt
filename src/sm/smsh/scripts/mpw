@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: mpw,v 1.11.2.3 2009/12/21 18:45:15 nhall Exp $
+#  $Id: mpw,v 1.15 2010/08/23 14:28:23 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -49,12 +49,18 @@ set fid  0
 
 set STARTOVER 1
 
+verbose source $script_dir/mpw.sub
 source $script_dir/mpw.sub
+verbose source $script_dir/mpw.sub
 source $script_dir/mpw.sub
+verbose source $script_dir/mpw.sub
 source $script_dir/mpw.sub
 
+verbose source $script_dir/mpw.sub2
 source $script_dir/mpw.sub2
+verbose source $script_dir/mpw.sub2
 source $script_dir/mpw.sub2
+verbose source $script_dir/mpw.sub2
 source $script_dir/mpw.sub2
 
 sm begin_xct

@@ -4,7 +4,6 @@ include $(top_srcdir)/Makefile.generic
 EXTRA_DIST = opt_error.dat regex_engine.cpp
 
 AM_CXXFLAGS          += -I. \
-		       -I$(top_srcdir)/config \
 		       -I$(top_srcdir)/src/fc \
 		       -I$(top_srcdir)/src/sthread
 
@@ -38,7 +37,7 @@ libcommon_a_SOURCES      = \
     regexec.cpp regfree.cpp regex_posix.cpp \
 	store_latch_manager.cpp \
 	stid_t.cpp tid_t.cpp vec_mkchunk.cpp		\
-	vec_t.cpp vid_t.cpp 
+	vec_t.cpp vid_t.cpp  
 
 
 MOSTLYCLEANFILES = $(GENFILES)

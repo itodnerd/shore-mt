@@ -5,8 +5,10 @@ EXTRA_DIST =  \
 	README \
 	sync_commands.tcl \
 	all all.individually all.perf all_nortree \
+	latchcount \
 	alloc.1 alloc.2 alloc.3 alloc.4 alloc.5 alloc.6 \
-	alloc.7 alloc.8 alloc.9 alloc.10 alloc.11 alloc.all \
+	alloc.7 alloc.8 alloc.9 alloc.10 alloc.11 alloc.12 \
+	alloc.13 alloc.all \
 	bng.1 bng.init \
 	bt.tcl bt.1  \
 	bt.insert.0 bt.insert.1 bt.insert.2 bt.insert.3 \
@@ -14,7 +16,7 @@ EXTRA_DIST =  \
 	bt.insertremove.0 \
 	bt.remove.0 bt.remove.1 bt.remove.2 bt.remove.3 bt.remove.4 \
 	btree.1 btree.10 btree.11 btree.2 btree.20 btree.21 \
-	btree.2all btree.2all.print btree.3 btree.30 btree.31 btree.32 \
+	btree.2all btree.2all.print btree.3 btree.30 btree.32 \
 	btree.33 btree.3a btree.4 btree.5 btree.6 btree.6int \
 	btree.7 btree.8 btree.9 btree.all btree.big.1 \
 	btree.big.1.keys btree.destroy.1 \
@@ -27,6 +29,7 @@ EXTRA_DIST =  \
 	confidence \
 	create.perf createsmall.1 \
 	deadlock.1 deadlock.2 pin_deadlock.1 deadlock.4 deadlock.5 deadlock.6 \
+	deadlock.7 deadlock.8\
 	destroy.perf \
 	empty \
 	file.1 file.2 file.3 file.4 file.5 file.5a file.6 \
@@ -41,6 +44,7 @@ EXTRA_DIST =  \
 	loadrec.perf  \
 	lock.1 lock.all lock.hier lock.hier_sm \
 	lock.perf lock.upgrade lockfile_sm lockrec_pin lockrec_sm \
+	lock.upgrade.release \
 	long.all \
 	mpw mpw.sub mpw.sub2 \
 	multi.1 multi.2 multi.3 multi.all \
@@ -58,7 +62,7 @@ EXTRA_DIST =  \
 	subonly.3 subord.start \
 	thread_fork_example \
 	tmpfile.1 tmpfile.2 tmpfile.3 trans.1 \
-	trans.2 trans.3 trans.4 trans.all trans.tcl \
-	vol.1 vol.3 vol.all vol.init \
+	trans.2 trans.3 trans.4 trans.5 trans.all trans.tcl \
+	vol.1 vol.3 vol.all vol.init vol.reinit \
 	write.perf write.perf.restart
 

@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: create_rec.cpp,v 1.3 2010/06/08 22:28:15 nhall Exp $
+ $Id: create_rec.cpp,v 1.7 2010/09/21 14:26:28 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -33,31 +33,47 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 /**\anchor create_rec_example */
 /*
- * This program is a test of file scan and lid performance
+ * This program is a simple test of creating records.
+ * It illustrates:
+ * - formatting and mounting devices and volumes.
+ * - use of the volume's root index (create an entry, 
+ *   find an entry with a given key)
+ * - creating a file
+ * - using a file created by an earlier run of this program.
+ * - creating records in a file
+ * - scanning a file of records
+ * - startup and shutdown of the storage manager
+ * - a single storage manager thread does the work.
  */
 
-#include <w_stream.h>
-#include <sys/types.h>
-#include <cassert>
 #include "sm_vas.h"
-#include "w_getopt.h"
 ss_m* ssm = 0;
 
-// shorten error code type name
+// shorten error-code type name
 typedef w_rc_t rc_t;
 
-// this is implemented in options.cpp
+// this is implemented in init_config_options.cpp
 w_rc_t init_config_options(option_group_t& options,
                         const char* prog_type,
                         int& argc, char** argv);
 
 
+/* This program stores information about a file in 
+ * this structure, which it makes persistent by
+ * storing it in the volumes root index.
+ * When we run this program with the -i option (initialize),
+ * we start over with a blank slate: reformat the device/volume and
+ * create a new file. If -i is not given, we look for a file_info_t
+ * in the root index under the key "SCANFILE", and use the file
+ * whose identifier is stored therein. We also expect to find
+ * the given number of records of the given size in the file.
+ */
 struct file_info_t {
     static const char* key;
-    stid_t         fid;
-    rid_t       first_rid;
-    int         num_rec;
-    int         rec_size;
+    stid_t             fid;
+    rid_t              first_rid;
+    int                num_rec;
+    int                rec_size;
 };
 const char* file_info_t::key = "SCANFILE";
 
@@ -72,174 +88,347 @@ operator << (ostream &o, const file_info_t &info)
     return o;
 }
 
-
-typedef        smlevel_0::smksize_t        smksize_t;
-
-
-
+static char *argv0(NULL);
 void
 usage(option_group_t& options)
 {
-    cerr << "Usage: create_rec [-h] [-i] [options]" << endl;
+    cerr << "Usage: " << argv0 << " [-h] [-i] [options]" << endl;
     cerr << "       -i initialize device/volume and create file of records" << endl;
     cerr << "Valid options are: " << endl;
     options.print_usage(true, cerr);
 }
 
 /* create an smthread based class for all sm-related work */
-class smthread_user_t : public smthread_t {
-        int        _argc;
-        char        **_argv;
+class smthread_driver_t : public smthread_t {
+        int         _argc;
+        char**      _argv;
 
+protected:
         const char *_device_name;
-        smsize_t    _quota;
-        int         _num_rec;
-        smsize_t    _rec_size;
-        lvid_t      _lvid;  
-        rid_t       _start_rid;
-        stid_t      _fid;
-        bool        _initialize_device;
-        option_group_t* _options;
-        vid_t       _vid;
-public:
-        int         retval;
+        smsize_t    _quota; // for device and volume
+        int         _num_rec; // number of records to put in file
+        smsize_t    _rec_size; // record size
+        lvid_t      _lvid;   // persistent volume id to give the volume
+        vid_t       _vid;    // short (integer) volume id
+        rid_t       _start_rid; // first record in the file
+        stid_t      _fid;    // file id
+        bool        _initialize_device; // shall we start from scratch?
+        option_group_t* _options; // run-time options
+        int         _retval; // return value from run()
 
-        smthread_user_t(int ac, char **av) 
-                : smthread_t(t_regular, "smthread_user_t"),
+        /* two helpers for run -- virtual only because other examples override them*/
+        virtual w_rc_t do_work() ;
+        virtual void   start_ssm() ;
+public:
+
+        smthread_driver_t(int ac, char **av) 
+                : smthread_t(t_regular, "smthread_driver_t"),
                 _argc(ac), _argv(av), 
                 _device_name(NULL),
                 _quota(0),
                 _num_rec(0),
                 _rec_size(0),
+                _vid(1),
                 _initialize_device(false),
                 _options(NULL),
-                _vid(1),
-                retval(0) { }
+                _retval(0) { }
 
-        ~smthread_user_t()  { if(_options) delete _options; }
+        virtual ~smthread_driver_t()  { if(_options) delete _options; }
 
-        void run();
+        virtual void run();
+        void statistics() const;
+        int  return_value() const { return _retval; }
 
-        // helpers for run()
-        w_rc_t handle_options();
-        w_rc_t find_file_info();
-        w_rc_t create_the_file();
-        w_rc_t scan_the_file();
-        w_rc_t scan_the_root_index();
-        w_rc_t do_work();
-        w_rc_t do_init();
-        w_rc_t no_init();
+        // helpers for run() -- this compartmentalizes the
+        // sm functionality a bit.
+        w_rc_t handle_options(); // run-time options
+        w_rc_t find_file_info(); // look up file info in root index
+        w_rc_t create_the_file();// create a file
+        w_rc_t scan_the_file();  // scan existing file
+        w_rc_t scan_the_root_index(); //scan root index
+        w_rc_t do_init(); // called when -i command-line flag is given
+        w_rc_t no_init(); // called with -i is NOT given
 
 };
 
+w_rc_t 
+smthread_driver_t::handle_options()
+{
+    // Create an option group for my options.
+    // I use a 3-level naming scheme:
+    // executable-name.server.option-name
+    // Thus, the file will contain lines like this:
+    // create_rec.server.device_name : /tmp/example/device
+    // or, with wildcard:
+    // create_rec.*.device_name : /tmp/example/device
+    //          *.server.device_name : /tmp/example/device
+    //          *.*.device_name : /tmp/example/device
+    //
+    const int option_level_cnt = 3; 
+
+    _options = new option_group_t (option_level_cnt);
+    if(!_options) {
+        cerr << "Out of memory: could not allocate from heap." <<
+            endl;
+        _retval = 1;
+        return RC(fcINTERNAL);
+    }
+    option_group_t &options(*_options);
+
+    /* Add my own option for a device's path name. It's required,
+     * and has no default value. */
+    option_t* opt_device_name = 0;
+    W_DO(options.add_option(
+             "device_name",  /* option name */
+             "device/file name", /* syntax */
+             NULL,  /* no default value */
+             "device containg volume holding file to scan", /* description */
+             true,  /* required */
+             option_t::set_value_charstr,/* function to parse the value */
+             opt_device_name /* handle for option created */
+             ));
+
+    /* Add my own option for a device's quota */
+    option_t* opt_device_quota = 0;
+    W_DO(options.add_option(
+            "device_quota",  /* option name */
+            "# > 1000", /* syntax */
+             "2000",  /* default value */
+             "quota for device", /* description */
+             false,  /* not required */
+             option_t::set_value_long, /* function to parse value */
+             opt_device_quota /* handle */
+             ));
+
+    /* Add my own option for the number of records to create.
+     * Default number of records is 1.
+     */
+    option_t* opt_num_rec = 0;
+    W_DO(options.add_option(
+            "num_rec",  /* option name */
+            "# > 0", /* syntax */
+             "100",  /* default value */
+             "number of records in file", /* description */
+             true,  /* required */
+             option_t::set_value_long, /* func to parse value */
+             opt_num_rec /* handle */
+             ));
+
+    /* 
+     * Add the SSM options to my group.
+     */
+    W_DO(ss_m::setup_options(&options));
+
+    /*
+     * Call external function to read options' values from
+     * a file and from the command line.
+     */
+    w_rc_t rc = init_config_options(options, "server", _argc, _argv);
+    if (rc.is_error()) {
+        usage(options);
+        _retval = 1;
+        return rc;
+    }
+
+    /*
+     * Process what's left of the command line,
+     * to look for the -i and/or -h flags.
+     */
+
+    int option;
+    while ((option = getopt(_argc, _argv, "hi")) != -1) {
+        switch (option) {
+        case 'i' :
+            _initialize_device = true;
+            break;
+
+        case 'h' :
+            usage(options);
+            break;
+
+        default: // unrecognized flag or option
+            usage(options);
+            _retval = 1;
+            return RC(fcNOTIMPLEMENTED);
+            break;
+        }
+    }
+
+    // Grab the options values for later use by run()
+    _device_name = opt_device_name->value();
+    _quota = strtol(opt_device_quota->value(), 0, 0);
+    _num_rec = strtol(opt_num_rec->value(), 0, 0);
+
+    return RCOK;
+}
+
+void
+smthread_driver_t::statistics() const 
+{
+    sm_stats_info_t       stats;
+    W_COERCE(ss_m::gather_stats(stats));
+    cout << " SM Statistics : " << endl
+         << stats  << endl;
+}
 /*
- * looks up file info in the root index
+ * Look up file info in the root index.
+ * Assumes we already know the volume id _vid.
 */
 w_rc_t
-smthread_user_t::find_file_info()
+smthread_driver_t::find_file_info()
 {
     file_info_t  info;
+
+    /* start a transaction */
     W_DO(ssm->begin_xct());
 
-    bool        found;
-    stid_t      _root_iid;
-    W_DO(ss_m::vol_root_index(_vid, _root_iid));
+    /* Get the identifier of the root index. 
+     * Failure causes us to return from find_file_info().
+     */
+    stid_t      root_iid;
+    W_DO(ss_m::vol_root_index(_vid, root_iid));
 
-    smsize_t    info_len = sizeof(info);
+    /* Create a vector containing the key under which the
+     * file info is stored in the root index
+     */
     const vec_t key_vec_tmp(file_info_t::key, strlen(file_info_t::key));
-    W_DO(ss_m::find_assoc(_root_iid,
+
+    /* Get the size of the value associated with the above key */
+    smsize_t    info_len = sizeof(info);
+
+    /* See if there's an entry in the root index for the file info.
+     * If it's not there, "found" will be set to false.
+     * Failure causes us to return from find_file_info(), but
+     * failure here does not mean it's not found; rather, it's
+     * something like an illegal argument was passed in.
+     */
+    bool        found;
+    W_DO(ss_m::find_assoc(root_iid,
                           key_vec_tmp,
                           &info, info_len, found));
     if (!found) {
         cerr << "No file information found" <<endl;
         return RC(fcASSERT);
     } else {
-       cerr << " found assoc "
-                << file_info_t::key << " --> " << info << endl;
+        /* found. extract the stuff we need and populate
+         * this class's attributes
+         */
+       cout << "Found assoc "
+            << file_info_t::key << " --> " << info << endl;
+
+        _fid = info.fid;
+        _start_rid = info.first_rid;
+        _rec_size = info.rec_size;
+        _num_rec = info.num_rec;
     }
 
+    /* end of transaction */
     W_DO(ssm->commit_xct());
 
-    _start_rid = info.first_rid;
-    _fid = info.fid;
-    _rec_size = info.rec_size;
-    _num_rec = info.num_rec;
     return RCOK;
 }
 
-/*
- * This function either formats a new device and creates a
- * volume on it, or mounts an already existing device and
- * returns the ID of the volume on it.
- *
- * It's borrowed from elsewhere; it can handle mounting
- * an already existing device, even though in this main program
- * we don't ever do that.
- */
 rc_t
-smthread_user_t::create_the_file() 
+smthread_driver_t::create_the_file() 
 {
-    file_info_t info;  // will be made persistent in the
-    // volume root index.
+    file_info_t info;  
 
-    // create and fill file to scan
-    cout << "Creating a file with " << _num_rec 
-        << " records of size " << _rec_size << endl;
+    /* start a transaction */
     W_DO(ssm->begin_xct());
 
-    // Create the file. Stuff its fid in the persistent file_info
-    W_DO(ssm->create_file(_vid, info.fid, smlevel_3::t_regular));
-    rid_t rid;
+    /* Create a file in the volume _vid. 
+     * Let its logging type (store flags) be
+     * regular, meaning it's logged.
+     * Stuff its fid into info.fid.
+     *
+     * Failure will cause return from create_the_file().
+     */
+    W_DO(ssm->create_file(_vid, _fid, smlevel_3::t_regular));
+    info.fid = _fid;
 
+    /* end of transaction */
+    W_DO(ssm->commit_xct());
+
+    /* Now we'll create a bunch of records.
+     * The record size was taken from the storage manager's
+     * build-time configuration. 
+     *
+     * We'll put an int in the record's header; that will
+     * be the ordinal number of the record, so we'll reduce
+     * the record size to account for that.
+     */
+
+    /// each record will have its ordinal number in the header
+    /// and zeros for data 
     _rec_size -= align(sizeof(int));
-
-/// each record will have its ordinal number in the header
-/// and zeros for data 
 
     char* dummy = new char[_rec_size];
     memset(dummy, '\0', _rec_size);
+    /* Create a vector for the data. The same
+     * vector will be used for every record created.
+     */
     vec_t data(dummy, _rec_size);
 
+    /* new transaction */
+    W_DO(ssm->begin_xct());
+
+    /* _num_rec was taken from run-time options */
     for(int j=0; j < _num_rec; j++)
     {
-        {
-            w_ostrstream o(dummy, _rec_size);
-            o << "Record number " << j << ends;
-            w_assert1(o.c_str() == dummy);
-        }
-        // header contains record #
-        int i = j;
-        const vec_t hdr(&i, sizeof(i));
-        W_COERCE(ssm->create_rec(info.fid, hdr,
-                                _rec_size, data, rid));
-        cout << "Creating rec " << j << endl;
+        /* Header contains record #.
+         * Create a vector for the header.
+         */
+        const vec_t hdr(&j, sizeof(j));
+        rid_t rid;
+
+        W_DO(ssm->create_rec(
+                info.fid,  // file in which to put the record
+                hdr,       // header
+                _rec_size,  // size of data
+                data,      // data
+                rid        // resulting record id
+                ));
         if (j == 0) {
             info.first_rid = rid;
         }        
+        cout << "Record number " << j  << " " << rid << endl;
+
     }
-    cout << "Created all. First rid " << info.first_rid << endl;
     delete [] dummy;
+    cout << "Created all."
+        << endl
+        << " First rid " << info.first_rid << endl;
+
+    /*
+     * Store data about the file created. This info will
+     * be made persistent.
+     */
     info.num_rec = _num_rec;
     info.rec_size = _rec_size;
 
-    // record file info in the root index : this stores some
-    // attributes of the file in general
+    /* get the volume's root index identifier */
     stid_t      _root_iid;
     W_DO(ss_m::vol_root_index(_vid, _root_iid));
 
+    /* create a vector for the key with which to associate the
+     * file info
+     */
     const vec_t key_vec_tmp(file_info_t::key, strlen(file_info_t::key));
+    /* create a vector for the datum to associate with the key */
     const vec_t info_vec_tmp(&info, sizeof(info));
+    /* create the association in the root index. */
     W_DO(ss_m::create_assoc(_root_iid,
                             key_vec_tmp,
                             info_vec_tmp));
-    cerr << "Creating assoc "
+    cout << "Creating assoc "
             << file_info_t::key << " --> " << info << endl;
+    /* done. end of transaction */
     W_DO(ssm->commit_xct());
     return RCOK;
 }
 
 rc_t
-smthread_user_t::scan_the_root_index() 
+smthread_driver_t::scan_the_root_index() 
 {
     W_DO(ssm->begin_xct());
     stid_t _root_iid;
@@ -254,14 +443,14 @@ smthread_user_t::scan_the_root_index()
     smsize_t    klen(0);
     smsize_t    elen(0);
 #define MAXKEYSIZE 100
-    char *      keybuf[MAXKEYSIZE];
+    char        keybuf[MAXKEYSIZE];
     file_info_t info;
 
     do {
         w_rc_t rc = scan.next(eof);
         if(rc.is_error()) {
             cerr << "Error getting next: " << rc << endl;
-            retval = rc.err_num();
+            _retval = rc.err_num();
             return rc;
         }
         if(eof) break;
@@ -269,12 +458,12 @@ smthread_user_t::scan_the_root_index()
         // get the key len and element len
         W_DO(scan.curr(NULL, klen, NULL, elen));
         // Create vectors for the given lengths.
-        vec_t key(keybuf, klen);
+        vec_t key(&keybuf[0], klen);
         vec_t elem(&info, elen);
         // Get the key and element value
         W_DO(scan.curr(&key, klen, &elem, elen));
-
-        cout << "Key " << keybuf << endl;
+        keybuf[klen] = '\0';
+        cout << "Key " << (const char *)keybuf << endl;
         cout << "Value " 
         << " { fid " << info.fid 
         << " first_rid " << info.first_rid
@@ -288,7 +477,7 @@ smthread_user_t::scan_the_root_index()
 }
 
 rc_t
-smthread_user_t::scan_the_file() 
+smthread_driver_t::scan_the_file() 
 {
     cout << "Scanning file " << _fid << endl;
     W_DO(ssm->begin_xct());
@@ -302,21 +491,22 @@ smthread_user_t::scan_the_file()
         w_rc_t rc = scan.next(cursor, 0, eof);
         if(rc.is_error()) {
             cerr << "Error getting next: " << rc << endl;
-            retval = rc.err_num();
+            _retval = rc.err_num();
             return rc;
         }
         if(eof) break;
 
-        cout << "Record " << i << "/" << _num_rec
-            << " Rid "  << cursor->rid() << endl;
+        cout << "Record " << i 
+            << " Rid "  << cursor->rid() ;
         vec_t       header (cursor->hdr(), cursor->hdr_size());
         int         hdrcontents;
         header.copy_to(&hdrcontents, sizeof(hdrcontents));
-        cout << "Record hdr "  << hdrcontents << endl;
+        cout << " Hdr {"  << hdrcontents << "}";
 
         const char *body = cursor->body();
-        w_assert1(cursor->body_size() == _rec_size);
-        cout << "Record body "  << body << endl;
+        w_assert0(cursor->body_size() == _rec_size);
+        cout << " Body {"  << body << "}";
+        cout << endl;
         i++;
     } while (!eof);
     w_assert1(i == _num_rec);
@@ -326,7 +516,7 @@ smthread_user_t::scan_the_file()
 }
 
 rc_t
-smthread_user_t::do_init()
+smthread_driver_t::do_init()
 {
     cout << "-i: Initialize " << endl;
 
@@ -366,7 +556,7 @@ smthread_user_t::do_init()
 }
 
 rc_t
-smthread_user_t::no_init()
+smthread_driver_t::no_init()
 {
     cout << "Using already-existing device: " << _device_name << endl;
     // mount already existing device
@@ -392,197 +582,125 @@ smthread_user_t::no_init()
     _lvid = lvid_list[0];
     delete [] lvid_list;
 
-    W_COERCE(find_file_info());
-    W_COERCE(scan_the_root_index());
+    W_DO(find_file_info());
+    W_DO(scan_the_root_index());
     W_DO(scan_the_file());
     return RCOK;
 }
 
+/* helper for run() */
 rc_t
-smthread_user_t::do_work()
+smthread_driver_t::do_work()
 {
     if (_initialize_device) W_DO(do_init());
     else  W_DO(no_init());
+    statistics();
     return RCOK;
 }
 
-/**\defgroup EGOPTIONS Example of setting up options.
- * This method creates configuration options, starts up
- * the storage manager,
- */
-w_rc_t smthread_user_t::handle_options()
+void 
+smthread_driver_t::start_ssm() 
 {
-    option_t* opt_device_name = 0;
-    option_t* opt_device_quota = 0;
-    option_t* opt_num_rec = 0;
-
-    cout << "Processing configuration options ..." << endl;
-
-    // Create an option group for my options.
-    // I use a 3-level naming scheme:
-    // executable-name.server.option-name
-    // Thus, the file will contain lines like this:
-    // create_rec.server.device_name : /tmp/example/device
-    // *.server.device_name : /tmp/example/device
-    // create_rec.*.device_name : /tmp/example/device
-    //
-    const int option_level_cnt = 3; 
-
-    _options = new option_group_t (option_level_cnt);
-    if(!_options) {
-        cerr << "Out of memory: could not allocate from heap." <<
-            endl;
-        retval = 1;
-        return RC(fcINTERNAL);
-    }
-    option_group_t &options(*_options);
-
-    W_COERCE(options.add_option("device_name", "device/file name",
-                         NULL, "device containg volume holding file to scan",
-                         true, option_t::set_value_charstr,
-                         opt_device_name));
-
-    W_COERCE(options.add_option("device_quota", "# > 1000",
-                         "2000", "quota for device",
-                         false, option_t::set_value_long,
-                         opt_device_quota));
-
-    // Default number of records to create is 1.
-    W_COERCE(options.add_option("num_rec", "# > 0",
-                         "1", "number of records in file",
-                         true, option_t::set_value_long,
-                         opt_num_rec));
-
-    // Have the SSM add its options to my group.
-    W_COERCE(ss_m::setup_options(&options));
-
-    cout << "Finding configuration option settings." << endl;
-
-    w_rc_t rc = init_config_options(options, "server", _argc, _argv);
-    if (rc.is_error()) {
-        usage(options);
-        retval = 1;
-        return rc;
-    }
-    cout << "Processing command line." << endl;
-
-    // Process the command line: looking for the "-h" flag
-    int option;
-    while ((option = getopt(_argc, _argv, "hi")) != -1) {
-        switch (option) {
-        case 'i' :
-            _initialize_device = true;
-            break;
-
-        case 'h' :
-            usage(options);
-            break;
-
-        default:
-            usage(options);
-            retval = 1;
-            return RC(fcNOTIMPLEMENTED);
-            break;
-        }
-    }
-    {
-        cout << "Checking for required options...";
-        /* check that all required options have been set */
-        w_ostrstream      err_stream;
-        w_rc_t rc = options.check_required(&err_stream);
-        if (rc.is_error()) {
-            cerr << "These required options are not set:" << endl;
-            cerr << err_stream.c_str() << endl;
-            return rc;
-        }
-        cout << "Options OK; values are: { " << endl;
-        options.print_values(false, cout);
-        cout << "} end list of options values. " << endl;
-    }
-
-    // Grab the options values for later use by run()
-    _device_name = opt_device_name->value();
-    _quota = strtol(opt_device_quota->value(), 0, 0);
-    _num_rec = strtol(opt_num_rec->value(), 0, 0);
-
-    return RCOK;
+    // Now start a storage manager.
+    cout << "Starting SSM and performing recovery ..." << endl;
+    ssm = new ss_m();
 }
 
-void smthread_user_t::run()
+/* Here's the driver */
+void smthread_driver_t::run()
 {
+    /* deal with run-time options */
     w_rc_t rc = handle_options();
     if(rc.is_error()) {
-        retval = 1;
+        _retval = 1;
         return;
     }
 
     // Now start a storage manager.
-    cout << "Starting SSM and performing recovery ..." << endl;
-    ssm = new ss_m();
+    start_ssm();
     if (!ssm) {
         cerr << "Error: Out of memory for ss_m" << endl;
-        retval = 1;
+        _retval = 1;
         return;
     }
 
-    cout << "Getting SSM config info for record size ..." << endl;
+    /* get static (build-time) configuration info for the
+     * storage manager. This is so that we can illustrate
+     * use of the configuration info and also illustrate the
+     * record ids. 
+     * Record size is based on the
+     * largest small record that will fit in a page.
+     *
+     * You can see that two will fit on a page
+     * and if your number of records (run-time option) is
+     * larger than two, the pages numbers will change as
+     * we create more records.
+     */
 
     sm_config_info_t config_info;
-    W_COERCE(ss_m::config_info(config_info));
-    _rec_size = config_info.max_small_rec; // minus a header
-
-    // Subroutine to set up the device and volume and
-    // create the num_rec records of rec_size.
-    rc = do_work();
-
-    if (rc.is_error()) {
-        cerr << "Could not set up device/volume due to: " << endl;
-        cerr << rc << endl;
-        delete ssm;
-        rc = RCOK;   // force deletion of w_error_t info hanging off rc
-                     // otherwise a leak for w_error_t will be reported
-        retval = 1;
-        if(rc.is_error()) 
-            W_COERCE(rc); // avoid error not checked.
+    rc = ss_m::config_info(config_info);
+    if(rc.is_error()) {
+        cerr << "Could not get storage manager configuration info: " << rc << endl; 
+        _retval = 1;
         return;
     }
+    _rec_size = config_info.max_small_rec; // largest record we can put on a page w/o
+    // its becoming a large record.  Takes into account the record tag (internal header).
+    _rec_size += config_info.small_rec_overhead; // record tag added back in.
+    _rec_size /= 2; // number of records per page.
+    _rec_size -= config_info.small_rec_overhead; // removed again.
 
-    sm_stats_info_t       stats;
-    W_COERCE(ss_m::gather_stats(stats));
-    cout << " SM Statistics : " << endl
-         << stats  << endl;
+    rc = do_work();
+    if(rc.is_error()) {
+        cerr << "Failure: " << rc << endl; 
+        _retval = 1;
+    }
 
     // Clean up and shut down
     cout << "\nShutting down SSM ..." << endl;
     delete ssm;
-
     cout << "Finished!" << endl;
 
     return;
 }
 
-// This was copied from file_scan so it has lots of extra junk
+// SUBSTITUTE_MAIN is defined when this file is #included in 
+// other example .cpp files.  For the create_rec example,
+// this is not defined, so the following  main() is in effect.
+#ifndef SUBSTITUTE_MAIN
 int
 main(int argc, char* argv[])
 {
-    smthread_user_t *smtu = new smthread_user_t(argc, argv);
+    /* set argv0 for usage()  -- this is so that other examples
+     * that use this code can function properly*/
+    argv0 = argv[0];
+
+    /* create a thread to do the work */
+    smthread_driver_t *smtu = new smthread_driver_t(argc, argv);
     if (!smtu)
             W_FATAL(fcOUTOFMEMORY);
 
+    /* cause the thread's run() method to start */
     w_rc_t e = smtu->fork();
     if(e.is_error()) {
-        cerr << "error forking thread: " << e <<endl;
-        return 1;
-    }
-    e = smtu->join();
-    if(e.is_error()) {
-        cerr << "error forking thread: " << e <<endl;
+        cerr << "Error forking thread: " << e <<endl;
         return 1;
     }
 
-    int        rv = smtu->retval;
+    /* wait for the thread's run() method to end */
+    e = smtu->join();
+    if(e.is_error()) {
+        cerr << "Error joining thread: " << e <<endl;
+        return 1;
+    }
+
+    /* get the return value */
+    int        rv = smtu->return_value();
+
+    /* clean up */
     delete smtu;
 
     return rv;
 }
+#endif
 

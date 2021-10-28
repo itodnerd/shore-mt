@@ -7,17 +7,51 @@ MAINTAINERCLEANFILES = \
 	$(installdir)/lib/*.a \
 	$(installdir)/bin/* 
 
-CLEANFILES = dox/ warnings
+CLEANFILES = warnings
+LOCALCLEANDIRS += dox/
+
 SUBDIRS = src config 
 DIST_SUBDIRS = tools $(SUBDIRS) 
 EXTRA_DIST = bootstrap Makefile.local Makefile.generic COPYRIGHT-NOTICE README ChangeLog Makefile.in gethugepagesize.sh Doxyfile
 
+dist-md5: dox dist dist-dox 
+	md5sum $(distdir)-dox.tar.bz2 > $(distdir).md5
+	md5sum $(distdir).tar.bz2 >> $(distdir).md5
+	md5sum $(distdir)-dox.tar.gz >> $(distdir).md5
+	md5sum $(distdir).tar.gz >> $(distdir).md5
+	md5sum --check $(distdir).md5
+
+dist-dox: dox
+	rm -f $(distdir)-dox.tar
+	rm -f $(distdir)-dox.tar.gz
+	rm -f $(distdir)-dox.tar.bz2
+	(cd dox; tar cf ../$(distdir)-dox.tar .)
+	gzip $(distdir)-dox.tar
+	(cd dox; tar cf ../$(distdir)-dox.tar .)
+	bzip2 $(distdir)-dox.tar
+
 ## no-op to make this for dist
+
+libshore.a:
+	(cd $(DESTDIR)$(libdir); \
+	$(AR) x libfc.a; \
+	$(AR) x libsthread.a; \
+	$(AR) x libcommon.a; \
+	$(AR) x libsm.a; \
+	$(AR) x libatomic_ops.a; \
+	$(AR) q libshore.a *.o; \
+	$(RANLIB) libshore.a ;\
+	$(RM) -f *.o; \
+	$(RM) -f libfc.a libsthread.a libcommon.a libsm.a libatomic_ops.a ; \
+	)
+
 gethugepagesize.sh: 
 
-dox::
+dox:
 	$(rm) -rf dox/
 	mkdir -p dox/
 	doxygen
+
+converted: dox
 	(cd dox; cp -r html converted)
 	(cd dox/html; ../../tools/convert-dox.sh)

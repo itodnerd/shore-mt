@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore' incl-file-exclusion='BF_CORE_H'>
 
- $Id: bf_htab.h,v 1.1.2.11 2010/03/19 22:20:23 nhall Exp $
+ $Id: bf_htab.h,v 1.3 2010/07/01 00:08:19 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -82,7 +82,9 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  * space and not finding that it can move anything.) These two limits
  * are combined into one limit here: BMAX (compile-time constant)
  *
- * TODO: In event of failure, the hash table will have to be rebuilt with
+ * \bug bf_core_m::htab
+ * GNATS 47 :
+ * In event of failure, the hash table will have to be rebuilt with
  * different hash functions, or will have to be modified in some way, and
  * at this writing, we haven't handled this case. 
  *

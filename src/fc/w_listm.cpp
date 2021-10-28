@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: w_listm.cpp,v 1.10.2.4 2010/03/19 22:17:19 nhall Exp $
+ $Id: w_listm.cpp,v 1.13 2010/12/08 17:37:37 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -31,7 +31,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 /*  -- do not edit anything above this line --   </std-header>*/
 
-#define W_SOURCE
 #include <w_base.h>
 #include <w_list.h>
 

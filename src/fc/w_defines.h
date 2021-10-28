@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='W_DEFINES_H' no-defines='true'>
 
- $Id: w_defines.h,v 1.5 2010/06/08 22:27:22 nhall Exp $
+ $Id: w_defines.h,v 1.8 2010/12/08 17:37:37 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -55,7 +55,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 /*  -- do not edit anything above this line --   </std-header>*/
 
-#include "shore.def"
 /* shore-config.h does not have duplicate-include protection, but
    this file does, and we don't include shore-config.h anywhere else
 
@@ -84,6 +83,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #undef VERSION
 #endif
 #include "shore-config.h"
+#include "shore.def"
 
 /*
  *  Valgrind/Purify support
@@ -93,17 +93,17 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  */
 #if defined(HAVE_PURIFY_H) || defined(PURIFY)
 #include <purify.h>
-#define ZERO_INIT 1
+#define ZERO_INIT 1 /* for purify */
 #endif
 
 #ifdef HAVE_VALGRIND_H
 #define USING_VALGRIND 1
 #include <valgrind.h>
-#define ZERO_INIT 1
-#elif HAVE_VALGRIND_VALGRIND_H
+#define ZERO_INIT 1 /* for valgrind */
+#elif defined(HAVE_VALGRIND_VALGRIND_H)
 #define USING_VALGRIND 1
 #include <valgrind/valgrind.h>
-#define ZERO_INIT 1
+#define ZERO_INIT 1 /* for valgrind */
 #endif
 
 #ifdef USING_VALGRIND
@@ -124,15 +124,13 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 #include <unistd.h>
 
-#include <inttypes.h>
-
 /* the following cannot be "verbatim" included in shore-config.def,
  * unfortunately. The  #undef ARCH_LP64 gets mangled
  * by autoconf.
  */
 #ifdef ARCH_LP64
 /* enabled LP64 - let's make sure the environment can handle it */
-#if _SC_V6_LP64_OFF64 || _XBS5_LP64_OFF64 || _SC_V6_LPBIG_OFFBIG || _XBS5_LPBIG_OFFBIG 
+#if defined(_SC_V6_LP64_OFF64) || _XBS5_LP64_OFF64 || _SC_V6_LPBIG_OFFBIG || _XBS5_LPBIG_OFFBIG 
 #else
 #warning Turning off ARCH_LP64
 #undef ARCH_LP64
@@ -156,51 +154,19 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #error SM does not support pages this large.
 #endif
 
-#ifdef __GNUC__
-#define MAYBE_UNUSED __attribute__((unused))
-#else
-#define MAYBE_UNUSED
-#endif
 
 #include <sys/types.h>
 using namespace std;
-
-/* Alignment functions.
-
-   WARNING: undefined behavior results if k is zero or not a power of
-   two.
- */
-
-/// aligns a pointer p on a size a
-template <typename T>
-static inline
-T alignon(T p, size_t a) {
-    size_t n = (size_t) p;
-    size_t rval = (n + a - 1) & -a;
-    return (T) rval;
-}
- 
-
-///  We now support only 8-byte alignment of records
-#define ALIGNON 0x8
-
-/// align to 8-byte boundary
-template <typename T>
-static inline
-T align(T sz) { return alignon(sz, ALIGNON); }
-
-// sometimes we need compile-time constant alignment...
-template <size_t N, size_t K=ALIGNON>
-struct static_align {
-    enum { value=(N+K-1) & -K };
-};
 
 // avoid nasty bus errors...
 template<class T>
 static inline T* aligned_cast(char const* ptr) 
 {
   // bump the pointer up to the next proper alignment (always a power of 2)
-  return (T*) alignon(ptr, __alignof__(T));
+  size_t val = (size_t) ptr;
+  val += __alignof__(T) - 1;
+  val &= -__alignof__(T);
+  return (T*) val;
 }
 
 
@@ -212,9 +178,9 @@ static inline T* aligned_cast(char const* ptr)
 */
 template<int N>
 class allocaN {
-  char _buf[N+__alignof__(uintptr_t)];
+  char _buf[N+__alignof__(double)];
 public:
-  operator void*() { return aligned_cast<uintptr_t>(_buf); }
+  operator void*() { return aligned_cast<double>(_buf); }
   // no destructor because we don't know what's going on...
 };
 

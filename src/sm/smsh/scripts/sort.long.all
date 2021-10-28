@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: sort.long.all,v 1.5 2006/06/01 17:09:57 nhall Exp $
+#  $Id: sort.long.all,v 1.7 2010/09/21 14:26:25 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -30,5 +30,6 @@
 source $script_dir/vol.init
 
 # sort.mkey.1 -> bugs
-# set scripts [list sort.mkey.1 ]
-# runscripts $scripts
+set scripts [list sort.mkey.1 ]
+echo "sort.long.all sourcing " $scripts
+runscripts $scripts

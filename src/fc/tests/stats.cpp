@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: stats.cpp,v 1.16.2.5 2010/03/19 22:17:53 nhall Exp $
+ $Id: stats.cpp,v 1.19 2010/12/08 17:37:38 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -41,19 +41,11 @@ main()
 
     int i;
     for(i=0; i < 10000000; i++) {
-#ifdef Alpha
-    f *= 3.0/2.9999;
-#else
     f *= 3.0/2.8;
-#endif
     }
 
 
-#ifdef Alpha
-    cout << "float f=" << f << endl;
-#else
     cout << "float f=" << float(f) << endl;
-#endif
     cout << flush;
 
     return 0;

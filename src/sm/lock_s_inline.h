@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='LOCK_S_inline_H'>
 
- $Id: lock_s_inline.h,v 1.13 2010/06/08 22:28:55 nhall Exp $
+ $Id: lock_s_inline.h,v 1.17 2012/01/02 21:52:23 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -60,15 +60,17 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 /*
  *  STRUCTURE of a lockid_t
  *
- *    word 0: | lspace  s[0]  |   volid s[1] |
- *    word 1: |       store number           |
- *    word 2: |  page number <or> kvl.g      |
+ *    word 0: | lspace  s[0]      |   volid s[1] |
+ *            | & page-alloc-bit  |
+ *    word 1: |       store number               |
+ *    word 2: |  page number <or> kvl.g          |
  *    word 3: union {
- *              |  slotid_t s[6] |   0         |
- *              |         kvl.h   w[3]         |    
+ *            |  slotid_t s[6]    |   0          |
+ *            |         kvl.h                    |    
  *        }
  */
 
+// In fact, the compiler should now make the best choice on its own.
 #if W_DEBUG_LEVEL > 0
 // This was #included in lock.cpp
 #define inline
@@ -269,7 +271,7 @@ void
 lockid_t::set_ext_has_page_alloc(bool value) 
 {
     // low byte
-    w_assert9(lspace() == t_extent);
+    w_assert2(lspace() == t_extent);
     w_assert9(((s[0]&0xff) == 1) || ((s[0]&0xff) == 0));
     DBG(<<"s[0] = " << s[0] << " set low byte to " << value);
     uint2_t high_byte = s[0] & 0xff00;
@@ -287,7 +289,7 @@ inline
 bool            
 lockid_t::ext_has_page_alloc() const 
 {
-    w_assert9(lspace() == t_extent);
+    w_assert2(lspace() == t_extent);
     w_assert9(((s[0]&0xff) == 1) || ((s[0]&0xff) == 0));
     return ((s[0] & 0xff) != 0);
 }
@@ -296,7 +298,7 @@ inline
 void            
 lockid_t::extract_extent(extid_t &e) const 
 {
-    w_assert9( lspace() == t_extent);
+    w_assert9( lspace() == t_extent); // test programs violate this
     w_assert9(((s[0]&0xff) == 1) || ((s[0]&0xff) == 0));
     e.vol = vid();
     e.ext = extent();
@@ -655,19 +657,32 @@ lockid_t::operator!=(const lockid_t& lid) const
  * This hash function is used for lock caching.
  */
 
+
+#include <w_hashing.h>
+
 inline uint4_t
 lockid_t::hash() const
 {
-    // uhash(x) returns a u64.
-    // While we'd like to be able to do this:
-    // return uint4_t(lockhashfunc(l[0]) + lockhashfunc(l[1]));
-    // we cannot include s[0] in its entirety, because it contains
-    // the page-alloc bit (or not).
+    // simply use multiple hashing
+    // be VERY careful about uint/int and casting.
+    // intentionally uint32_t/uint64_t instead of uint4_t/uint8_t
+    const w_base_t::uint4_t LOCKID_T_HASH_MULT = 0x35D0B891;
+    w_base_t::uint8_t h = lspace_bits();
+    h = h * LOCKID_T_HASH_MULT + s[1]; // vol id
+    h = h * LOCKID_T_HASH_MULT + w[1]; // store id
+    h = h * LOCKID_T_HASH_MULT + w[2]; // page or kvl.g
+    h = h * LOCKID_T_HASH_MULT + w[3]; // slot or kvl.h
+    return ((w_base_t::uint4_t) (h >> 32)) ^ ((w_base_t::uint4_t) (h & 0xFFFFFFFF));
+#if 0
+	// This is replaced by the above, which is demonstrated to be better
+	// in terms of speed and collisions.
     return uint4_t(
-            lockhashfunc(lspace_bits()) + 
-            lockhashfunc(w[1]) + 
-            lockhashfunc(l[1]));
-    
+            lockhashfunc(lspace_bits()) +
+            lockhashfunc(s[1]) +
+            lockhashfunc(w[1]) +
+            lockhashfunc(w[2]) +
+            lockhashfunc(w[3]) );
+#endif
 }
 
 

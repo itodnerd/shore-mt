@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: findsizes.cpp,v 1.1.2.2 2009/10/30 23:49:03 nhall Exp $
+ $Id: findsizes.cpp,v 1.3 2010/06/08 22:27:15 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

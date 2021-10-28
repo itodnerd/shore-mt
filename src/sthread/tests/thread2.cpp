@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: thread2.cpp,v 1.59.2.11 2010/03/19 22:20:03 nhall Exp $
+ $Id: thread2.cpp,v 1.62 2010/12/08 17:37:55 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -42,8 +42,8 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include <iostream>
 #include <w_strstream.h>
 
-#ifndef IO_DIR
-#define	IO_DIR	"/var/tmp"
+#ifndef TEST_IO_DIR
+#define	TEST_IO_DIR	"/var/tmp"
 #endif
 
 
@@ -85,7 +85,7 @@ bool	sync_io = true;
 bool	histograms = false;
 bool	verbose = false;
 
-const char* io_dir = IO_DIR;
+const char* io_dir = TEST_IO_DIR;
 
 /* build an i/o vector for an I/O operation, to test write buffer. */
 int make_vec(char *buf, int size, int vec_size, 

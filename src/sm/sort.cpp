@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: sort.cpp,v 1.128 2010/06/08 22:28:56 nhall Exp $
+ $Id: sort.cpp,v 1.135 2010/12/09 15:20:14 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -548,7 +548,8 @@ run_scan_t::init(rid_t& begin, PFC c, const key_info_t& k, bool unique=false)
     W_DO( next(eof) );
 
     if (unique) {
-        W_DO( ss_m::SSM->fi->next_page(pid, eof, NULL /* allocated only */) );
+        W_DO( ss_m::SSM->fi->next_file_page(pid, eof, 
+                    NULL /* allocated only */, lock_base_t::NL) );
         INC_TSTAT_SORT(sort_page_fixes);
         if (eof) { 
             single = true; eof = false; 
@@ -598,12 +599,13 @@ run_scan_t::next(bool& end)
     // scan next record
     slot = fp[i].next_slot(slot);
     if (slot==0) {
-        DBGTHRD(<<"new page");
+        DBG(<<"new page");
         cur_rec = NULL;
         if (_unique) { // unique case 
             // here
             if (single) { eof = true; end = true; return RCOK; }
-            W_DO( ss_m::SSM->fi->next_page(pid, eof, NULL /* allocated only */) );
+            W_DO( ss_m::SSM->fi->next_file_page(pid, eof, 
+                        NULL /* allocated only */, lock_base_t::NL) );
             INC_TSTAT_SORT(sort_page_fixes);
             if (eof) { single = true; eof = false; }
             else  {
@@ -615,7 +617,8 @@ run_scan_t::next(bool& end)
             // pages fixed.
             i = (i+1)%toggle_base;
         } else {
-            W_DO( ss_m::SSM->fi->next_page(pid, eof, NULL /* allocated only */) );
+            W_DO( ss_m::SSM->fi->next_file_page(pid, eof, 
+                        NULL /* allocated only */, lock_base_t::NL) );
             INC_TSTAT_SORT(sort_page_fixes);
             if (eof) { end = true; return RCOK; }
             i = (i+1)%toggle_base;
@@ -696,8 +699,14 @@ static bool duplicate_rec(const record_t* rec1, const record_t* rec2)
 //
 static inline uint rec_size(const record_t* r)
 {
+    DBG(<<"rec_size flags=" << r->tag.flags
+            << " body_size " << r->body_size()
+            << " sizeof(lg_tag_chunks_s) " << sizeof(lg_tag_chunks_s) 
+            << " sizeof(lg_tag_indirect_s) " << sizeof(lg_tag_indirect_s) 
+       );
   // NB: The following replacement had to be made for gcc 2.7.2.x
   // with a later release, try the original code again
+  
    return (r->tag.flags & t_small) ? (unsigned int)r->body_size()  : 
                     ((r->tag.flags & t_large_0) ? 
                        sizeof(lg_tag_chunks_s):
@@ -718,20 +727,31 @@ static int
 qsort_cmp(const void* k1, const void* k2)
 {
     INC_TSTAT_SORT(sort_keycmp_cnt);
-    return _local_cmp(  ((sort_key_t*)k1)->klen,
-                        ((sort_key_t*)k1)->val,
-                        ((sort_key_t*)k2)->klen,
-                        ((sort_key_t*)k2)->val );
+    typedef union {
+        const void       *vp;
+        const sort_key_t *ptr;
+    } pun;
+    pun one = {k1};
+    pun two = {k2};
+
+    return _local_cmp(  one.ptr->klen,
+                        one.ptr->val,
+                        two.ptr->klen,
+                        two.ptr->val );
 }
 
 static int
 fqsort_cmp(const void* k1, const void* k2)
 {
     INC_TSTAT_SORT(sort_keycmp_cnt);
-    return _local_cmp(        ((file_sort_key_t*)k1)->klen,
-                              ((file_sort_key_t*)k1)->val,
-                        ((file_sort_key_t*)k2)->klen,
-                        ((file_sort_key_t*)k2)->val );
+    typedef union {
+        const void       *vp;
+        const file_sort_key_t *ptr;
+    } pun;
+    pun one = {k1};
+    pun two = {k2};
+    return _local_cmp( one.ptr->klen, one.ptr->val,
+                       two.ptr->klen, two.ptr->val );
 }
 
 
@@ -801,8 +821,8 @@ sort_stream_i::remove_duplicates()
         // read in the previous rec
         file_p tmp;
         const record_t* _r;
-        DBGTHRD(<<"sort_stream_i:remove_duplicates");
-        W_DO( fi->locate_page(sd->last_rid, tmp, LATCH_SH) );
+        DBG(<<"sort_stream_i:remove_duplicates");
+        W_DO( fi->locate_page(sd->last_rid, tmp, LATCH_SH, false) );
         INC_TSTAT_SORT(sort_page_fixes);
         W_COERCE( tmp.get_rec(sd->last_rid.slot, _r) );
 
@@ -1022,7 +1042,7 @@ sort_stream_i::flush_run()
         }
     }
     
-    W_COERCE( dir->access(sd->tmp_fid, sd->sdesc, NL) );
+    W_COERCE( dir->access(t_file, sd->tmp_fid, sd->sdesc, NL) );
     w_assert1(sd->sdesc);
 
     file_p last_page;
@@ -1229,7 +1249,6 @@ sort_stream_i::merge(bool skip_last_pass=false)
 
         if (last_pass) {
             // last pass may not be on temporary file
-            // (file should use logical_id)
             W_DO( SSM->_create_file(sp.vol, out_file, sp.property) );
             INC_TSTAT_SORT(sort_files_created);
             to_final_file = true;
@@ -1241,7 +1260,7 @@ sort_stream_i::merge(bool skip_last_pass=false)
         }
 
 
-        W_COERCE( dir->access(out_file, sd->sdesc, NL) );
+        W_COERCE( dir->access(t_file, out_file, sd->sdesc, NL) );
         w_assert1(sd->sdesc);
         file_p last_page;
 
@@ -1379,7 +1398,7 @@ sort_stream_i::merge(bool skip_last_pass=false)
             }
             
         }
-        DBGTHRD(<<"about to destroy " << in_file);
+        DBG(<<"about to destroy " << in_file);
         W_DO ( SSM->_destroy_file(in_file) );
     }
 
@@ -1468,6 +1487,11 @@ sort_stream_i::sort_stream_i(const key_info_t& k, const sort_parm_t& s,
 NORET
 sort_stream_i::~sort_stream_i()
 {
+    w_rc_t _error_occurred; // for use by prologue macro below
+	// Need this assert for check_rc:
+    if(_error_occurred.is_error()) {
+		W_FATAL(_error_occurred.err_num());
+	}
     if (heap) {
         record_free(heap, 0);
         delete [] heap;
@@ -1478,7 +1502,7 @@ sort_stream_i::~sort_stream_i()
     }
     if (sd) {
         if (sd->tmp_fid!=stid_t::null) {
-            DBGTHRD(<<"about to destroy " << sd->tmp_fid);
+            DBG(<<"about to destroy " << sd->tmp_fid);
             W_IGNORE ( SSM->_destroy_file(sd->tmp_fid) );
         }
         record_free(sd, 0);
@@ -1489,6 +1513,9 @@ sort_stream_i::~sort_stream_i()
 void 
 sort_stream_i::finish()
 {
+    w_rc_t _error_occurred; // for use by prologue macro below
+    w_assert0(_error_occurred.is_error()==false);
+
     if (heap) {
         record_free(heap, 0);
         delete [] heap; heap = 0;
@@ -1500,7 +1527,7 @@ sort_stream_i::finish()
     if (sd) {
         if (sd->tmp_fid!=stid_t::null) {
             if (xct()) {
-                DBGTHRD(<<"about to destroy " << sd->tmp_fid);
+                DBG(<<"about to destroy " << sd->tmp_fid);
                     W_COERCE ( SSM->_destroy_file(sd->tmp_fid) );
             }
         }
@@ -1523,6 +1550,9 @@ sort_stream_i::xct_state_changed(
 void
 sort_stream_i::init(const key_info_t& k, const sort_parm_t& s, uint est_rec_sz)
 {
+    w_rc_t _error_occurred; // for use by prologue macro below
+    w_assert0(_error_occurred.is_error()==false);
+
     _file_sort = sorted = eof = false;
     ki = k;
     sp = s;
@@ -1590,7 +1620,12 @@ sort_stream_i::init(const key_info_t& k, const sort_parm_t& s, uint est_rec_sz)
 rc_t
 sort_stream_i::put(const cvec_t& key, const cvec_t& elem)
 {
-    SM_PROLOGUE_RC(sort_stream_i::put, in_xct, read_write,  0);
+    DBG(<<"put key.size "  << key.size()
+            << " key " << key
+            << " elem.size " << elem.size()
+            << " elem " << elem
+            );
+
     w_assert1(!_file_sort);
 
     if (sd->rec_count >= sd->max_rec_cnt) {
@@ -1610,6 +1645,7 @@ sort_stream_i::put(const cvec_t& key, const cvec_t& elem)
         INC_TSTAT_SORT(sort_memcpy_cnt);
         ADD_TSTAT_SORT(sort_memcpy_bytes, sd->max_rec_cnt * sizeof(char *));
     }
+
 
     sort_key_t* k = (sort_key_t*) sd->keys[sd->rec_count];
     DBG(<<"existing keys " << (void *)(sd->keys)
@@ -1645,6 +1681,9 @@ sort_stream_i::put(const cvec_t& key, const cvec_t& elem)
     record_malloc(k->rec, k->rlen);
     elem.copy_to(k->rec, k->rlen);
 
+    DBG(<<"put k->klen "  << k->klen
+            << " k->rlen " << k->rlen
+            );
     sd->rec_count++;
 
     if (empty) empty = false;
@@ -1739,8 +1778,8 @@ rc_t
 sort_stream_i::get_next(vec_t& key, vec_t& elem, bool& end) 
 {
     fill4 filler;
-    W_DO( file_get_next(key, elem, filler.u4, end) );
-
+	W_DO( file_get_next(key, elem, filler.u4, end) );
+    DBG(<<"sort_stream_i::get_next elem.size " << elem.size());
     return RCOK;
 }
 
@@ -1860,6 +1899,12 @@ sort_stream_i::file_get_next(vec_t& key, vec_t& elem, uint4_t& blen, bool& end)
     key.put(rec->hdr(), rec->hdr_size());
     elem.put(rec->body(), rec_size(rec));
 
+    DBG(<<"key.size " << key.size()
+            << " elem.size " << elem.size()
+            << " rec->body_size " << rec->body_size()
+            << " rec_size(rec) " << rec_size(rec)
+            );
+
     if (_file_sort) { blen = rec->body_size(); }
 
     // prepare for next get
@@ -1954,7 +1999,7 @@ ss_m::_sort_file(const stid_t& fid, vid_t vid, stid_t& sfid,
         // in a non-destructive sort.
         W_DO ( _create_file(vid, lg_fid, property) );
         INC_TSTAT_SORT(sort_files_created);
-            W_COERCE( dir->access(lg_fid, sdesc, NL) );
+            W_COERCE( dir->access(t_file, lg_fid, sdesc, NL) );
         w_assert1(sdesc);
     }
 
@@ -1973,7 +2018,7 @@ ss_m::_sort_file(const stid_t& fid, vid_t vid, stid_t& sfid,
                 (kinfo.len==0 && int(kinfo.type)==int(key_info_t::t_string)));
 
     lpid_t pid, first_pid;
-    W_DO( fi->first_page(fid, pid, NULL /* allocated only */) );
+    W_DO( fi->first_file_page(fid, pid, NULL /* allocated only */, NL) );
     first_pid = pid;
    
     
@@ -2049,7 +2094,7 @@ ss_m::_sort_file(const stid_t& fid, vid_t vid, stid_t& sfid,
 
                         vec_t b_hdr, b_rec(buf, rlen);
                         
-                        W_COERCE( dir->access(lg_fid, sdesc, NL) );
+                        W_COERCE( dir->access(t_file, lg_fid, sdesc, NL) );
                         w_assert1(sdesc);
                         W_DO ( fi->create_rec_at_end( last_lg_page,
                                 rlen, b_hdr, b_rec, *sdesc, rid) );
@@ -2057,7 +2102,7 @@ ss_m::_sort_file(const stid_t& fid, vid_t vid, stid_t& sfid,
                         ADD_TSTAT_SORT(sort_rec_bytes,  b_hdr.size() + b_rec.size());
                         // get its new index info
                         file_p tmp;
-                        W_DO( fi->locate_page(rid, tmp, LATCH_SH) );
+                        W_DO( fi->locate_page(rid, tmp, LATCH_SH, false) );
                         INC_TSTAT_SORT(sort_page_fixes);
                         const record_t* nr;
                         W_COERCE( tmp.get_rec(rid.slot, nr) );
@@ -2115,7 +2160,7 @@ ss_m::_sort_file(const stid_t& fid, vid_t vid, stid_t& sfid,
                 W_DO ( sort_stream.file_put(key, rec, rlen, hlen, &r->tag) );
             }
 
-            W_DO( fi->next_page(pid, eof, NULL /* allocated only */) );
+            W_DO( fi->next_file_page(pid, eof, NULL /* allocated only */, NL) );
             INC_TSTAT_SORT(sort_page_fixes);
          }
 
@@ -2154,14 +2199,13 @@ ss_m::_sort_file(const stid_t& fid, vid_t vid, stid_t& sfid,
             W_FATAL(fcOUTOFMEMORY);
             w_auto_delete_array_t<char> auto_del_buf(tmp_buf);
 
-            bool eof;
             uint4_t blen;
             vec_t key, hdr, rec;
             W_DO ( sort_stream.file_get_next(key, rec, blen, eof) );
 
             uint offset = kinfo.len;
 
-            W_COERCE( dir->access(sfid, sdesc, NL) );
+            W_COERCE( dir->access(t_file, sfid, sdesc, NL) );
             w_assert1(sdesc);
 
                 while (!eof) {
@@ -2261,7 +2305,6 @@ ss_m::sort_file(const stid_t& fid, // I - input file id
                         unique, destructive);
     }
 
-    SM_PROLOGUE_RC(ss_m::sort_file, in_xct, read_write, 0);
     W_DO(_sort_file(fid, vid, sfid, property, key_info, run_size,
                         ascending, unique, destructive));
     return RCOK;

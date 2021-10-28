@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: vtable_sthread.cpp,v 1.15.2.7 2010/03/19 22:20:01 nhall Exp $
+ $Id: vtable_sthread.cpp,v 1.17 2010/07/19 18:35:15 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -65,12 +65,12 @@ int
 sthread_t::collect(vtable_t &v, bool names_too)
 {
 
-    pthread_mutex_lock(&_class_list_lock);
+    CRITICAL_SECTION(cs, _class_list_lock);
 
     // Traverse once to count the number of entries. Grot.
     int nt=0;
     {
-        sthread_list_i i(*_class_list);
+        w_list_i<sthread_t,queue_based_lock_t> i(*_class_list);
         while (i.next())  { nt++; }
     }
 
@@ -90,7 +90,7 @@ sthread_t::collect(vtable_t &v, bool names_too)
 // TODO: REMOVE
 // cerr << "collect " << __LINE__ << " " << __FILE__; v.operator<<(cerr); cerr << endl;
     {
-        sthread_list_i i(*_class_list);
+        w_list_i<sthread_t,queue_based_lock_t> i(*_class_list);
         while (i.next())  {
             // Call the function f to fill a row of the table. 
             f(*i.curr());
@@ -98,7 +98,7 @@ sthread_t::collect(vtable_t &v, bool names_too)
 // cerr << "collect " << __LINE__ << " " << __FILE__; v.operator<<(cerr); cerr << endl;
         }
     }
-    pthread_mutex_unlock(&_class_list_lock);
+    // TODO: unlock the list
 
     return 0; // no error
 }
@@ -124,7 +124,7 @@ sthread_t::vtable_collect(vtable_row_t& t)  // argument MUST be named "t"
     t.set_string(sthread_status_attr,  sthread_t::status_strings[status()]);
 
 /* define TMP_GET_STAT to the get-stat macro for sthreads: */
-#define TMP_GET_STAT(x) SthreadStats.x
+#define TMP_GET_STAT(x) me()->SthreadStats.x
 #include "sthread_stats_collect_gen.cpp"
 }
 

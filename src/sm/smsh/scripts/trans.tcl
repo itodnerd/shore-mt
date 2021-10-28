@@ -1,6 +1,6 @@
 # <STD-HEADER STYLE=TCL ORIG-SRC=SHORE>
 # 
-#   $Id: trans.tcl,v 1.1.2.4 2010/03/25 18:05:32 nhall Exp $
+#   $Id: trans.tcl,v 1.6 2010/10/27 17:04:29 nhall Exp $
 # 
 # 
 # 
@@ -87,8 +87,9 @@ proc rtrans { clean action finish } {
     sm begin_xct
     set tx [sm xct]
     set tid [sm xct_to_tid $tx]
-    verbose  $tid
+	verbose begin_xct ->  $tid
     set nrecs [scanit $f0]
+	verbose scanned $nrecs
 
     if { $action == "readonly" } {
         set nrecsnow $nrecs
@@ -111,45 +112,62 @@ proc rtrans { clean action finish } {
            set nrecsnow [expr {$nrecs + $j}]
         }
     }
-    verbose before switch $finish
+
+	verbose Done with action :$action
+
+    verbose before finish:  $finish
     case $finish in {
         { "commit.restart" } {
+			verbose commit_xct
             sm commit_xct
         } 
         { "abort.restart" } {
+			verbose abort_xct
             sm abort_xct
             set nrecsnow $nrecs
         } 
         { "extern.abort.restart" } {
+            verbose sm enter2pc $finish.$action.$clean
             sm enter2pc $finish.$action.$clean
+            verbose sm set_coordinator none
             sm set_coordinator none
+            verbose sm abort_xct
             sm abort_xct
             set nrecsnow $nrecs
         } 
         { "extern.prepare.commit.restart" } {
+            verbose sm enter2pc $finish.$action.$clean
             sm enter2pc $finish.$action.$clean
+            verbose sm set_coordinator none
             sm set_coordinator none
             if {$docheckpoint == 1} { sm checkpoint }
+			set x [sm xct]
+			verbose xct $x
+			set tid [sm xct_to_tid $x]
+			verbose tid $tid
             set vote [sm prepare_xct]
-            verbose vote=$vote
+            verbose vote for $tid = $vote
             if {$vote != 1} {
                    verbose committing
                    sm commit_xct
             } else {
-                        set t [sm xct]
+					set t [sm xct]
                     assert {expr $t==0}
                     verbose already committed
             }
-                verbose test done
+			verbose test done
         } 
         { "extern.prepare.abort.restart" } {
+            verbose sm enter2pc $finish.$action.$clean
             sm enter2pc $finish.$action.$clean
+            verbose sm set_coordinator none
             sm set_coordinator none
             # just to test fuzzy ckpts
             if {$docheckpoint == 1} { sm checkpoint }
             set vote [sm prepare_xct]
             verbose vote=$vote
             if {$vote != 1} {
+                verbose sm abort_xct
                 sm abort_xct
             } else {
                 set t [sm xct]
@@ -366,6 +384,7 @@ if [is_set do_file_create] {
     sm begin_xct
     set f0 [sm create_file $volid]]
     scanit $f0
-    sm commit_xct
+	set x [sm xct]
+	sm commit_xct_group $x
 }
 

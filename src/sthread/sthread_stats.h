@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='STHREAD_STATS_H'>
 
- $Id: sthread_stats.h,v 1.20 2010/06/15 17:26:00 nhall Exp $
+ $Id: sthread_stats.h,v 1.22 2010/12/08 17:37:50 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -92,11 +92,9 @@ public:
 
 extern ostream &operator<<(ostream &, const sthread_stats &stats);
 
-extern class sthread_stats SthreadStats;
 
-#    define STH_STATS(x)      SthreadStats.x
-#    define INC_STH_STATS(x) atomic_inc(SthreadStats.x);
-#    define SET_STH_STATS(x) SthreadStats.x = (y);
+#    define INC_STH_STATS(x) sthread_t::me()->SthreadStats.x++;
+#    define GET_STH_STATS(x) sthread_t::me()->SthreadStats.x
 
 
 /*<std-footer incl-file-exclusion='STHREAD_STATS_H'>  -- do not edit anything below this line -- */

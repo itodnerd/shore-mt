@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: partition.cpp,v 1.3 2010/06/08 22:28:55 nhall Exp $
+ $Id: partition.cpp,v 1.11 2010/12/08 17:37:43 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -54,8 +54,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 /*  -- do not edit anything above this line --   </std-header>*/
 
-#define debug_log false
-
 #define SM_SOURCE
 #define PARTITION_C
 #ifdef __GNUG__
@@ -66,28 +64,9 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include "logtype_gen.h"
 #include "log.h"
 #include "log_core.h"
-// DEAD #include "log_buf.h"
 
 // needed for skip_log
 #include "logdef_gen.cpp"
-
-// Initialize on first access:
-// block to be cleared upon first use.
-class block_of_zeroes {
-private:
-    char _block[log_core::BLOCK_SIZE];
-public:
-    NORET block_of_zeroes() {
-        memset(&_block[0], 0, log_core::BLOCK_SIZE);
-    }
-    char *block() { return _block; }
-};
-
-char *block_of_zeros() {
-
-    static block_of_zeroes z;
-    return z.block();
-}
 
 char *             
 partition_t::_readbuf() { return _owner->readbuf(); }
@@ -198,7 +177,7 @@ partition_t::clear()
     _mask=0; 
     _clr_state(m_open_for_read);
     _clr_state(m_open_for_append);
-    DBGTHRD(<<"partition " << num() << " clear is clobbering " 
+    DBGTHRD(<<"partition_t::clear num " << num() << " clobbering " 
             << _fhdl_rd << " and " << _fhdl_app);
     _fhdl_rd = invalid_fhdl;
     _fhdl_app = invalid_fhdl;
@@ -210,7 +189,27 @@ partition_t::init(log_core *owner)
     _start = 0; // always
     _owner = owner;
     _eop = owner->limit(); // always
+    DBGTHRD(<< "partition_t::init setting _eop to " << _eop );
     clear();
+}
+
+// Block of zeroes : used in next function.
+// Initialize on first access:
+// block to be cleared upon first use.
+class block_of_zeroes {
+private:
+    char _block[log_core::BLOCK_SIZE];
+public:
+    NORET block_of_zeroes() {
+        memset(&_block[0], 0, log_core::BLOCK_SIZE);
+    }
+    char *block() { return _block; }
+};
+
+char *block_of_zeros() {
+
+    static block_of_zeroes z;
+    return z.block();
 }
 
 /*
@@ -279,15 +278,6 @@ partition_t::flush(
         skip_log* s = _owner->get_skip_log();
         s->set_lsn_ck(lsn+size);
 
-#ifdef W_TRACE
-		off_t position = lseek(fd, 0, SEEK_CUR);
-		DBGTHRD(<<"setting lsn_ck in skip_log at pos " 
-				<< position << " with lsn " 
-                << s->get_lsn_ck() 
-                << "and size " << s->length()
-                );
-#endif
-
         // Hopefully the OS is smart enough to coalesce the writes
         // before sending them to disk. If not, and it's a problem
         // (e.g. for direct I/O), the alternative is to assemble the last
@@ -302,6 +292,14 @@ partition_t::flush(
         long grand_total = log_core::ceil2(total, log_core::BLOCK_SIZE);
         // take it up to multiple of block size
         w_assert2(grand_total % log_core::BLOCK_SIZE == 0);
+
+        if(grand_total == log_core::BLOCK_SIZE) {
+            // 1-block flush
+            INC_TSTAT(log_short_flush);
+        } else {
+            // 2-or-more-block flush
+            INC_TSTAT(log_long_flush);
+        }
 
         typedef sdisk_base_t::iovec_t iovec_t;
 
@@ -344,6 +342,8 @@ partition_t::flush(
                                     << flushl;
             W_COERCE(e);
         }
+
+        ADD_TSTAT(log_bytes_written, grand_total);
     } // end copy skip record
 
     this->flush(fd); // fsync
@@ -375,7 +375,9 @@ partition_t::_peek(
     int fd
 )
 {
-    FUNC(partition_t::_peek);
+    DBGTHRD("_peek: num_wanted=" << num_wanted << " peek_loc=" << peek_loc
+            << " whole_size=" << whole_size << " recovery=" << recovery
+            << " fd=" << fd);
     w_assert3(num() == 0 || num() == num_wanted);
     clear();
 
@@ -403,8 +405,20 @@ partition_t::_peek(
         peek_loc = 0;
         peeked_high = false;
     }
+    DBGTHRD(
+            << " peek_loc " << peek_loc
+            << " nosize " << nosize
+            << " _eop " << this->_eop
+            << " peeked_high " << peeked_high);
+
+    // We should never have written a partition larger than
+    // that determined to be the maximum. If we hit this assert,
+    // it should be because we changed log size between writing the
+    // log and recovering.
+    w_assert1(whole_size <= this->_eop);
 again:
     lsn_t pos = lsn_t(uint4_t(num()), sm_diskaddr_t(peek_loc));
+    DBGTHRD("peek_loc " << peek_loc << " yields sm_diskaddr/pos " << pos);
 
     lsn_t lsn_ck = pos ;
     w_rc_t rc;
@@ -417,9 +431,7 @@ again:
             // to decrease the time for recovery
             if(pos.hi() == _owner->master_lsn().hi() &&
                pos.lo() < _owner->master_lsn().lo())  {
-                  if(!debug_log) {
                       pos = _owner->master_lsn();
-                  }
             }
         }
         DBGTHRD( <<"reading pos=" << pos <<" eop=" << this->_eop);
@@ -484,7 +496,7 @@ again:
             // will have a correct lsn.
             */
 
-#if W_DEBUG_LEVEL > 1
+#if W_DEBUG_LEVEL > 3
             if( l->type() == logrec_t::t_skip ) {
                 smlevel_0::errlog->clog << info_prio <<
                 "Found skip record " << " at " << pos
@@ -510,10 +522,12 @@ again:
                 // consider end of log to be previous record
 
                 if(err > 1) {
-                    smlevel_0::errlog->clog << error_prio <<
-                    "Found unexpected end of log --"
-                    << " probably due to a previous crash." 
-                    << flushl;
+                    smlevel_0::errlog->clog << error_prio 
+                        << "Found unexpected end of log --"
+                        << " pos " << pos
+                        << " with lsn_ck " << lsn_ck
+                        << " probably due to a previous crash." 
+                        << flushl;
                 }
 
                 if(peeked_high) {
@@ -537,7 +551,9 @@ again:
                 // we drop out the loop, below, pos is set
                 // correctly.
                 lsn_ck = lsn_t(num_wanted, pos.lo());
+                DBGTHRD(<<"truncating partition fd=" << fd << " at " << lsn_ck);
                 _skip(lsn_ck, fd);
+                w_assert0(lsn_ck.lo()==0); // for debugging
                 break;
             }
         }
@@ -779,7 +795,7 @@ partition_t::open_for_read(
             if(err) {
                 smlevel_0::errlog->clog << fatal_prio
                     << "Cannot open log file: partition number "
-					<< __num  << " fd" << fd << flushl;
+                    << __num  << " fd" << fd << flushl;
                 // fatal
                 W_DO(e);
             } else {
@@ -972,7 +988,6 @@ partition_t::peek(
     }
     DBGTHRD(<<"partition " << __num << " peek  opened " << fname);
     {
-         w_rc_t e;
          sthread_base_t::filestat_t statbuf;
          e = me()->fstat(fd, statbuf);
          if (e.is_error()) {
@@ -983,7 +998,7 @@ partition_t::peek(
          }
          part_size = statbuf.st_size;
          DBGTHRD(<< "partition " << __num << " peek "
-             << "size of " << fname << " is " << statbuf.st_size);
+             << "size of " << fname << " is " << part_size);
     }
 
     // We will eventually want to write a record with the durable
@@ -1007,7 +1022,7 @@ partition_t::peek(
         DBGTHRD(<<" peek DESTROYING PARTITION " << __num << "  on fd " << fd);
 
         // First: write any-old junk
-        w_rc_t e = me()->ftruncate(fd,  log_core::BLOCK_SIZE );
+        e = me()->ftruncate(fd,  log_core::BLOCK_SIZE );
         if (e.is_error())        {
              smlevel_0::errlog->clog << fatal_prio
                 << "cannot write garbage block " << flushl;
@@ -1031,11 +1046,10 @@ partition_t::peek(
     }
 
     if (fdp) {
-        DBGTHRD(<< "partition " << __num << " SAVED, NOT CLOSED fd " << fd);
-        *fdp = fd;
+        DBGTHRD(<< "partition " << __num << " SAVED, NOT CLOSED fd " << fd); *fdp = fd;
     } else {
         DBGTHRD(<< " CLOSE " << fd);
-        w_rc_t e = me()->close(fd);
+        e = me()->close(fd);
         if (e.is_error()) {
             smlevel_0::errlog->clog << fatal_prio 
             << "ERROR: could not close the log file." << flushl;

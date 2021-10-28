@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: btree.6,v 1.31 1999/06/07 19:05:14 kupsch Exp $
+#  $Id: btree.6,v 1.33 2010/10/07 15:12:40 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -43,16 +43,23 @@ proc scan_up_partial {ndx lb ub nrec} {
     set lb [string trimleft $lb 0]
     set ub [string trimleft $ub 0]
 
-    for {set i 1} {$i <= $nrec} {incr i} {
-	set r [sm scan_next $scan]
-	if {[string compare $r eof] == 0} then { break }
-	set key [string trimleft [lindex $r 0] 0]
-	set el [string trimleft [lindex $r 1] 0]
-	verbose "scanned ($key, $el)"
-#	assert {expr $key == $el}
-#	assert {expr $key == $lb + $i - 1}
-    }
+	for {set i 1} {$i <= $nrec} {incr i} {
+		set r [sm scan_next $scan]
+		if {[string compare $r eof] == 0} then { break }
+		set key [string trimleft [lindex $r 0] 0]
+		set el [string trimleft [lindex $r 1] 0]
+		verbose "scanned ($key, $el)"
+	#	assert {expr $key == $el}
+	#	assert {expr $key == $lb + $i - 1}
+	}
     verbose expecting $i ">" $nrec
+
+    if [expr $i > $nrec] {
+	} else {
+		# print some stuff in anticipation of the assert
+		echo i:$i r:$r expected i=nrec=$nrec
+        echo "from scan up partial: $ndx $lb $ub $nrec"
+	}
     assert {expr $i > $nrec}
     assert {expr [string compare [sm scan_next $scan] eof] == 0}
     sm destroy_scan $scan
@@ -88,6 +95,14 @@ proc probe {ndx nrec} {
     verbose "probe:"
     for {set i 1} {$i <= $nrec} {incr i} {
         set el [sm find_assoc $ndx [format $short_form $i]]
+        if {expr $i != $el} {
+		   echo Assertion failed!  $i not = $el
+		   echo Index $ndx
+		   echo calling scan_up
+		   set verbose_flag 1
+		   scan_up $ndx $nrec
+		   assert {0}
+		}
        assert {expr $i == $el}
         verbose2 probed $i
     }
@@ -120,15 +135,15 @@ if {$logging==0} {
     #
     verbose load, abort
     sm begin_xct
-    for {set i 1} {$i <= $nrec} {incr i} {
-	set key [format $short_form $i]
-	for {set j 1} {$j <= $nrec} {incr j}  {
-	    verbose2 inserting $i.$j
-	    if [catch {sm create_assoc $ndx $key [format $short_form $j]} err] {
-		echo UNEXPECED ERROR : $err
-	    }
+	for {set i 1} {$i <= $nrec} {incr i} {
+		set key [format $short_form $i]
+		for {set j 1} {$j <= $nrec} {incr j}  {
+			verbose2 inserting $i.$j
+			if [catch {sm create_assoc $ndx $key [format $short_form $j]} err] {
+			echo UNEXPECED ERROR : $err
+			}
+		}
 	}
-    }
     scan_up_partial $ndx [format $short_form 2] \
 		    [format $short_form [expr {$nrec - 1}]] \
 		    [expr {$nrec * $nrec - 2 * $nrec}]
@@ -150,13 +165,13 @@ if {$logging==0} {
     set tid [sm xct_to_tid $tx]
     verbose  $tid
     for {set i 1} {$i <= $nrec} {incr i} {
-	set key [format $short_form $i]
-	for {set j 1} {$j <= $nrec} {incr j}  {
-	    verbose2 inserting $i.$j
-	    if [catch {sm create_assoc $ndx $key [format $short_form $j]} err] {
-		echo UNEXPECTED ERROR: $err
-	    }
-	}
+		set key [format $short_form $i]
+		for {set j 1} {$j <= $nrec} {incr j}  {
+			verbose2 inserting $i.$j
+			if [catch {sm create_assoc $ndx $key [format $short_form $j]} err] {
+			echo UNEXPECTED ERROR: $err
+			}
+		}
     }
 
     verbose restart $tid after load
@@ -173,13 +188,13 @@ if {$logging==0} {
     verbose load, commit, restart
     sm begin_xct
     for {set i 1} {$i <= $nrec} {incr i} {
-	set key [format $short_form $i]
-	for {set j 1} {$j <= $nrec} {incr j}  {
-	    verbose2 inserting $i.$j
-	    if [catch {sm create_assoc $ndx $key [format $short_form $j]} err] {
-		echo UNEXPECTED ERROR: $err
-	    }
-	}
+		set key [format $short_form $i]
+		for {set j 1} {$j <= $nrec} {incr j}  {
+			verbose2 inserting $i.$j
+			if [catch {sm create_assoc $ndx $key [format $short_form $j]} err] {
+			echo UNEXPECTED ERROR: $err
+			}
+		}
     }
     sm commit_xct
 
@@ -200,11 +215,11 @@ if {$logging==0} {
     verbose empty, abort
     sm begin_xct
     for {set i 1} {$i <= $nrec} {incr i} {
-	set key [format $short_form $i]
-	for {set j 1} {$j <= $nrec} {incr j}  {
-	    verbose2 deleting $i.$j
-	    sm destroy_assoc $ndx $key [format $short_form $j]
-	}
+		set key [format $short_form $i]
+		for {set j 1} {$j <= $nrec} {incr j}  {
+			verbose2 deleting $i.$j
+			sm destroy_assoc $ndx $key [format $short_form $j]
+		}
     }
     scan_up $ndx 0
     verbose sm abort_xct 
@@ -227,12 +242,12 @@ if {$logging==0} {
 
 
     for {set i 1} {$i <= $nrec} {incr i} {
-	set key [format $short_form $i]
-	for {set j 1} {$j <= $nrec} {incr j}  {
-	    verbose2 deleting $i.$j
-	    verbose2 deleting $i.$j
-	    sm destroy_assoc $ndx $key [format $short_form $j]
-	}
+		set key [format $short_form $i]
+		for {set j 1} {$j <= $nrec} {incr j}  {
+			verbose2 deleting $i.$j
+			verbose2 deleting $i.$j
+			sm destroy_assoc $ndx $key [format $short_form $j]
+		}
     }
 
     verbose restarting $tid after destroying all keys
@@ -248,11 +263,11 @@ if {$logging==0} {
     verbose empty, commit, restart
     sm begin_xct
     for {set i 1} {$i <= $nrec} {incr i} {
-	set key [format $short_form $i]
-	for {set j 1} {$j <= $nrec} {incr j}  {
-	    verbose2 deleting $i.$j
-	    sm destroy_assoc $ndx $key [format $short_form $j]
-	}
+		set key [format $short_form $i]
+		for {set j 1} {$j <= $nrec} {incr j}  {
+			verbose2 deleting $i.$j
+			sm destroy_assoc $ndx $key [format $short_form $j]
+		}
     }
     sm commit_xct
     restart

@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: file_scan_many.cpp,v 1.3 2010/06/08 22:28:15 nhall Exp $
+ $Id: file_scan_many.cpp,v 1.8 2010/12/08 17:37:49 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -32,15 +32,13 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 /*  -- do not edit anything above this line --   </std-header>*/
 
 /*
- * This program is a test of file scan and lid performance
+ * This program is a test of file scan. 
+ * More than one worker thread  can be used.
+ * It's not pretty but it's ok to use in "testall".
  */
 
-#include <w_stream.h>
-#include <sys/types.h>
-#include <cassert>
-// This include brings in all header files needed for writing a VAs 
+// This include brings in all header files needed for writing a VAS 
 #include "sm_vas.h"
-#include "w_getopt.h"
 
 ss_m* ssm = 0;
 static bool debug(false);
@@ -49,23 +47,23 @@ vid_t   vid(10);
 // shorten error code type name
 typedef w_rc_t rc_t;
 
-// this is implemented in options.cpp
+// this is implemented in init_config_options.cpp
 w_rc_t init_config_options(option_group_t& options,
                         const char* prog_type,
                         int& argc, char** argv);
 
 struct file_info_t {
-	file_info_t() : num_rec(0), rec_size(0), append_only(false)
-	{ 
-		memset(key, 0, 120);
-	}
+    file_info_t() : num_rec(0), rec_size(0), append_only(false)
+    { 
+        memset(key, 0, 120);
+    }
     stid_t      fid;
     rid_t       first_rid;
     int         num_rec;
     int         rec_size;
     bool        append_only;
-	fill1       _fill1;
-	fill2       _fill2;
+    fill1       _fill1;
+    fill2       _fill2;
     char        key[120];
 };
 
@@ -108,14 +106,15 @@ class smthread_main_t : public smthread_t
 public:
     int        retval;
 protected:
+    w_ostrstream outstream;
     char     *key;
     bool      append_only;
-	fill1     dummy1;
+    fill1     dummy1;
     vid_t     vid;
     w_rc_t    find_file_info(vid_t vid, stid_t root_iid, file_info_t &info);
 
-    char *make(int _id, int /*n*/) {
-		const int SZ=120;
+    char *make_key(int _id, int /*n*/) {
+        const int SZ=120;
         key = new char[SZ];
         bzero(key, SZ);
         // For the scanner, don't include the nrecs. Let it
@@ -123,11 +122,22 @@ protected:
         sprintf(key, "SCANFILE %d.", _id);
         return key;
     }
+    void sendout() {
+        fprintf(stdout, "%s %s", 
+                key?key:"uninitialized",
+                outstream.c_str());
+        w_reset_strstream(outstream);
+    }
 public:
-    smthread_main_t(int ac, char **av, const char *name="smthread_main_t" ) 
+    smthread_main_t(
+            int ac, 
+            char **av, 
+            bool ao,
+            const char *name="smthread_main_t"
+            ) 
             : smthread_t(t_regular, name),
-            argc(ac), argv(av), retval(0), key(0),
-             append_only(false)
+              argc(ac), argv(av), retval(0), key(),
+             append_only(ao)
     { }
     ~smthread_main_t()  { delete[] key; }
 
@@ -139,8 +149,21 @@ public:
 };
 typedef smthread_main_t *  threadptr;
 
-/* This thread creates a file and fills it with records, the
+/* This thread creates a file and fills it with records, then
  * puts an entry in the root index of the volume
+ * The index entry's key is created by make_key and
+ * looks like
+ * "SCANFILE x." where x is the thread # of the thread
+ * creating the file.
+ * Each thread has a copy of its key.
+ *
+ * The file's records look like:
+ * hdr: int (the record #)
+ * data: zeroes, then overwritten with key
+ *
+ * If -A is used on the command line, an append-file-i is used
+ * to create the records and that means they should be in order
+ * as indicated by the header value.
  */
 class smthread_creator_t : public smthread_main_t 
 {
@@ -148,11 +171,16 @@ class smthread_creator_t : public smthread_main_t
     int rec_size;
     int i;
 public:
-    smthread_creator_t(const vid_t &v, int _id, int n, int sz) : 
-        smthread_main_t(0,0, "smthread_creator_t"), 
+    smthread_creator_t(
+            const vid_t &v, 
+            int _id, 
+            int n, 
+            int sz, 
+            bool ao) : 
+        smthread_main_t(0,0, ao, "smthread_creator_t"), 
         num_rec(n) , rec_size(sz), i(_id)
     {
-        key = make(_id, n);
+        key = make_key(_id, n);
         vid = v;
     }
 
@@ -171,11 +199,12 @@ class smthread_scanner_t : public smthread_main_t
 public:
     smthread_scanner_t(
                          const vid_t &v, int _id, int n, int sz) : 
-                              smthread_main_t(0,0, "smthread_scanner_t"),
+        // not append-only unless persistent info says it should be 
+                              smthread_main_t(0,0, false, "smthread_scanner_t"),
                               num_rec(n),
                               rec_size(sz)
     {   vid = v;
-        key = make(_id, n);
+        key = make_key(_id, n);
     }
     ~smthread_scanner_t()  { }
     void run();
@@ -198,7 +227,8 @@ smthread_main_t::find_file_info(
 
 
     smsize_t    info_len = sizeof(info);
-    const vec_t        key_vec_tmp(key, strlen(key));
+    const vec_t key_vec_tmp(key, strlen(key));
+
     W_DO(ss_m::find_assoc(root_iid, key_vec_tmp,
                           &info, info_len, found));
     if (!found) {
@@ -209,8 +239,11 @@ smthread_main_t::find_file_info(
             <<endl;
         return RC(fcASSERT);
     } else {
-       cout << " found assoc "
+       if(debug) {
+           outstream << " found assoc "
                 << key << " --> " << info << endl;
+            sendout();
+       }
     }
 
     W_DO(ssm->commit_xct());
@@ -241,42 +274,58 @@ smthread_main_t:: setup_device_and_volume(const char* device_name,
 
     if (init_device) 
     {
-        cout << "Formatting device: " << device_name 
+        if(debug) {
+            outstream << "Formatting device: " << device_name 
              << " with a " << quota << "KB quota ..." << endl;
+            sendout();
+        }
         W_DO(ssm->format_dev(device_name, quota, true));
 
-        cout << "Mounting device: " << device_name  << endl;
+        if(debug) {
+            outstream << "Mounting device: " << device_name  << endl;
+            sendout();
+        }
         // mount the new device
         W_DO(ssm->mount_dev(device_name, vol_cnt, devid));
 
-        cout << "Mounted device: " << device_name  
+        if(debug) {
+            outstream << "Mounted device: " << device_name  
              << " volume count " << vol_cnt
              << " device " << devid
              << endl;
+            sendout();
+        }
 
         // generate a volume ID for the new volume we are about to
         // create on the device
-		lvid_t lvid;
-        cout << "Generating new lvid: " << endl;
+        lvid_t lvid;
+        if(debug) {
+            outstream << "Generating new lvid: " << endl;
+            sendout();
+        }
         W_DO(ssm->generate_new_lvid(lvid));
-        cout << "Generated lvid " << lvid <<  endl;
+        if(debug) {
+            outstream << "Generated lvid " << lvid <<  endl;
+            sendout();
+        }
 
-        // create the new volume 
-        cout << "Creating a new volume on the device" << endl;
-        cout << "    with a " << quota << "KB quota ..." << endl;
-        cout << "    with local handle(phys volid) " << vid << endl;
+        if(debug) {
+            // create the new volume 
+            outstream << "Creating a new volume on the device" << endl;
+            outstream << "    with a " << quota << "KB quota ..." << endl;
+            outstream << "    with local handle(phys volid) " << vid << endl;
+            sendout();
+        }
         W_DO(ssm->create_vol(device_name, lvid, quota, false, vid));
-        cout << "Created vid " <<  vid << endl;
-
-#if USE_LID
-        cout << "Adding LID index" << endl;
-        // create the logical ID index on the volume, reserving no IDs
-        W_DO(ssm->add_logical_id_index(lvid, 0, 0));
-#endif
+        if(debug) {
+            outstream << "Created vid " <<  vid << endl;
+            sendout();
+        }
     }
     else
     {
-        cout << "Using already existing device: " << device_name << endl;
+        outstream << "Using already existing device: " << device_name << endl;
+        sendout();
         // mount already existing device
         w_rc_t rc = ssm->mount_dev(device_name, vol_cnt, devid, vid);
         if (rc.is_error()) {
@@ -294,13 +343,14 @@ smthread_main_t:: setup_device_and_volume(const char* device_name,
             cerr << "Error, device has no volumes" << endl;
             ::exit(1);
         } else {
-            cout << "Device has volumes:" ;
+            outstream << "Device has volumes:" ;
             for(unsigned i=0; i < lvid_cnt; i++) {
-                cout << lvid_list[i] << " " ;
+                outstream << lvid_list[i] << " " ;
             }
-            cout << endl;
+            outstream << endl;
+            sendout();
         }
-		W_DO(ss_m::lvid_to_vid(lvid_list[0], vid));
+        W_DO(ss_m::lvid_to_vid(lvid_list[0], vid));
         delete [] lvid_list;
     }
 
@@ -317,7 +367,15 @@ void smthread_main_t::run()
     option_t* opt_num_rec = 0;
     option_t* opt_rec_size = 0;
 
-    cout << "processing configuration options ..." << endl;
+    if(debug) {
+        outstream << "processing configuration options ..." 
+            << " argc " << argc
+            << endl;
+        for(int i=0; i < argc; i++) {
+            outstream << " -------- argv["<<i<<"]=" << argv[i] << endl;
+        }
+        sendout();
+    }
     const int option_level_cnt = 3; 
     option_group_t options(option_level_cnt);
 
@@ -359,9 +417,17 @@ void smthread_main_t::run()
     int option;
     int nthreads(1);
     while ((option = getopt(argc, argv, "Adn:hit:")) != -1) {
+        if(debug) {
+            outstream << "option " << option << endl;
+            sendout();
+        }
         switch (option) {
         case 'A' :
             append_only = true;
+            if(debug) {
+                outstream << "append only " << endl;
+                sendout();
+            }
             break;
         case 'd' :
             debug = true;
@@ -397,7 +463,8 @@ void smthread_main_t::run()
         }
     }
 
-    cout << "Starting SSM and performing recovery ..." << endl;
+    outstream << "Starting SSM and performing recovery ..." << endl;
+    sendout();
     ssm = new ss_m();
     if (!ssm) {
         cerr << "Error: Out of memory for ss_m" << endl;
@@ -412,9 +479,10 @@ void smthread_main_t::run()
     stid_t fid;
 
     if(cmdline_nrecords > 0) {
-        cout << " num rec of " << cmdline_nrecords 
+        outstream << " num rec of " << cmdline_nrecords 
                 << " overrides config option num rec of "  << nrecords
                 << endl;
+        sendout();
         nrecords = cmdline_nrecords;
     }
 
@@ -433,8 +501,10 @@ void smthread_main_t::run()
         return;
     }
 
-    cout << "************ vid " << vid << endl;
-    cout << "************ NTHREADS " << nthreads << endl;
+    outstream << "************ vid " << vid << endl;
+    sendout();
+    outstream << "************ NTHREADS " << nthreads << endl;
+    sendout();
 
     /* fork off the correct number of threads */
     threadptr *  subthreads = new  threadptr [nthreads];
@@ -443,13 +513,13 @@ void smthread_main_t::run()
         {
               int nrecs = nrecords/(i?i:1) +1;
               subthreads[i] = 
-                  new smthread_creator_t(vid, i, nrecs, rec_size);
-#if 0 && defined(USING_VALGRIND) 
-			if(RUNNING_ON_VALGRIND)
-			{
-				check_definedness(subthreads[i], sizeof(smthread_creator_t));
-				check_valgrind_errors(__LINE__, __FILE__);
-			}
+                  new smthread_creator_t(vid, i, nrecs, rec_size, append_only);
+#if defined(DEBUG_DESPERATE) && defined(USING_VALGRIND) 
+            if(RUNNING_ON_VALGRIND)
+            {
+                check_definedness(subthreads[i], sizeof(smthread_creator_t));
+                check_valgrind_errors(__LINE__, __FILE__);
+            }
 #endif
         }
     } else {
@@ -469,33 +539,42 @@ void smthread_main_t::run()
         subthreads[i]->join();
     }
     for(int i=0; i<nthreads; i ++)
-	{
-		delete subthreads[i];
-	}
-	delete[] subthreads;
+    {
+        delete subthreads[i];
+    }
+    delete[] subthreads;
 
-    cout << "\nShutting down SSM ..." << endl;
+    outstream << "\nShutting down SSM ..." << endl;
+    sendout();
     delete ssm;
 
-    cout << "*******************************************" << endl;
-    cout << "Finished! return value=" << retval << endl;
-    cout << "*******************************************" << endl;
+    outstream << "*******************************************" << endl;
+    outstream << "Finished! return value=" << retval << endl;
+    outstream << "*******************************************" << endl;
+    sendout();
 }
 
 #define START 1
 
 void smthread_creator_t::run()
 {
-    cout << "Created creator with key " << key << endl; 
+    if(debug) {
+        outstream << "Created creator with key " << key ;
+        outstream << ((append_only) ? " (append only)": " (any order)")
+            << endl;
+        sendout();
+    }
 
     file_info_t info;
     strcpy(info.key, key);
 
     // create and fill file to scan
-    cout << "Creating a file with " << num_rec 
+    outstream << "Creating a file with " << num_rec 
         << " records of size " << rec_size 
         << " vid " << vid 
+        << ((append_only) ? " (append only)": " (any order)")
         << endl;
+    sendout();
     W_COERCE(ssm->begin_xct());
 
     W_COERCE(ssm->create_file(vid, info.fid, smlevel_3::t_regular));
@@ -503,25 +582,36 @@ void smthread_creator_t::run()
 
     char* dummy = new char[rec_size];
     memset(dummy, '\0', rec_size);
+
+    // put either the creator's key or the rid in the record's body
     vec_t data(dummy, rec_size);
+
     if(append_only)
     {
+        // put the creator's key in the data just for yuks 
+        strncpy(dummy, key, rec_size);
+
         info.append_only=true;
         append_file_i iter(info.fid);
         for (int j = START; j <= num_rec; j++) {
                 const vec_t hdr(&j, sizeof(j));;
                 iter.create_rec(hdr, rec_size, data, rid);
                 if (j == START) {
-                info.first_rid = rid;
+                    info.first_rid = rid;
                 }        
         }
     } 
     else 
     {
+        // put the rid of each record in the datum
         for (int j = START; j <= num_rec; j++) {
             const vec_t hdr(&j, sizeof(j));;
             W_COERCE(ssm->create_rec(info.fid, hdr,
                                     rec_size, data, rid));
+            memcpy(dummy, &rid, sizeof(rid));
+            // Now replace the datum with the
+            W_COERCE(ssm->update_rec(rid, 0, data));
+
             if (j == START) {
                 info.first_rid = rid;
             }        
@@ -534,14 +624,14 @@ void smthread_creator_t::run()
     stid_t root_iid;  // root index ID
     // record file info in the root index : this stores some
     // attributes of the file in general
-    cout << "calling vol_root_id lvid= " << vid << endl;
+    // outstream << "calling vol_root_id lvid= " << vid << endl;
     W_COERCE(ss_m::vol_root_index(vid, root_iid));
 
     const vec_t key_vec_tmp(key, strlen(key));
     const vec_t info_vec_tmp(&info, sizeof(info));
-#if 1 && defined(USING_VALGRIND) 
-	// I did once have this at the beginning but then we
-	// croak because we haven't called set_lsn_ck yet
+#if defined(USING_VALGRIND) 
+    // I did once have this at the beginning but then we
+    // croak because we haven't called set_lsn_ck yet
     if(RUNNING_ON_VALGRIND)
     {
         check_valgrind_errors(__LINE__, __FILE__);
@@ -554,8 +644,13 @@ void smthread_creator_t::run()
     W_COERCE(ss_m::create_assoc(root_iid,
                             key_vec_tmp,
                             info_vec_tmp));
-    cout << " Creating assoc "
+
+    if(debug) {
+        outstream << " Creating root index entry "
                 << key << " --> " << info << endl;
+        sendout();
+    }
+
     W_COERCE(ssm->commit_xct());
 
 
@@ -579,19 +674,19 @@ void smthread_creator_t::run()
             W_COERCE( RC(fcASSERT) );
         }
     }
-    cout << "********** Done creating file " << info.fid << endl;
+    outstream << "********** Done creating file " << info.fid 
+        << endl;
+    sendout();
+
     threadptr subthread =
               new smthread_scanner_t(vid, i, num_rec, rec_size);
     subthread->fork();
     subthread->join();
-	delete subthread;
+    delete subthread;
 }
 
 void smthread_scanner_t::run()
 {
-    cout << "********** Created scanner for key "
-        << key
-        << endl;
 
     stid_t root_iid;  // root index ID
     // record file info in the root index : this stores some
@@ -606,7 +701,11 @@ void smthread_scanner_t::run()
     stid_t fid = info2.fid;
     num_rec = info2.num_rec;
 
-    cout << "********** Starting scanning file " << fid  << endl;
+    outstream << "********** Created scanner for key "
+        << key
+        << (append_only?" append-only" : " any order")
+        << endl;
+    sendout();
 
     {
         W_COERCE(ssm->begin_xct());
@@ -619,9 +718,11 @@ void smthread_scanner_t::run()
 void smthread_scanner_t::scan_i_scan(const stid_t& fid, int num_recs,
                 ss_m::concurrency_t cc)
 {
-    cout << "starting scan_i of " 
-        << fid << ", " 
-        << num_recs << " records" << endl;
+    outstream << "********** Starting scanning file " << fid  
+        << " expecting " << num_recs << " records" 
+        << endl;
+    sendout();
+
     scan_file_i scan(fid, cc);
 
     w_rc_t rc = scan.error_code();
@@ -651,11 +752,13 @@ void smthread_scanner_t::scan_i_scan(const stid_t& fid, int num_recs,
         }
 
         if(debug) {
-            cout << " scanned i " << i << ": "  
-				<< scan.curr_rid 
-				<< " eof=" << eof
-				<< endl;
+            outstream << " scanned i " << i << ": "  
+                << scan.curr_rid 
+                << " eof=" << eof
+                << endl;
+            sendout();
         }
+
         if(eof) break;
 
         w_assert1(handle->pinned());
@@ -666,16 +769,31 @@ void smthread_scanner_t::scan_i_scan(const stid_t& fid, int num_recs,
         int refi;
         ref.copy_to(&refi, sizeof (refi));
 
-        if(debug) {
-            cout << "    header contains " 
-                << refi << endl;
-        }
+        const char *datum =handle->body();
+        smsize_t datasize=handle->body_size();
+
+        outstream << handle->rid();
+        outstream << "    header " 
+            << refi ;
         
         if(append_only) {
+            w_assert1(refi == i);
             // if we used append-only on the file creation,
             // we had better find the order preserved.
-            w_assert1(refi == i);
+            outstream << "; data (size " 
+            << datasize 
+            << ") " << datum ;
+            outstream << " A:OK " << endl;
+        } else {
+            rid_t r;
+            memcpy(&r, datum, sizeof(r));
+            w_assert1(r == handle->rid());
+            outstream << "; data (size " 
+            << datasize 
+            << ") " << r ;
+            outstream << " rid:OK " << endl;
         }
+        sendout();
 
 /*
         const char *body =handle->body();
@@ -683,49 +801,42 @@ void smthread_scanner_t::scan_i_scan(const stid_t& fid, int num_recs,
 */
         i++;
     } while (1) ;
-    cout << "scan_i scan complete, i="  << i
-		<< " num_rec expected =" << num_recs
-		<< endl;
+    if(num_recs == i-1) {
+        if(debug) {
+            outstream << "scan_i scan complete, OK" << endl;
+            sendout();
+        }
+    } else {
+        outstream << "ERROR IN COUNT: scan_i scan complete, i="  << i-1
+        << " num_rec expected =" << num_recs
+        << endl;
+        sendout();
+    }
+
     assert(i-START == num_recs);
 }
-
-#if 0
-void lid_scan(const vid_t& lvid, const rid_t& start_rid, int num_rec)
-{
-    cout << "starting lid scan of " << num_rec << " records" << endl;
-    rid_t         rid = start_rid;
-    pin_i         pin;
-    int         i;
-    for (i = 0, rid = start_rid; i < num_rec; i++, rid.increment(1)) {
-        W_COERCE(pin.pin(lvid, rid, 0));
-    }
-    assert(i == num_rec);
-    cout << "lid scan complete" << endl;
-}
-#endif
-
 
 int
 main(int argc, char* argv[])
 {
-        smthread_main_t *smtu = new smthread_main_t(argc, argv);
-        if (!smtu)
-                W_FATAL(fcOUTOFMEMORY);
+    smthread_main_t *smtu = new smthread_main_t(argc, argv, false);
+    if (!smtu)
+            W_FATAL(fcOUTOFMEMORY);
 
-        w_rc_t e = smtu->fork();
-        if(e.is_error()) {
-            cerr << "error forking thread: " << e <<endl;
-            return 1;
-        }
-        e = smtu->join();
-        if(e.is_error()) {
-            cerr << "error forking thread: " << e <<endl;
-            return 1;
-        }
+    w_rc_t e = smtu->fork();
+    if(e.is_error()) {
+        cerr << "error forking thread: " << e <<endl;
+        return 1;
+    }
+    e = smtu->join();
+    if(e.is_error()) {
+        cerr << "error forking thread: " << e <<endl;
+        return 1;
+    }
 
-        int        rv = smtu->retval;
-        delete smtu;
+    int        rv = smtu->retval;
+    delete smtu;
 
-        return rv;
+    return rv;
 }
 

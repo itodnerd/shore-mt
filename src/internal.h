@@ -1,7 +1,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
-/*<std-header orig-src='shore' incl-file-exclusion='STHREAD_H'>
+/*<std-header orig-src='shore' incl-file-exclusion='INTERNAL_H'>
 
- $Id: internal.h,v 1.3 2010/06/15 17:30:20 nhall Exp $
+ $Id: internal.h,v 1.13 2011/09/08 18:10:53 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -40,7 +40,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  * - \ref SSMAPI (ss_m) 
  *   Most of the programming interface to the storage manager is encapsulated
  *   in the ss_m class. 
- * - \ref IO_M (io_m),  \ref VOL_M (vol_m) and \ref DIR_M (dir_m)
+ * - \ref VOL_M (vol_m) and \ref DIR_M (dir_m)
  *   These managers handle volumes, page allocation and stores, which are the
  *   structures underlying files of records, B+-Tree indexes, and
  *   spatial indexes (R*-Trees).
@@ -53,53 +53,522 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  * - \ref BF_M (bf_m)
  *   The buffer manager works closely with \ref XCT_M and \ref LOG_M.
  *
- * \section IO_M I/O Manager
+ * \attention
+ * \anchor ATSIGN 
+ * \htmlonly
+ * <b><font color=#B2222>
+ * In the storage manager, fixing a page in the buffer pool acquires
+ a latch
+ and the verbs "fix" and "latch" are used interchangeably here.
+ For searching convenience, where latching/fixing occurs the symbol @
+ has been inserted.
+ * </b></font> 
+ * \endhtmlonly
+ *
+ * \section VOL_M I/O Manager and Volume Manager
  * The I/O manager was, in the early days of SHORE, expected to
  * have more responsibility than it now has; now it is little more
- * than a wrapper for the \ref VOL_M.  
+ * than a wrapper for the \ref VOL_M.   
+ * For the purpose of this discussion, 
+ * the I/O Manager and the volume manager are the same entity.
+ * There is a single read-write lock associated 
+ * with the I/O-Volume manager to serialize access.  
+ * Read-only functions acquire the lock in read mode; updating 
+ * functions acquire the lock in write mode.
  *
- * \section VOL_M Volume Manager
+ * \note
+ * Much of the page- and extent-allocation code relies on the fact that
+ * access to the manager is serialized, and this lock is a major source of
+ * contention.
+ *
  * The volume manager handles formatting of volumes,
  * allocation and deallocation of pages and extents in stores.
  * Within a page, allocation of space is up to the manager of the
  * storage structure (btree, rtree, or file).
  *
- * Pages are reserved for a store in units of ss_m::ext_sz, 
+ * The following sections describe the \ref VOL_M:
+ * - \ref EXTENTSTORE 
+ * - \ref STORENODE 
+ * - \ref OBJIDS 
+ * - \ref STONUMS 
+ * - \ref ALLOCEXT 
+ * - \ref XAFTERXCT 
+ * - \ref IMPLICAT 
+ * - \ref ALLOCST 
+ * - \ref SAFTERXCT 
+ * - \ref ALLOCPG 
+ * - \ref VOLCACHES 
+ * - \ref PAGES 
+ * - \ref RSVD_MODE 
+ *
+ * \subsection EXTENTSTORE Extents and Stores
+ *
+ * Files and indexes are types of \e stores. A store is a persistent
+ * data structure to which pages are allocated and deallocated, but which
+ * is independent of the purpose for which it is used (index or file).
+ *
+ * Pages are reserved and allocated for a store in units of ss_m::ext_sz 
+ * (enumeration value smlevel_0::ext_sz, found in sm_base.h), 
  * a compile-time constant that indicates the size of an extent.
- * An extent is a set of contiguous pages.  Extents are represented 
- * by persistent data structures, extnode_t, which are 
+ *
+ * An extent is a set of contiguous pages, represented 
+ * by a persistent data structure \ref extlink_t.  Extents are
  * linked together to form the entire structure of a store.  
- * A stnode_t holds metadata for a store and  sits at the 
- * head of the chain of extents that forms the store, and 
- * the extents in the store list are marked as having an owner, 
- * which is the store id of the store to which they belong.  
- * A store id is a number of type snum_t, and an extent id is 
- * a number of type extnum_t.  
+ * The head of this list has a reference to it from a store-node
+ * (\ref stnode_t), described below.
+ * Extents (extlink_t) are co-located on extent-map pages at 
+ * the beginning of the volume. 
+ *
+ * Each extent has an owner, 
+ * which is the store id (\ref snum_t) of the store to which it belongs.
+ * Free extents are not linked together; 
+ * they simply have no owner (signified by an  \ref extlink_t::owner == 0).
+ *
+ * An extent id is a number of type \ref extnum_t.  It is arithmetically
+ * determined from a page number, and the pages in an extent are arithmetically derived from an extent number. 
+ * The \ref extnum_t is used in acquiring locks on
+ * extents and it is used for locating the associated \ref extlink_t and the
+ * extent-map page on which the \ref extlink_t resides.
  * Scanning the pages in a store can be accomplished by scanning the 
- * list of extnode_t.   
- * Each extent has a number, and the pages in the extent are arithmetically 
- * derived from the extent number; likewise, from any page, 
- * its extent can be computed.  Free extents are not linked together; 
- * they simply have no owner (signified by an  extnode_t::owner == 0).
+ * list of \ref extlink_t.   
+ * 
+ * The entire allocation metadata for a page are in its extent, which contains a
+ * bitmap indicating which of its pages are allocated.
+ * One cannot determine the allocation status of a page from the page 
+ * itself: the extent map page must be inspected.
+ *
+ * Extents also contain (unlogged, advisory) metadata in the form of
+ * a pbucketmap; this contains a \e bucket \e number 
+ * for each page in the extent,
+ * indicating of the amount of free space on the page.
+ * The map has meaning only to the \ref FILE_M.  
+ * The file manager asks the I/O layer
+ * (which then descends to the volume manager for this purpose) to find the
+ * next page whose advisory bucket number is sufficiently large for the
+ * file manager's record-allocation needs.  Between the time this request
+ * is made and the time the file manager fixes
+ * and inspects the page,
+ * the page might no longer have sufficient space.  Nevertheless, this
+ * advisory bucket number in the extlink_t reduces the number of page-fixes
+ * to find a page with the needed space, and
+ * it does improve the effective fill-factor for file pages.
+ *
+ * Maintaining the bucket map is costly in that it fixes and dirties 
+ * extent-map pages,
+ * even though it does not log these updates.
+ *
+ * The bucket map is maintained \e only for extents whose pages are 
+ * file_p (small-object) pages.
+ *
+ * \subsection STORENODE Store Nodes
+ * A \ref stnode_t holds metadata for a store, including a reference to
+ * the first extent in the store. 
+ * A store \e always contains at least one allocated extent, even if
+ * no pages in that extent are allocated.
+ * Scanning the pages in a store can be accomplished by scanning the 
+ * list of \ref extlink_t.   
+ *
+ * Store nodes are co-located on store-map pages at the beginning of a volume, 
+ * after the extent maps. The volume is formatted to allow
+ * as many store nodes as there are extents.
+ *
+ * \subsection OBJIDS Object Identifiers, Object Location, and Locks
+ *
+ * There is a close interaction among various object identifiers,
+ * the data structures in which the 
+ * objects reside, and the locks acquired on the objects.
+ * 
+ * Simply put:
+ * - a volume identifier (ID) consists of an 
+ *   integral number, e.g., 1, represented in an output stream as v(1).
+ * - a store identifier consists of a volume ID and a store number, e.g., 3,
+ *   represented s(1.3).
+ * - an index ID and a file ID are merely store IDs.
+ * - a page ID contains a store ID and a page number, e.g., 48, represented
+ *   p(1.3.48).
+ * - a record ID for a record in a file contains a 
+ *   page ID and a slot number, e.g., 2, represented r(1.3.48.2).
+ *
+ *  Clearly, from a record ID, its page and slot can 
+ *  be derived without consulting any indices.  It is 
+ *  also clear that records cannot move, which has 
+ *  ramifications for \ref RSVD_MODE, described below.
+ *  The \ref LOCK_M understands these identifiers as well as extent
+ *  IDs, and generates locks from identifiers.  
+ *
+ * \subsection STONUMS Predefined Stores
+ *
+ * A volume contains these pre-defined structures:
+ * - Header: page 0 (the first page) of the volume; contains :
+ *   - a format version #
+ *   - the long volume id
+ *   - extent size
+ *   - number of extents
+ *   - number of extents used for store 0 (see below)
+ *   - number of pages used for store 0 (see below)
+ *   - the first page of the extent map
+ *   - the first page of the store map
+ *   - page size
+ * - store #0 : a "pseudo-store" containing the extent-map and store-map pages. This
+ *   starts with page 1 (the second page) of the volume.
+ * - store #1 :  directory of the stores (used by the storage manager): this is
+ *   a btree index mapping store-number to metadata about the store, 
+ *   including (but not limited to) the store's use (btree/rtree/file-small-object-pages/file-large-object-pages), 
+ *   and, in the case of indices, the root page of the index,
+ *   and, in the case of files, the store number of the associated large-object-page store. 
+ * - store #2 :  root index (for use by the server)
+ *
+ * \subsection ALLOCEXT Allocation and Deallocation of Extents 
+ *
+ * \anchor ALLOCEXTA 
+ * Finding an extent to allocate to a store requires
+ * searching through the 
+ *   extent-map pages for an extent that is both 
+ *   unallocated (owner is zero) and not locked. 
+ *  - The storage 
+ *   manager caches the minimum free extent number with which to start a
+ *   search; this number is reset to its static lower bound when the
+ *   volume is mounted, meaning that the first extent operation after a
+ *   mount starts its search at the head of the volume.
+ * - Subsequent searches start the search with the lowest free extent
+ *   number.
+ * - Extent-map pages are latched as needed for this linear search 
+ *   \ref ATSIGN "\@".
+ * - The first appropriate extent found is IX-locked.
+ *   These locks are explicitly acquired by the lock manager; 
+ *   extent locks are not in the lock hierarchy;
+ *
+ * \anchor ALLOCEXTA2 
+ * Allocating a set of extents to a store is a matter of linking
+ * them together and then appending the list to the 
+ * tail of the store's linked list:
+ *  - Locks are \e not acquired for previous and next extents in the list; 
+ *    EX-latches protect these structures;
+ *  - New extents are always linked in at the tail of the list.
+ *  - One extent-map page is fixed at a time 
+ *   \ref ATSIGN "\@".  Entire portions of the
+ *   extent list that reside on the same extent-map page are 
+ *   linked while holding the page latched, and 
+ *   logged in a single log record. This is useful only for creating
+ *   large objects; all other page-allocations result in allocation of
+ *   one or zero extents.
+ *
+ * Allocation is handled slightly differently in the two contexts 
+ * in which it is performed: 
+ * - creating a store (see \ref ALLOCST), and 
+ * - inserting new pages into an existing store (see \ref ALLOCPG ).
+ * These two cases are described in more detail below.
+ *
+ * Extents are freed:
+ * - when a transaction deletes a store and commits, and
+ * - when a transaction has deleted the last page in the extent; this involves acquiring an IX lock on the extent, but does not
+ * preclude other transactions from allocating pages in the same extent. 
+ * Also, since the transaction might abort, the extent must not be re-used 
+ * for another store by another transaction. Furthermore, the page-deleting 
+ * transaction could re-use the pages.  For these reasons, extents are left
+ * in a store until the transaction commits (see \ref XCT_M and \ref XAFTERXCT,
+ * and \ref SAFTERXCT). 
+ * \anchor ALLOCEXTD1 
+ * Thus, deallocating an extent \e before a transaction commits comprises:
+ *  - clearing the extent-has-allocated-page bit in the already-held
+ *   extent IX lock, and does not involve any page-fixes.
+ *
+ * \subsection XAFTERXCT Commit-Time Handling of Extent-Deallocation
+ * At commit time, the transaction deallocates extents in two contexts:
+ * - When destroying stores that were marked for deletion by the transaction,and
+ * - While freeing extents marked for freeing by the transaction as a result
+ *   of (incremental) page-freeing.
+ *
+ * For the latter case, the transaction asks the transaction
+ * manager to 
+ * identify all extents on which it has locks (lock manager's job).  
+ * If 
+ * - the lock manager can upgrade the extent's lock to EX mode \e and 
+ * - the extent still contains no allocated pages, 
+ * the lock manager frees the extent.
+ * (An optimization avoids excessive page-fixing here: the
+ * extent lock contains a bit indicating whether the extent contains any
+ * allocated pages.)
+ *
+ * \anchor ALLOCEXTD2 
+ * Deallocating an extent from a store (at transaction-commit) comprises:
+ * - Identifying the previous- and next- extent numbers;
+ * - Identifying the pages containing the \ref extlink_t structures for the
+ *   extent to be freed and for the previous- and next- extent structures,
+ *   which may mean as many as three pages;
+ * - Sorting the page numbers and EX-latching 
+ *   \ref ATSIGN "\@"
+ *   the extent-map pages in 
+ *   ascending order to avoid latch-latch deadlocks;
+ * - Ensuring that the previous- and next- extent numbers on the 
+ *   to-be-freed extent have not changed (so that we know that we have 
+ *   fixed the right pages);
+ *   There should be no opportunity for these links to change since
+ *   the volume manager is a monitor (protected by a read-write lock).
+ * - Updating the extents and physically logging each of the updates.
+ * - Updating caches related to the store.
+ *
+ * If the extent is in a still-allocated store, the entity freeing
+ * the extent (the lock manager) will have acquired an EX lock on
+ * the extent for the transaction. If the extent is part of a
+ * destroyed store, the store will have an EX lock on it and this will
+ * prevent any other transaction from trying to deallocate the extent.
+ *
+ * \subsection IMPLICAT Implications of This Design
+ * This extent-based design has the following implications:
+ * - Before it can be used, a volume must be formatted for a given size 
+ *   so that the number of extent map pages and store map pages can 
+ *   be established;
+ * - Extending the volume requires reformatting, so the server is forced to
+ *   perform database reorganization in this case;
+ * - Location of an extlink_t can be determined arithmetically from a page
+ *   number (thus also from a record ID), 
+ *   which is cheaper than looking in an index of any sort; however,
+ *   this means that
+ *   extra work is done to validate the record ID (that is, its 
+ *   page's store-membership);
+ * - Because the store-membership of a page is immaterial in locating the page,
+ *   the buffer-pool manager need not pay any attention to stores; in fact,
+ *   it reduces I/O costs by sorting pages by {volume,page number} and writing 
+ *   contiguous pages in one system call;
+ * - Because the store-membership of an extent is immaterial in locating the
+ *   extent, extent locks do not contain a store number, and their locks
+ *   can be aquired regardless of their allocation state.  One can
+ *   test the "locked" status of an extent prior to allocating it.
+ * - Extent-map pages tend to be hot (remain in the buffer pool), which 
+ *   minimizes I/O;
+ * - Extent-map pages could be a source of latch contention, however
+ *   they are only latched in the volume manager, which redirects the
+ *   contention to the volume mutex;
+ * - The number of page fixes required for finding free extents is bounded 
+ *   by the number of extent-map pages on the volume, and in some cases
+ *   employs O(n) (linear) searches, as described in the item below;
+ * - Pages may be reserved for allocation in a file without being allocated, 
+ *   so optimal use of the volume requires that the allocated extents 
+ *   be searched before new extents are allocated; 
+ * - Deallocating a page and changing store flags (logging attributes)
+ *   of a page or store does not require touching the page itself; entire
+ *   stores are deallocated by latching and updating only the required
+ *   extent-map pages;
+ * - The high fan-out of extent-map pages to pages ensures that deallocating
+ *   stores is cheap;
+ * - Clustering of pages is achieved, which is useful for large objects and
+ *   can be helpful for file scans;
+ * - Prefetching of file pages can be achieved by inspection of extent maps;
+ * - Files need not impose their own structure on top of stores: store
+ *   order is file order; the fact that the storage manager avoids 
+ *   superimposing a file structure has \ref FILERAMIFICATIONS "ramifications of its own".
+ *
+ *
+ * The volume layer does not contain any means of spreading out or clustering
+ * extents over extent-map pages for clustering (or for latch-contention 
+ * mitigation).
+ *
+ * \subsection ALLOCST Creating and Destroying Stores
+ *
+ * For each store  the storage manager keeps certain metadata about the store
+ * in a \e directory, which is an index maintained by the \ref DIR_M.
+ * 
+ * \anchor STORECREATE
+ * Creating a store comprises:
+ * - Finding an unused store number. This is a linear search through the
+ *   store node map pages for a stnode_t (one with no associated extent list)
+ *   that is not locked. The linear search starts at a revolving location.
+ *   In the worst case, it will search all the stnode_t and therefore
+ *   fix 
+ *   \ref ATSIGN "\@"
+ *   all the store map pages;
+ * - Aquiring a store lock in EX mode, long-duration;
+ * - Finding an extent for the store (details \ref ALLOCEXTA "here");
+ * - Updating the stnode_t 
+ *   \ref ATSIGN "\@"
+ *   to reserve it (legitimize the store number);
+ * - Logging the creation store operation without the first extent;
+ * - Allocating the extent to the store (details \ref ALLOCEXTA2 "here")
+ *   (we cannot allocate an extent without a legitimate owning store to which
+ *   to allocate it);
+ * - Updating the stnode_t to add the first extent 
+ *   \ref ATSIGN "\@";
+ * - Logging the store operation to add the first exent to the store.
+ *
+ * Destroying a store before transaction-commit comprises these steps:
+ * - Verify that the store number is a valid number (no latches required);
+ * - Mark the store as deleted:
+ *   - Latch the store map page (that holds the stnode_t) for the store 
+ *   \ref ATSIGN "\@";
+ *   - EX-lock the store (long duration);
+ *   - Mark the stnode_t as "t_deleting_store" 
+ *   \ref ATSIGN "\@"
+ *   (meaning it is to be
+ *   deleted at end-of-transaction, see \ref XCT_M);
+ *   - Log this marking store operation;
+ *   - Add the store to a list of stores to free when the transaction 
+ *   commits (See \ref XCT_M);
+ * - Clear caches related to the store.
+ *
+ * \subsection SAFTERXCT Commit-Time Handling of Store-Destruction
+ * Removing a store (at commit time) marked for deletion comprises these steps:
+ * - Verify that the store is still marked for deletion (partial rollback
+ *   does not inspect the list of stores to delete, and in any case, this
+ *   has to be one on restart because the list is transient) 
+ *   \ref ATSIGN "\@",
+ * - Update the stnode_t to indicate that the store's extents are about to
+ *   be deallocated 
+ *   \ref ATSIGN "\@";
+ * - Log the above store operation for crash recovery;
+ * - Free (really) the extents in the store 
+ *   \ref ATSIGN "\@";
+ * - Update the stnode_t to clear its first extent 
+ *   \ref ATSIGN "\@";
+ * - Log the store as having been deleted in toto;
+ * - Clear cached information for this store.
+ *
+ * \subsection ALLOCPG Allocation and Deallocation of Pages
+ *
+ * Allocating an extent to a store does not make its pages "visible" to the
+ * server. They are considered "reserved".
+ * Pages within the extent have to be allocated 
+ * (their bits in the extent's bitmap must be set).  
+ *
+ * When the store is used for an index, the page is not 
+ * visible until it has been formatted
+ * and inserted (linked) into the index.  
+ * In the case of files, however,
+ * the situation is complicated by the lack of linkage of file pages by
+ * another means.  Pages used for large objects are referenced through an
+ * index in the object's metadata, but pages used 
+ * for small objects become part of the
+ * file when the 
+ * page's extent bitmap indicates that it is
+ * allocated. 
+ * \anchor FILERAMIFICATIONS
+ * This has some significant ramifications:
+ * - neither deallocation nor allocation of file pages requires latching of
+ *   previous and next pages for linking purposes;
+ * - the file manager and index managers handle page allocation somewhat
+ *   differently;
+ * - the file manager must go to great lengths to ensure that the
+ *   page is not accessible until both allocated and formatted, and
+ *   to ensure the safety of
+ *   the file structure in event of error or crash.
+ *
+ * Despite the fact that the intended uses of the page require different
+ * handling, a significant part of page allocation is 
+ * generic and is handled by the volume layer.  To handle some of the
+ * contextual differences, the volume layer uses a callback to the
+ * calling manager.  
+ *
+ * \anchor ALLOCPGTOSTORE
+ * Allocating a page to a store comprises these steps
+ * (in fact, the code is
+ * written to allocate a number of pages at once; this description is 
+ * simplified):
+ * - Locate a reserved page in the store
+ *   - if the page must be \e appended to the store, special precautions are
+ *   needed to ensure that the reserved page is the next unallocated page 
+ *   in the last extent of the store 
+ *   \ref ATSIGN "\@";
+ *   - if the page need not be appended, any reserved page will do
+ *      - look in the cache for extents with reserved pages
+ *      - if none found \e and we are not in append-only context,
+ *      search the file's extents for reserved pages 
+ *   \ref ATSIGN "\@";
+ *      (This can be disabled by changing the value 
+ *      of the constant \e never_search in sm_io.cpp.)
+ * - If no reserved pages are found, find and allocate an extent 
+ *   (details \ref ALLOCEXTA "here");
+ * - Acquire an IX lock on the extent in which we found reserved page(s)
+ * - Find a reserved page in the given extent that has \e no \e lock on it
+ *   (if no such thing exists, skip this extent and find another
+ *   \ref ATSIGN "\@");
+ * - Acquire a lock on the available page 
+ *   (mode IX or EX, and duration depend on the context)
+ *   - the file manager when allocating a small-record file page
+ *   uses IX mode, long(commit-) duration, 
+ *   which means that
+ *   deallocated pages will not be reallocated until after the deallocating 
+ *   transaction commits (see \ref XAFTERXCT);
+ *   - the file manager when allocating pages for large records 
+ *   uses long duration, 
+ *   IX or EX mode, depending on the exact use of the page for 
+ *   (various) large-record structures; long-duration locks mean that
+ *   deallocated pages will not be reallocated until the deallocating ;
+ *   - btree index manager uses EX mode, instant duration , meaning that
+ *   deallocated pages can be re-used;
+ *   - rtree index manager uses EX mode, instant duration, meaning that
+ *   deallocated pages can be re-used;
+ * - Call back to (file or index) manager to accept or reject this page:
+ *   - file manager allocating a small-record file page
+ *   fixes 
+ *   \ref ATSIGN "\@"
+ *   the page (for formatting) and returns "accept";
+ *   - file manager allocating a large-record page just returns "accept";
+ *   - rtree and btree index managers just return "accept";
+ * - Log the page allocation, 
+ *   set "has-page-allocated" indicator in the extent lock.
+ *
+ * As mentioned above, there are times when the volume manager is told to
+ * allocate new pages at the end of the store (append).  This happens 
+ * when the file manager allocates small-object file pages unless the
+ * caller passes in the policy t_compact, indicating that it should search
+ * the file for available pages.
+ * The server can choose its policy when calling \ref ss_m::create_rec
+ * (see \ref pg_policy_t).
+ * When the server uses \ref append_file_i, only the policy t_append
+ * is used, which enforces append-only page allocation.
+ *
+ * Deallocating a page in a store comprises these steps:
+ * - Acquire a long-duration EX lock on the page;
+ * - Verify the store-membership of the page if required to do so (by
+ *   the file manager in cases in which it was forced to  unfix
+ *   and  fix 
+ *   \ref ATSIGN "\@"
+ *   the page);
+ * - Acquire a long-duration IX lock on the page's extent;
+ * - Fix 
+ *   \ref ATSIGN "\@"
+ *   the extent-map page and update the extent's bitmap, log the update. 
+ * - If the extent now contains only reserved pages, mark the extent as
+ *   removable (clear the extent-has-allocated-page bit in the already-held
+ *   IX lock).
+ *
+ *
+ * \subsection VOLCACHES Volume Manager Caches 
+ * The volume manager does not contain any persistent indices to 
+ * assist in finding free pages in a store's allocated extents (which it
+ * can do only when not forced to append to the store). 
+ * To minimize the need for linear searches through the store's extents,
+ * the volume manager 
+ * caches information about reserved pages in each store, the
+ * \b reserved-page \b cache.
+ * This is a map (set of pairs mapping snum_t -> extnum_t) to find extents
+ * already allocated to a store that contain free pages. This
+ * cache is consulted before new extents are allocated to a store.
+ * Since after restart the cache is necessarily empty, it is primed when
+ * first needed for the purpose of allocating anything for the store. 
+ *
+ * The volume manager also keeps a \b last-page \b cache.
+ * This is a map from snum_t to extnum_t; the extent number is that of
+ * the last extent allocated to the store. From this one can arithmetically
+ * derive the last page in (reserved or possibly allocated) the store.
+ * Note that the last page \e allocated to the store might be anywhere in
+ * the store's exent list; all pages after that might be \e reserved but
+ * not allocated.
+ *
+ * Priming caches is an expensive operation.
+ * It is not done on each volume mount, because volumes are mounted and
+ * dismounted several times during recovery, and priming on each
+ * mount would be prohibitive.
+ * Every attempt to allocate a page checks the store's reserved-page 
+ * cache; if it is empty, it is primed.
+ * Every time an extent is allocated or a last-page-in-file is located,
+ * the last-page cache is updated.
  *
  * \subsection PAGES Page Types
- * Pages in a volume come in a variety of page types.
- * Each page type is a C++ class that derives from the base class
- * page_p.  Page_p implements functionality that is common to all
- * (or most) page types. The types are as follows:
- *
- * - extlink_p : extent-link pages, used by vol_m
- * - stnode_p  : store-node pages, used by vol_m
- * - file_p    : slotted pages of file-of-record, used by file_m
- * - lgdata_p  : pages of large records, used by file_m
- * - lgindex_p : pages of large records, used by file_m
- * - keyed_p   : slotted pages of indexes, used by btree_m
- * - zkeyed_p  : slotted pages of indexes, used by btree_m
- * - rtree_p   : slotted pages of spatial indexes, used by rtree_m
- *
- * Issues specific to the page types will be dealt with in the descriptions of the modules.
- *
- * \subsection RSVD_MODE Space Reservation on a Page
+ * Pages in a volume come in a variety of page types, all the same size.
+ * The size of a page is a compile-time constant.  It is controlled by
+ * a build-time configuration option (see 
+ * \ref CONFIGOPT). the default page size is 8192 bytes.
  *
  * All pages are \e slotted (those that don't need the slot structure
  * may use only one slot) and have the following layout:
@@ -113,7 +582,25 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  * - slots (grow down)
  * - slot table array of pointers to the slots (grows up)
  * - footer (copy of log sequence number of last page update)
- * 
+ *
+ * Each page type is a C++ class that derives from the base class
+ * page_p.  Page_p implements functionality that is common to all
+ * (or most) page types. The types are as follows:
+ *
+ * - extlink_p : extent-link pages, used by vol_m
+ * - stnode_p  : store-node pages, used by vol_m
+ * - file_p    : slotted pages of file-of-record, used by file_m
+ * - lgdata_p  : pages of large records, used by file_m
+ * - lgindex_p : pages of large records, used by file_m
+ * - keyed_p   : slotted pages of indexes, used by btree_m
+ * - zkeyed_p  : slotted pages of indexes, used by btree_m
+ * - rtree_p   : slotted pages of spatial indexes, used by rtree_m
+ *
+ * Issues specific to the page types will be dealt with in the descriptions of the modules that use them.
+ *
+ *  
+ * \subsection RSVD_MODE Space Reservation on a Page
+ *
  * Different storage structures offer different opportunities for fine-grained 
  * locking and need different means of allocation space within a page.
  * Special care is taken to reserve space on a page when slots 
@@ -122,7 +609,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  * Page types that use this space reservation have 
  * \code page_p::rsvd_mode() == true \endcode.
  *
- * In the case of B-trees, this is not used because
+ * In the case of B-trees, space reservation is not used because
  * undo and redo are handled logically -- entries 
  * can be re-inserted in a different page.  But in the case of files, 
  * records are identified by physical ID, which includes page and slot number,
@@ -134,61 +621,42 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  * by an append to the same record does not necessarily cause the 
  * shifting of other records on the same page.
  *
- * A count of free bytes is maintained for all pages. More space-allocation
- * metadata is maintained for rsvd_mode() pages.
- *
- * When a transaction release a slot on a page with rsvd_mode(), the slot 
+ * A count of free bytes is maintained for all pages. Free-space
+ * metadata are maintained for rsvd_mode() pages:
+ * - When a transaction releases a slot on a page with rsvd_mode(), the slot 
  * remains
- * "reserved" for use by the same transaction. That slot is not free to
- * be allocated by another transaction until the releasing transaction 
- * commits.  This is because if the transaction aborts, the slot must
- * be restored with the same slot number.  Not only must the slot number be
- * preserved, but the number of bytes consumed by that slot must remain 
+ * "reserved" for use by the same transaction. 
+ * - That slot is not free to be allocated by another transaction until 
+ * the releasing transaction commits.  
+ * This is because if the transaction aborts, the slot must
+ * be restored with the same slot number.  
+ * Not only must the slot number be  preserved, 
+ * but the number of bytes consumed by that slot must remain 
  * available lest the transaction abort.
- * The storage manager keeps track of the youngest active transaction
+ * - The storage manager keeps track of the youngest active transaction
  * that is freeing space (i.e., "reserving" it) on the page 
  * and the number of bytes freed ("reserved")
  * by the youngest transaction.  
- * When the youngest transaction to reserve space on the page becomes
+ * - When the youngest transaction to reserve space on the page becomes
  * older than the oldest active transaction in the system, the reserved
  * space becomes free. This check for freeing up the reserved space happens
  * whenever a transaction tries to allocate space on the page.
- *
- * During rollback, a transaction can use \e any amount of
+ * - During rollback, a transaction can use \e any amount of
  * reserved space, but during forward processing, it can only use space
  * it reserved, and that is known only if the transaction in question is
  * the youngest transaction described in the above paragraph.
- *
- * The changes to space-reservation metadata (space_t) are not logged.
+ * - The changes to space-reservation metadata (space_t) are not logged.
  * The actions that result in updates to this metadata are logged (as
  * page mark and page reclaim).
  *
- *
- * \subsection ALLOCEXT Allocation of Extents and Pages
- * Extents are linked through extlink_t to form a linked list, which
- * composes the allocated extents of a store. The volume manager 
- * handles allocating extents to stores.  Deallocation
- * of extents is shared by the volume manager and the the lock manager
- * (see the discussion in lockid_t::set_ext_has_page_alloc).
- *
- * The volume manager keeps a cache of {store, extent} pairs, to find
- * extents already allocated to a store that contain free pages. This
- * cache is consulted before new extents are allocated to a store.
- * Since after restart the cache is necessarily empty, it is primed when
- * first needed for the purpose of allocating anything for the store. 
- *
- * Priming the store is an expensive operation.
- * It is not done on each volume mount, because volumes are mounted and
- * dismounted several times during recovery, and priming on each
- * mount would be prohibitive.
- *
  * \section FILE_M File Manager
- * A file is a group of variable-sized records (or objects).  
- * A record is the smallest persistent datum that has identity 
+ * A file is a group of variable-sized records.
+ * A record is the smallest persistent datum that has identity.
  * A record may also have a "user header", whose contents are
  * for use by the server.  
  * As records vary in size, so their storage representation varies. 
  * The storage manager changes the storage representation as needed.
+ *
  * A file comprises two stores.  
  * One store is allocated for slotted (small-record) pages, called file_p
  * pages.  
@@ -214,22 +682,24 @@ struct rectag_t {
   * The flags have have these values:
     - t_small   : a small record, entirely contained on the file_p
     - t_large_0 : a large record, the slot on the file_p contains the
-	              user header, while the body is a list
-	              of chunks (pointers to contiguous lgdata_p pages)
+                  user header, while the body is a list
+                  of chunks (pointers to contiguous lgdata_p pages)
     - t_large_1 : a large record, the slot on the file_p contains the
-	              user header, while the body is a reference to a single
-	              lgindex_p page, which is the root of a 1-level index of
-				  lgdata_p pages.
+                  user header, while the body is a reference to a single
+                  lgindex_p page, which is the root of a 1-level index of
+                  lgdata_p pages.
     - t_large_2 : like t_large_1 but the index may be two levels deep. This
-	              has not been implemented.
+                  has not been implemented.
  *
  * Internally (inside the storage manager), the class record_t is a
  * handle on the record's tag and is the class through which the
  * rectag_t is manipulated.
  *
- * A record is exposed to the server through a set of ss_m methods (create_rec,
- * append_rec, etc), and through the pin_i class.
+ * A record is exposed to the server through a set 
+ * of ss_m methods (\ref ss_m::create_rec,
+ * \ref ss_m::append_rec, etc), and through the \ref pin_i class.
  *
+ * \attention
  * All updates to records are accomplished by copying out part or all of
  * the record from the buffer pool to the server's address space, performing
  * updates there, and handing the new data to the storage manager. 
@@ -245,80 +715,242 @@ struct rectag_t {
  * mutexes or latches or other blocking mechanisms will cause the server to
  * hang.
  *
- * \subsection HISTO Finding a Page with Space
+ * \subsection ALLOCFL Creating and Destroying a File of Records
  *
- * When a record is created, the file manager tries to use an already-allocated
- * page that has space for the record (based on the length hint and
- * the data given in the create_rec call). The file manager caches information
- * about page utilization for pages in each store.  The page utilization
- * data take the form of a histoid_t, which contains a heap
- * and a histogram.  The heap keeps track of the amount of
- * free space in (recently-used) pages in the heap, and it is 
+ * Creating a file comprises these steps:
+ * - Create a store of file_p pages for the record headers and 
+ *   small-record bodies 
+ *   (details are \ref STORECREATE "here");
+ * - Create a store of lgindex_p and lgdata_p pages for the 
+ *   large objects
+ *   (details are \ref STORECREATE "here");
+ * - Acquire a long-duration EX lock on the store id;
+ * - Create the "file structure" on the first store. This means a
+ *   single page is allocated
+ *   and formatted as a file_p page with no records
+ *   in use
+ *   (details are \ref ALLOCPAGETOSTORE "here");
+ *   ;
+ * - Insert the file meta-data in the file-directory index (see \ref DIR_M).
+ *   This involves several page fixes for the btree insertion 
+ *   \ref ATSIGN "\@".
+ *
+ * Destroying a file comprises these steps:
+ * - Consult the directory entry for the file's small-object store, 
+ *   thus acquiring an EX long-duration lock on the file;
+ *   This will involve page fixes for reading the btree directory.
+ * - Verify that the store is really used for a file, and still exists;
+ *   This requires SH-latching a store map page to inspect the stnode_t for
+ *   the store 
+ *   \ref ATSIGN "\@";
+ * - Mark the store for destruction
+ *   (details are in \ref ALLOCST ).
+ * - Remove transient histogram information for the store;
+ * - From the store directory, determine the large-object store associated
+ *   with the file;
+ * - Mark the large-object store for destruction
+ *   (details are in \ref ALLOCST ).
+ * - Remove the file's metatdata from the directory 
+ *   \ref ATSIGN "\@"
+ *   (\ref DIR_M).
+ *
+ * \subsection HISTO Finding Space for a Record
+ *
+ * The file manager caches information
+ * about page utilization for (small-object) pages in each file so that it can
+ * control fragmentation of files.
+ * This cached information takes the form of a 
+ * histoid_t, which contains a \b heap and a \b histogram.  
+ *
+ * The \b heap keeps track of the amount of free space in 
+ * (recently-used) pages in the heap, and it is 
  * searchable so that it can
  * return the page with the smallest free space that is larger than a
- * given value.
- * The histogram has a small number of buckets, each of which counts
+ * given value in bytes.
+ * The free-space-on-page value that it uses for this purpose
+ * is the most liberal value -- it's possible that some of the space on
+ * the page is reserved for a transaction that has not yet committed
+ * (if that transaction destroyed a record, it can use space that other
+ * transactions cannot).
+ * \bug GNATS 157 The histoid_t heap should have some size limit (number of entries).
+ *
+ * The  \b histogram has a small number of buckets, each of which counts
  * the number of pages in the file containing free space between 
  * the bucket min and the bucket max.
  *
- * Three policies used can be used in combination to search for space.
- * - t_cache : look in the heap for a page with space. 
- * - t_compact : if the histograms say there are any pages with 
- *   sufficient space somewhere in the file, 
- *   do a linear search of the file for such a page.
+ *
+ * When a record is created, the file manager 
+ * tries to use an already-allocated
+ * page that has space for the record. 
+ * It determines what space is needed
+ * for the record from the length hint and
+ * the data given in the \ref ss_m::create_rec call. 
+ *
+ * Three policies used can be used (in combination) to search for pages
+ * with space in which to create a new record:
+ * - t_cache : look in the \b heap for a page with space. 
+ * - t_compact : if the \b histograms say 
+ *   there are any pages with  sufficient space somewhere in the file, 
+ *   do a linear search of the file for such a page, updating histogram
+ *   heap metadata in the process.  This is potentially
+ *   costly but useful when the file has not been inspected since the
+ *   last restart, because the heap has no records for the file except
+ *   those inserted due to a record-update or removal.
  * - t_append : append the new record to the file
  *
  * Using append_file_t to create records means only t_append is used, 
  * ensuring that the record will always be appended to the file.
- * ss_m::create_rec uses t_cache | t_compact | t_append.
+ * \ref ss_m::create_rec uses t_cache | t_compact | t_append.
  *
- * \bug GNATS 33 t_compact is turned off.  It is expensive and has not been
- * tested lately, thus there is presently no policy that will keep
- * files compact.  If files become too sparse, the server must reorganize
- * the database.
+ * The policy can be given on the \ref ss_m::create_rec call. The default
+ * is t_cache | t_compact | t_append.
+ *
+ * If the file manager does not find a page in the file with sufficient
+ * space for the record, or if it must append to the end of the file
+ * and the last page hasn't the needed space, the file manager asks
+ * the I/O manager to allocate a page.
  *
  * Once the file manager has located a page with sufficient space to
- * create the record, the I/O and volume managers worry about 
+ * create the record, the \ref VOL_M worries about 
  * \ref RSVD_MODE.
  *
- * \subsection HISTO Allocating a New File Page
+ * Creating a record comprises these steps:
+ * - Estimate the space required for the record, based on the sizes of 
+ *   the data and header vectors and the length-hint given 
+ *   on the ss_m::create_rec call.
+ * - Choose a record implementation for the given size (
+ *   a small object or a large object, which determines the amount 
+ *   of space needed in the slot of the file_p page)
+ * - Find and lock a slot in a page:
+ *   - if appending to the file, find and EX-lock (with long-duration) the next 
+ *   available slot in the last page of the file.
+ *   Finding the last page in the file requires SH-latching extent-map 
+ *   pages 
+ *   \ref ATSIGN "\@";
+ *   the storage manager caches last-page information to reduce
+ *   page-fixing to find the last page of a store.
+ *   Searches for the last page of a store start with the cached
+ *   last-page's extent if it is still part of the store; otherwise they
+ *   start with the head of the store's list, and update the cache.
+ *   - If there is no such slot or if it is not large enough, 
+ *   allocate a new page (at the end of the file).
+ *   - if not appending to the file, consult the histograms to find a 
+ *   page already in the file, 
+ *   one that contains a slot large enough for the new record.
+ * - Once we have located a (potentially) suitable page, 
+ *   verify that the page is indeed legitimate (since we used
+ *   transient, cached information to locate this page).
+ *   If not, reject  the page.
+ *   Note that normally we cover latches with locks to avoid
+ *   deadlocks, but in this case we must latch first because
+ *   we have no idea which slot to lock, nor do we know
+ *   if the page is still in the expected file.
+ *   We may have to try several pages before finding one 
+ *   that is truly suitable, so this entire protocol 
+ *   is handled in the histogram code. The protocol is as follows:
+ *   - Conditionally EX-latch 
+ *   \ref ATSIGN "\@"
+ *   the page. 
+ *   If we cannot do so, give up on  this page and try another;
+ *   - Once the page is fixed, verify that its 
+ *   page ID contains the expected store ID (to detect a race) 
+ *   (if not, reject this page and find another);
+ *   - Check the allocation status of the page:
+ *     - try to IS-lock the page, and if we 
+ *     cannot do so immediately, we reject the page and try another;
+ *     - verify that the page is allocated in its extent, and that 
+ *     the extent's owner is the expected store. This involves 
+ *     SH-latching 
+ *      \ref ATSIGN "\@"
+ *     the extent map page while holding the file page latched;
+ *   - Acquire an EX lock on the next available slot with enough 
+ *   space (space that is usable by this transaction,
+ *   subject to \ref RSVD_MODE);
+ * - Once we have a suitable page with an EX record lock,  
+ *   create the record.
+ * 
+ * Under the best of circumstances, creating a small record involves three page
+ * latches 
+ *   \ref ATSIGN "\@":
+ * one file page (in which to insert a record),
+ * the extent map page is fixed to verify the file page's allocation status,
+ * and then after the record is created, the 
+ * the extent map page is re-latched to update the space-utilization metadata
+ * for the extent.
  *
- * If the file manager cannot find an already-allocated page with
- * sufficient space, or if it is appending a record to a file and
- * needs to allocate a new page, it first descends to the I/O manager
- * to find an extent with a free page (or the last extent in the file) (
- * \ref ALLOCEXT).
+ * Updating a record (by way of a server-provided record ID) consists 
+ * in these steps, which may require up to two extra page latches (besides
+ * latching the page containing the record):
+ * - Latch the page on which the record resides 
+ *   \ref ATSIGN "\@";
+ * - Verify the legitimacy of the record ID (see \ref UPDATEREC);
+ * - Verify that the file page still contains the record identified by the 
+ *   record ID;
+ * - Perform the update.
  *
- * Once it has found an extent with a free page, it allocates a page in
- * that extent.  
+ * Freeing a record comprises these steps:
+ * - EX-lock the record (with long duration);
+ * - From the record ID, determine its containing page;
+ * - EX-latch the page 
+ *   \ref ATSIGN "\@";
+ * - Mark the slot free, releasing the space but 
+ *   leaving it reserved (see \ref RSVD_MODE);
+ * - If the slot is the last used slot on the page, and the page is not the
+ *   first allocated page in the file, 
+ *   free the page (finding the first page in the
+ *   file requires  SH-latching 
+ *   a store-map page 
+ *   \ref ATSIGN "\@"
+ *   and at least one extent-map page
+ *   \ref ATSIGN "\@");
+ * - Update the histograms to reflect the space on the page and whether the
+ *   page is still in the file.  This may change the page's bucket and
+ *   require EX-latching 
+ *   \ref ATSIGN "\@"
+ *   the extent-map page to update the pspacemap.
  *
- * IX-locks are acquired on file pages for the purpose of fine-grained locking.
- * There is no file structure superimposed on the store, with which
- * to link the file pages together, so as soon as an extent is allocated
- * to a store, it is visible to any transaction; in particular, it is
- * visible between the time the page is allocated by the I/O manager and
- * the time the file manager formats that page for use.
- * For this reason, the allocation of a file page must be a top-level action
- * so that
- * undo of the allocation is logical: it must check for the file page
- * still being empty before the page can be freed.
- * If another transaction slipped in an allocated a record on the same page,
- * the page can't be freed on undo of the page allocation.
  *
- * Protocol for allocating a file page:
- * - Enter I/O manager (mutex).
- * - Start top-level action (grab log anchor).
- * - IX-lock (long duration) the page.
- * - Allocate the page.
- * - End top-level action (grab log anchor) to compensate around
- *    the changes to the extent map.
- * - Log the file-page allocation.
+ * \subsection UPDATEREC  Record Access by Record ID
  *
- * To free a page, the transaction must acquire an EX lock on the page;
- * this prevents the page from being used by any other transaction until
- * the freeing transaction commits.  If the EX lock cannot be acquired,
- * the page is in use and will not be freed (e.g., the other transaction
- * could abort and re-insert something on the page).
+ * When a server issues a storage manager request to
+ * read or update a record (using any ss_m::update_rec or pin_i::pin
+ * or pin_i::repin, that is, any method that
+ * takes a record identifier), the storage manager must verify
+ * the legitimacy of the record identifier.  (If the storage
+ * manager performs an update based on a record ID that is stale,
+ * it can result in unrecoverable errors. )
+ * Verifying the legitimacy of a record ID is, unfortunately,
+ * an expensive operation:
+ * - Verify that store id on the page matches that in the record ID;
+ * - Verify that page is a file page;
+ * - Verify that the store exists (inspect the stnode_t for the store
+ *   \ref ATSIGN "\@"
+ *   )
+ * - Verify that the page is allocated to the store (fix the extlink_t
+ *   \ref ATSIGN "\@"
+ *   and verify that its owner is still the store in question and that
+ *   the page's bit is set in the extent's page map).
+ *
+ * The storage manager does not inspect the store's metatdata (directory
+ * index entry) to 
+ * see that it is a file store because if the page is still allocated
+ * to the store and the page is a file page, the store must still be a file
+ * store.
+ *
+ * \subsection FREESPACE Summary of Free-Space Management
+ *
+ * Free space is managed in several ways:
+ * - Free extents have no owner (persistent datum in the extlink_t).
+ * - Allocated extents with free pages are cached by the 
+ *   volume manager (transient data).
+ * - Allocated extents contain a map of the free-space buckets to which its
+ *   pages belong for file pages (persistent, in the extlink_t).
+ * - The volume manager keeps caches the last page in a file (transient).
+ * - The volume manager keeps a cache of extents in a store that
+ *   contain reserved pages (transient).
+ * - The volume manager caches the lowest unallocated extent in a volume (transient).
+ * - The file manager maintains a heap and histograms (transient) that
+ *   cache the free-space bucket data on the pages. 
  *
  * \section BTREE_M B+-Tree Manager
  *
@@ -331,6 +963,8 @@ struct rectag_t {
  *
  * B-trees can be bulk-loaded from files of sorted key-value pairs,
  * as long as the keys are in \ref LEXICOFORMAT "lexicographic form". 
+ * \bug GNATS 116 Btree doesn't sort elements for duplicate keys in bulk-load. 
+ * This is a problem inherited from the original SHORE storage manager.
  *
  * The implementation of B-trees is straight from the Mohan ARIES/IM
  * and ARIES/KVL papers. See \ref MOH1, which covers both topics.
@@ -346,7 +980,7 @@ struct rectag_t {
  * is not possible.  
  * The storage manager always undoes inserts logically.
  *
- * \todo internal.h Doc Ryan's change in btree_impl.cpp search for Ordinarily; add stats and smsh tests for this case.
+ * \bug GNATS 137 Latches can now be downgraded; btree code should use this.
  *
  * \section RTREE_M R*-Tree Manager
  *
@@ -417,6 +1051,17 @@ struct rectag_t {
  * various entities in (and out of ) the hierarchy; see lockid_t and
  * the example lockid_test.cpp.
  *
+ * \subsection LOCK_M_IMPLICIT Implicit locks
+ * The hierarchy is used for implicit acquisition of locks as follows:
+ * - for each parent lock in the hierarchy, determine its lock mode 
+ *   based on the mode of the child:
+ *   - parent_mode[child IS or SH] =  IS
+ *   - parent_mode[child IX or SIX or UD or EX] =  IX
+ *   - parent_mode[child none] =  none
+ * - for each parent lock in the hierarchy that is not already held in
+ *   sufficient mode, acquire the parent lock in the mode determined above
+ *
+ * \subsection LOCK_M_ESC Escalation
  * The lock manager escalates up the hierarchy by default.  
  * The escalation thresholds are based on run-time options.  
  * They can be controlled (set, disabled) on a per-object level.  
@@ -424,18 +1069,22 @@ struct rectag_t {
  * increased concurrency is desired.  
  * Escalation can also be controlled on a per-transaction or per-server basis.
  *
+ * \subsection LOCK_M_SM Lock Acquisition and Release by Storage Manager
  * Locks are acquired by storage manager operations as appropriate to the
  * use of the data (read/write). (Update locks are not acquired by the
  * storage manager.)
  *
  * The storage manager's API allows explicit acquisition 
- * of locks by a server.  
+ * of locks by a server.    User modes user1, user2, user3 and user4 are provided for that purpose.
+ *
  * Freeing locks is automatic at transaction commit and rollback.  
+ *
  * There is limited support for freeing locks in the middle of 
  * a transaction:
  * - locks of duration less than t_long can be unlocked with unlock(), and
  * - quarks (sm_quark_t) simplify acquiring and freeing locks mid-transaction:
  *
+ * \subsubsection QUARK Quarks
  * A quark is a marker in the list of locks held by a transaction.  
  * When the quark is destroyed, all locks acquired since the 
  * creation of the quark are freed.  Quarks cannot be used while more than
@@ -455,6 +1104,7 @@ struct rectag_t {
  * to distribute locks evenly among buckets.
  * This is partly due to the nature of lock IDs.
  *
+ * \subsection LCACHE Lock Cache
  * To avoid expensive lock manager queries, each transaction 
  * keeps a cache of the last \<N\> locks acquired (the number
  * \<N\> is a compile-time constant).
@@ -488,17 +1138,28 @@ struct rectag_t {
  * \code smthread.h \endcode.
  *
  * \section XCT_M Transaction Manager
- * When a transaction commits, the stores that are marked for deletion
- * are deleted, and the stores that were given sm_store_property_t t_load_file or t_insert_file are turned into t_regular stores.
+ * When a transaction commits, these steps are taken to
+ * manage stores:
+ * - Stores that were given sm_store_property_t t_load_file or 
+ *   t_insert_file are turned * into t_regular stores;
+ * - The transaction enters a state called "freeing space" so that
+ *   stores marked for deletion can be handled properly in event of
+ *   a crash/restart before the transaction logs it commit-completion;
+ * - Stores marked for deletion are removed (see \ref SAFTERXCT);
+ * - Extents marked for freeing are freed. These are extents marked for
+ *   freeing in stores that were not marked for deletion; rather,
+ *   these are extents that are marked for deletion due to 
+ *   incremental freeing of their pages.
+ *
  * Because these are logged actions, and they occur if and only if the 
  * transaction commits, the storage manager guarantees that the ending
  * of the transaction and re-marking and deletion of stores is atomic.
  * This is accomplished by putting the transaction into a state
  * xct_freeing_space, and writing a log record to that effect.
  * The space is freed, the stores are converted, and a final log record is written before the transaction is truly ended.
- * In the vent of a carash while a transaction is freeing space, 
+ * In the event of a crash while a transaction is freeing space, 
  * recovery searches all the 
- * store metadata for stores marked for deleteion
+ * store metadata for stores marked for deletion
  * and deletes those that would otherwise have been missed in redo.
  *
  * \section LOG_M Log Manager
@@ -520,6 +1181,12 @@ struct rectag_t {
  * The protocol for writing log records is as follows:
  * - Grab the transaction's log buffer in which the last log record is to be 
  *   cached by calling xct_t::get_logbuf()
+ *   - Ensure that we have reserved enough log space for this transaction 
+ *   to insert the desired log record an to undo it. This is done by
+ *   by passing in 
+ *   the type of the log record we are about to insert, and by using a
+ *   "fudge factor" (multiplier) associated with the given log record type.
+ *   The fudge factor indicates on average, how many bytes tend to be needed to undo the action being logged.
  * - Write the log record into the buffer (the idiom is to construct it
  *      there using C++ placement-new).
  * - Release the buffer with xct_t::give_logbuf(),
@@ -536,12 +1203,34 @@ struct rectag_t {
  * (Note that this per-transaction log buffer is unrelated to the log buffer
  * internal to the log manager.)
  *
+ * During recovery, no logging is done in analysis or redo phases; only during
+ * the undo phase are log records inserted.  Log-space reservation is not
+ * needed until recovery is complete; the assumption is that if the
+ * transaction had enough log space prior to recovery, it has enough space
+ * during recovery.
+ * Prepared transactions pose a challenge, in that they are not resolved until
+ * after recovery is complete. Thus, when a transaction-prepare is logged,
+ * the log-space-reservations of that transaction are logged along with the rest of the transaction state (locks, coordinator, etc.) and before 
+ * recovery is complete, these transactions acquire their prior log-space
+ * reservations.
+ *
  * The above protocol is enforced by the storage manager in helper
  * functions that create log records; these functions are generated
- * by Perl scripts from the source file logdef.dat.  (See \ref LOGDEF.)
+ * by Perl scripts from the source file logdef.dat.  (See \ref LOGRECS.)
+ *
+ * The file logdef.dat also contains the fudge factors for log-space
+ * reservation. These factors were experimentally determined.
+ * There are corner cases involving btree page SMOs (structure-modification operations), in which the
+ * fudge factors will fail.  [An example is when a transaction aborts after
+ * having removed entries, and after other transactions have inserted
+ * entries; the aborting transaction needs to re-insert its entries, which 
+ * now require splits.]
+ * The storage manager has no resolution for this.
+ * The fudge factors handle the majority of cases without reserving excessive
+ * log-space.
+ * \bug GNATS 156  Btree SMOs during rollback can cause problems.
  *
  *\subsection LOGRECS Log Record Types
- * \anchor LOGDEF
  * The input to the above-mentioned Perl script is the source of all
  * log record types.  Each log record type is listed in the  file
  * \code logdef.dat \endcode
@@ -799,6 +1488,7 @@ struct rectag_t {
  * a compensated action such as a page split must result in 
  * the split being undone before any other operations on the 
  * tree are undone.). 
+ * \bug GNATS 49 (performance) There is no concurrent undo.
  *
  * After the storage manager has recovered, control returns from its
  * constructor method to the caller (the server).
@@ -856,7 +1546,12 @@ struct rectag_t {
  *  within the 8 partitions available. 
  * \note Determining the point at which there is insufficient space to
  * abort all running transactions is a heuristic matter and it
- * is not reliable}.  
+ * is not reliable.  The transaction "reserves" log space for rollback, meaning
+ * that no other transaction can consume that space until the transaction ends.'
+ * A transaction has to reserve significantly more space to roll back than it
+ * needs for forward processing B-tree deletions; this is because the log overhead
+ * for the insertions is considerably larger than that for deletion.
+ * The (compile-time) page size is also a factor in this heuristic.
  *
  * Log records are buffered by the log manager until forced to stable 
  * storage to reduce I/O costs.  
@@ -925,9 +1620,11 @@ struct rectag_t {
  * the log manager) read and write pages.  
  * A page is read by calling bf_m::fix.
  * If the page requested cannot be found in the buffer pool, 
- * the requesting thread reads the page and blocks waiting for the read to complete.
+ * the requesting thread reads the page and blocks waiting for the 
+ * read to complete.
  *
- * All frames in the buffer pool are the same size, and they cannot be coalesced, 
+ * All frames in the buffer pool are the same size, and 
+ * they cannot be coalesced, 
  * so the buffer manager manages a set of pages of fixed size.
  *
  * \subsection BFHASHTAB Hash Table
@@ -950,6 +1647,9 @@ struct rectag_t {
  * the insert will fail.
  * The "normal" solution in this case is to rebuild the table with
  * different hash functions. The storage manager does not handle this case.
+ * \bug  GNATS 47 
+ * In event of insertion failure, the hash table will have to be rebuilt with
+ * different hash functions, or will have to be modified in some way.
  *
  * \bug GNATS 35 The buffer manager hash table implementation contains a race.
  * While a thread performs a hash-table
@@ -1002,6 +1702,13 @@ struct rectag_t {
  * the \ref RECLSN "recovery lsn" of the page, etc.  
  * The control block also contains a latch.  A page, when fixed,
  * is always fixed in a latch mode, either LATCH_SH or LATCH_EX.
+ * \bug GNATS 40 bf_m::upgrade_latch() drops the latch and re-acquires in
+ * the new mode, if it cannot perform the upgrade without blocking. 
+ * This is an issue inherited from the original SHORE storage manager.
+ * To block in this case
+ * would enable a deadlock in which two threads hold the latch in SH mode
+ * and both want to upgrade to EX mode.  When this happens, the statistics 
+ * counter \c bf_upgrade_latch_race is incremented.
  *
  * Page fixes are expensive (in CPU time, even if the page is resident).
  *
@@ -1013,7 +1720,8 @@ struct rectag_t {
  * define all the fix methods on the page in such a way that bf_m::fix() 
  * is properly called in each case. 
  *
- * A page frame may be latched for a page without the page being read from disk; this
+ * A page frame may be latched for a page without the page being 
+ * read from disk; this
  * is done when a page is about to be formatted. 
  *
  * The buffer manager is responsible for maintaining WAL; this means it may not
@@ -1123,4 +1831,46 @@ struct rectag_t {
  *   without invalidating the frames, e.g., when dismounting a volume.
  * - forcing all pages whose recovery lsn is less than or equal to a given
  *   lsn_t, e.g.,  for a clean shutdown, after restart.
+ */
+/**\page Logging 
+ *
+ * See \ref LOG_M.
+ * */
+
+/**\page DEBUGAID Debugging Aids
+  *\section SSMDEBUGAPI Storage Manager Methods for Debugging
+ *
+ * The storage manager contains a few methods that are useful for
+ * debugging purposes. Some of these should be used for not other
+ * purpose, as they are not thread-safe, or might be very expensive.
+ * See \ref SSMAPIDEBUG.
+ * 
+ *\section SSMDEBUG Build-time Debugging Options
+ *
+ * At configure time, you can control which debugger-related options
+ * (symbols, inlining, etc) with the debug-level options. See \ref CONFIGOPT.
+ * \section SSMTRACE Tracing (--enable-trace)
+ * When this build option is used, additional code is included in the build to
+ * enable some limited tracing.  These C Preprocessor macros apply:
+ * -W_TRACE
+ *  --enable-trace defines this.
+ * -FUNC
+ *  Outputs the function name when the function is entered.
+ * -DBG 
+ *  Outputs the arguments.
+ * -DBGTHRD 
+ *  Outputs the arguments.
+ *
+ *  The tracing is controlled by these environment variables:
+ *  -DEBUG_FLAGS: a list of file names to trace, e.g. "smfile.cpp log.cpp"
+ *  -DEBUG_FILE: name of destination for the output. If not defined, the output
+ *    is sent to cerr/stderr.
+ *
+ * See \ref CONFIGOPT.
+ *  \note This tracing is not thread-safe, as it uses streams output.
+ * \section SSMENABLERC Return Code Checking (--enable-checkrc)
+ * If a w_rc_t is set but not checked with method is_error(), upon destruction the
+ * w_rc_t will print a message to the effect "error not checked".
+ * See \ref CONFIGOPT.
+ *
  */

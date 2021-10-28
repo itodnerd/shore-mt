@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: sort_funcs4.cpp,v 1.21 2010/06/15 17:30:09 nhall Exp $
+ $Id: sort_funcs4.cpp,v 1.26 2010/12/08 17:37:45 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -44,173 +44,169 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 extern "C" bool sort_is_instrumented(); // in sort.cpp, tells if
                                         // INSTRUMENT_SORT is defined
-										// so use stats for self-checking
+                                        // so use stats for self-checking
 
 ostream &
 operator<<(ostream &o, const struct metadata &m)
 {
-	o 
-	<< "metadata {test "	<< cvtFROMtype(m.t)
-	<< " offset "	<< m.offset
-	<< " len "	<< m.length
-	<< " aligned "	<< m.aligned
-	<< " fixed "	<< m.fixed
-	<< " lexico "	<< m.lexico
-	<< " nullable "	<< m.nullable
-	<< " derived "	<< m.derived
-	<< "} " ;
-	return o;
+    o 
+    << "metadata {test "    << cvtFROMtype(m.t)
+    << " offset "    << m.offset
+    << " len "    << m.length
+    << " aligned "    << m.aligned
+    << " fixed "    << m.fixed
+    << " lexico "    << m.lexico
+    << " nullable "    << m.nullable
+    << " derived "    << m.derived
+    << "} " ;
+    return o;
 }
 
 void print_multikey_sort_file_DSCB(pin_i &pin)
 {
-	if(!pin.pinned()) {
-		cout << "None" << endl;
-		return;
-	}
-	cout << "\t ";
+    if(!pin.pinned()) {
+        cout << "None" << endl;
+        return;
+    }
+    cout << "\t ";
     smsize_t metadata_size = pin.hdr_size();
-	int nkeys = int(metadata_size / sizeof(metadata));
-	struct metadata *m = (struct metadata *)pin.hdr();
-#if 0
-	// print the metadata, which is in the header
-	for(int k=0; k < nkeys; k++) {
-		cout << m[k] << endl;
-	}
-#endif
-	// print the keys that are in the body
-	for(int k=0; k < nkeys; k++) {
-		typed_btree_test t = m[k].t;
+    int nkeys = int(metadata_size / sizeof(metadata));
+    struct metadata *m = (struct metadata *)pin.hdr();
+    // print the keys that are in the body
+    for(int k=0; k < nkeys; k++) {
+        // print the metadata, which is in the header
+        cout << m[k] << ":";
+        typed_btree_test t = m[k].t;
 
-		if(m[k].length == 0) {
-			cout << "NULL";
-		} else
-		switch(t) {
-			case test_nosuch: {
-			   cout << " nosuch" << endl;
-			   }
-			   break;
-			case test_spatial: {
-			   w_assert1(m[k].lexico == false);
-			   w_assert1(m[k].aligned == true);
-			   w_assert1(m[k].derived == true);
-			   cout << " spatial, derived, not printed" ;
-				}
-				break;
-			case test_bv:
-			case test_blarge:
-			    cout << " variable-length byte, may cross page boundaries, not printed" ;
-				break;
-			case test_b23:
-			   w_assert1(m[k].length == 23);
-			    cout << " <b23 not printed>" ;
-			   break;
-			case test_b1:
-			   w_assert1(m[k].length == 1);
-			    cout << " <b1 not printed>" ;
-			   break;
+        if(m[k].length == 0) {
+            cout << "NULL";
+        } else
+        switch(t) {
+            case test_nosuch: {
+               cout << " nosuch" << endl;
+               }
+               break;
+            case test_spatial: {
+               w_assert1(m[k].lexico == false);
+               w_assert1(m[k].aligned == true);
+               w_assert1(m[k].derived == true);
+               cout << " spatial, derived, not printed" ;
+                }
+                break;
+            case test_bv:
+            case test_blarge:
+                cout << " variable-length byte, may cross page boundaries, not printed" ;
+                break;
+            case test_b23:
+               w_assert1(m[k].length == 23);
+                cout << " <b23 not printed>" ;
+               break;
+            case test_b1:
+               w_assert1(m[k].length == 1);
+                cout << " <b1 not printed>" ;
+               break;
 
-			case test_u1:
-			    {
-			    w_assert1(m[k].length == 1);
-			    w_assert1(m[k].offset + m[k].length <= pin.length());
-				w_base_t::uint1_t i;
-				memcpy(&i, pin.body()+m[k].offset, m[k].length);
-			    cout << (unsigned)i;
-				}
-				break;
+            case test_u1:
+                {
+                w_assert1(m[k].length == 1);
+                w_assert1(m[k].offset + m[k].length <= pin.length());
+                w_base_t::uint1_t i;
+                memcpy(&i, pin.body()+m[k].offset, m[k].length);
+                cout << (unsigned)i;
+                }
+                break;
 
 
-			case test_i1: 
-			    {
-			    w_assert1(m[k].length == 1);
-			    w_assert1(m[k].offset + m[k].length <= pin.length());
-				w_base_t::int1_t i;
-				memcpy(&i, pin.body()+m[k].offset, m[k].length);
-			    cout << (int)i;
-				}
-				break;
+            case test_i1: 
+                {
+                w_assert1(m[k].length == 1);
+                w_assert1(m[k].offset + m[k].length <= pin.length());
+                w_base_t::int1_t i;
+                memcpy(&i, pin.body()+m[k].offset, m[k].length);
+                cout << (int)i;
+                }
+                break;
 
-			case test_u2: {
-			    w_assert1(m[k].length == 2);
-			    w_assert1(m[k].offset + m[k].length <= pin.length());
-				w_base_t::uint2_t i;
-				memcpy(&i, pin.body()+m[k].offset, m[k].length);
-			    cout << (unsigned) i;
-				}
-				break;
+            case test_u2: {
+                w_assert1(m[k].length == 2);
+                w_assert1(m[k].offset + m[k].length <= pin.length());
+                w_base_t::uint2_t i;
+                memcpy(&i, pin.body()+m[k].offset, m[k].length);
+                cout << (unsigned) i;
+                }
+                break;
 
-			case test_i2: {
-			    w_assert1(m[k].length == 2);
-			    w_assert1(m[k].offset + m[k].length <= pin.length());
-				w_base_t::int2_t i;
-				memcpy(&i, pin.body()+m[k].offset, m[k].length);
-			    cout << i;
-				}
-				break;
+            case test_i2: {
+                w_assert1(m[k].length == 2);
+                w_assert1(m[k].offset + m[k].length <= pin.length());
+                w_base_t::int2_t i;
+                memcpy(&i, pin.body()+m[k].offset, m[k].length);
+                cout << i;
+                }
+                break;
 
-			case test_u4:
-				{
-			    w_assert1(m[k].length == 4);
-			    w_assert1(m[k].offset + m[k].length <= pin.length());
-				w_base_t::uint4_t i;
-				memcpy(&i, pin.body()+m[k].offset, m[k].length);
-			    cout << i;
-				}
-				break;
+            case test_u4:
+                {
+                w_assert1(m[k].length == 4);
+                w_assert1(m[k].offset + m[k].length <= pin.length());
+                w_base_t::uint4_t i;
+                memcpy(&i, pin.body()+m[k].offset, m[k].length);
+                cout << i;
+                }
+                break;
 
-			case test_i4: 
-				{
-			    w_assert1(m[k].length == 4);
-			    w_assert1(m[k].offset + m[k].length <= pin.length());
-				w_base_t::int4_t i;
-				memcpy(&i, pin.body()+m[k].offset, m[k].length);
-			    cout << i;
-				}
-				break;
+            case test_i4: 
+                {
+                w_assert1(m[k].length == 4);
+                w_assert1(m[k].offset + m[k].length <= pin.length());
+                w_base_t::int4_t i;
+                memcpy(&i, pin.body()+m[k].offset, m[k].length);
+                cout << i;
+                }
+                break;
 
-			case test_u8:
-				{
-			    w_assert1(m[k].length == 8);
-			    w_assert1(m[k].offset + m[k].length <= pin.length());
-				w_base_t::uint8_t i;
-				memcpy(&i, pin.body()+m[k].offset, m[k].length);
-			    cout << i;
-				}
-				break;
+            case test_u8:
+                {
+                w_assert1(m[k].length == 8);
+                w_assert1(m[k].offset + m[k].length <= pin.length());
+                w_base_t::uint8_t i;
+                memcpy(&i, pin.body()+m[k].offset, m[k].length);
+                cout << i;
+                }
+                break;
 
-			case test_i8: 
-				{
-			    w_assert1(m[k].length == 8);
-			    w_assert1(m[k].offset + m[k].length <= pin.length());
-				w_base_t::int8_t i;
-				memcpy(&i, pin.body()+m[k].offset, m[k].length);
-			    cout << i;
-				}
-				break;
+            case test_i8: 
+                {
+                w_assert1(m[k].length == 8);
+                w_assert1(m[k].offset + m[k].length <= pin.length());
+                w_base_t::int8_t i;
+                memcpy(&i, pin.body()+m[k].offset, m[k].length);
+                cout << i;
+                }
+                break;
 
-			case test_f4: {
-			    w_assert1(m[k].length == sizeof(float));
-			    w_assert1(m[k].offset + m[k].length <= pin.length());
-				float i;
-				memcpy(&i, pin.body()+m[k].offset, m[k].length);
-			    cout << i;
-				}
-			    break;
+            case test_f4: {
+                w_assert1(m[k].length == sizeof(float));
+                w_assert1(m[k].offset + m[k].length <= pin.length());
+                float i;
+                memcpy(&i, pin.body()+m[k].offset, m[k].length);
+                cout << i;
+                }
+                break;
 
-			case test_f8: {
-			    w_assert1(m[k].length == sizeof(double));
-			    w_assert1(m[k].offset + m[k].length <= pin.length());
-				double i;
-				memcpy(&i, pin.body()+m[k].offset, m[k].length);
-			    cout << i;
-				}
-			    break;
-		}
-		cout << "\t ";
-	}
-	
-	// cout << endl;
+            case test_f8: {
+                w_assert1(m[k].length == sizeof(double));
+                w_assert1(m[k].offset + m[k].length <= pin.length());
+                double i;
+                memcpy(&i, pin.body()+m[k].offset, m[k].length);
+                cout << i;
+                }
+                break;
+        }
+        cout << "\t ";
+    }
+    
+    // cout << endl;
 }
 
 #ifdef EXPLICIT_TEMPLATE
@@ -223,18 +219,23 @@ template class w_auto_delete_t<sort_keys_t>;
 
 w_rc_t 
 copyMOF (
-    const rid_t&         ,  // record id
-    const object_t&        obj_in,
-    key_cookie_t        ,  // type info
+    const rid_t&         rid,  // record id
+    const object_t&      obj_in,
+    key_cookie_t         ,  // type info
                             // func must allocate obj_out,
-    object_t*        obj_out         // SM will free mem, delete
+    object_t*            obj_out // SM will free mem, delete
 )
 { 
+    DBG(<<"copyMOF rid " << rid);
+    w_assert0(rid.pid.page != 0); // just to shut up the compiler
+
     /* Just for the heck of it, let's malloc some space and make
      * a copy of the object in memory 
      */
     smsize_t         blength = obj_in.body_size();
     smsize_t         hlength = obj_in.hdr_size();
+    DBG(<<"copyMOF obj hlen " << hlength
+            << " obj blen " << blength);
 
     factory_t&        f = *factory_t::cpp_vector;
     void*        h=0;
@@ -243,11 +244,13 @@ copyMOF (
         h = f.allocfunc(hlength);
         vec_t hdr(h, hlength);
         W_DO(obj_in.copy_out(true , 0, hlength, hdr));
+        DBG(<<"copyMOF: hdr is " << hdr);
     }
     if(blength) {
         b = f.allocfunc(blength);
         vec_t body(b, blength);
         W_DO(obj_in.copy_out(false, 0, blength, body));
+        DBG(<<"copyMOF: body is " << body);
     }
     new (obj_out) object_t(h, hlength, f, b, blength, f);
     return RCOK;
@@ -302,8 +305,15 @@ check_multikey_file( stid_t  fid, sort_keys_t&kl, bool do_compare)
 
     bool first = true;
 
+    rid_t old_rid; // for debugging
+    rid_t rid; // for debugging
     while ( !(rc=scan->next(pin, 0, eof)).is_error() && !eof) {
          nrecords++;
+         if(nrecords > 0)  {
+             old_rid = rid;
+         }
+         rid = pin->rid();
+
          struct metadata *meta;
 #ifdef W_DEBUG
          smsize_t metadata_size = sizeof(metadata) * nkeys;
@@ -322,8 +332,18 @@ check_multikey_file( stid_t  fid, sort_keys_t&kl, bool do_compare)
             myoffset += meta[k].offset;
             keys[k] = pin->body() + meta[k].offset;
             if(pin->is_small()) {
-                DBG(<<"key " << k << " is " << keys[k]
-                        << " length " << meta[k].length);
+                DBG(<<"key " << k 
+                    << " length " << meta[k].length
+                    << " offset " << meta[k].offset
+                    );
+                w_ostrstream out;
+                out << ::hex;
+                for(int q=0; q< int(meta[k].length); q++) {
+                    if(q>0) out << ".";
+                    out << u_char(keys[k][q]);
+                }
+                DBG(<<"key " << k << " is " << out.c_str());
+
             } else {
                 //TODO: can't handle this
                 cerr <<"key " << k << " is " << keys[k]
@@ -355,15 +375,20 @@ check_multikey_file( stid_t  fid, sort_keys_t&kl, bool do_compare)
                     if (meta[k].t == test_spatial) {
                         nbox_t box1(2), box2(2);
                         box2.bytes2box(keys[k],  box2.klen());
-                        DBG(<<"new key is " << box2);
                         int hvalue2 = box2.hvalue(universe);
-                        DBG(<< " hvalue is " << hvalue2
-                                << " with universe " << universe
+                        DBG(<< " hvalue2 is " << hvalue2
+                            << " universe " << universe
+                            << " box " << box2
                         );
 
                         int hvalue1;
                         w_assert1(oldlengths[k] == sizeof(hvalue1));
                         memcpy(&hvalue1, oldkeys[k], oldlengths[k]);
+                        DBG(<< "CHECK old_rid "  << old_rid
+                                << " hvalue1 " << hvalue1
+                            << " rid " << rid
+                            << " hvalue2 " << hvalue2
+                           );
 
                         j= (*kl.keycmp(k))(
                             sizeof(hvalue1), &hvalue1,
@@ -376,12 +401,13 @@ check_multikey_file( stid_t  fid, sort_keys_t&kl, bool do_compare)
                             );
                     }
                     comparisons++;
-                    DBG(<<" keycmp  key " << k  << " old record with " << pin->rid() 
+                    DBG(<<" keycmp  key# " << k  
+                            << " old record with " << pin->rid() 
                             << " yields " << j);
                         // j < 0 iff old < new
                 }
                 if(j==0) {
-                    DBG(<<"compare next key");
+                    DBG(<<"compare next key after #" << k);
                     continue; // to next key
                 } else {
                     DBG(<<"Skip rest of keys: key " 
@@ -391,7 +417,11 @@ check_multikey_file( stid_t  fid, sort_keys_t&kl, bool do_compare)
                     break; // stop here
                 }
             }
+            DBG(<<"nkeys " << nkeys);
             if(kl.is_unique()) {
+                // if both keys are null, j==0
+                // If we're trying to do both unique
+                // and allow nulls, the test is mistaken.
                 w_assert1(j != 0);
                 if(j==0) {
                     delete scan;
@@ -425,7 +455,9 @@ check_multikey_file( stid_t  fid, sort_keys_t&kl, bool do_compare)
                     nbox_t box(2);
                     box.bytes2box(keys[k], box.klen());
                     int hvalue = box.hvalue(universe);
-                    DBG(<<"saving hvalue " << hvalue << " for box " << box);
+                    DBG(<<"saving hvalue " << hvalue 
+                            << " universe " << universe
+                            << " box " << box);
                     w_assert1(lengths[k] == sizeof(hvalue));
                     memcpy(dest, &hvalue, lengths[k]);
                 } else {
@@ -443,17 +475,12 @@ check_multikey_file( stid_t  fid, sort_keys_t&kl, bool do_compare)
 
     } //scan
 
-cout << "check_multikey_file did  " 
-        << comparisons << " key comparisons for " 
-        << nrecords << " records (" 
-        << nulls << " null records)" << endl << endl;
     delete scan;
     return 0;
 }
 
 /*
  * t_multikey_sort_file...
- * This does NOT have a logical-id counterpart
  */
 int
 t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
@@ -480,7 +507,7 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
     // generator.seed(99); // pick any seed
         // we're doing this to be sure that the #duplicates 
         // generated is identical for all tests of same type and nrecs,
-		// and that the tests are repeatable.
+        // and that the tests are repeatable.
 
     const char *usage_string = 
 //1   2    3       4       5           6          7           8           9               10    11, 12    [13,14] ...
@@ -520,6 +547,7 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
         cerr << "bad argument " << up_arg << " [up|down]" <<endl;
         return TCL_ERROR;
     }
+    DBG(<<"ascending " << ascending);
 
     /* 
      * uniq/dupok
@@ -534,6 +562,10 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
         cerr << "bad argument " << uniq_arg << " [uniq|dupok]" <<endl;
         return TCL_ERROR;
     }
+    DBG(<<"uniq_arg " << uniq_arg 
+            << " " << av[uniq_arg] 
+            << " result " << uniq
+            );
 
     /* 
      * file/index
@@ -609,8 +641,6 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
     w_auto_delete_array_t<CSKF> auto_del6(derive_func);
 
 
-    universe.nullify();
-
     int k;
     for(k = max_keys_handled-1; k>=0; k--) {
         make_fixed[k] = 
@@ -630,7 +660,7 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
             cerr << "Not enough arguments for key " << k <<endl;
             return TCL_ERROR;
         }
-		t[k] = cvt2type(av[arg]);
+        t[k] = cvt2type(av[arg]);
 
         /*
          * key location attributes
@@ -656,6 +686,16 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
                 make_fixed[k] = false;
                 break;
             case 'N':
+                // Ok, so we can't do both uniq and nullable.
+                if(uniq) {
+                    w_reset_strstream(tclout);
+                    tclout  
+                    << "Test cannot request uniq AND nullable keys ("
+                    << av[arg] << ")"
+                    << endl;
+                    Tcl_AppendResult(ip, tclout.c_str(), 0);
+                    return TCL_ERROR;
+                }
                 DBG(<<"make NULL key " << k);
                 make_nullable[k] =true;
                 // NB: this disables fixed: see below
@@ -675,11 +715,24 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
             }
             if(t[k] == test_spatial) {
                 make_derived[k] =true;
+                make_fixed[k] =false;
             }
             // if nullable, it's no longer fixed!
-            if(make_nullable[k]) make_fixed[k]=false;
+            if(make_nullable[k]) {
+                DBG(<<"NULLABLE-> NOT FIXED " << k);
+                make_fixed[k]=false;
+                make_derived[k]=true;
+            }
+            // finally, if it's not fixed, it must be derived.
+            // This case will check for the derivation function below,
+            // and insert one (get_key_inf0)
+            if(!make_fixed[k] && !make_derived[k]) {
+                make_derived[k] = true;
+            }
+            w_assert0(make_fixed[k] == !make_derived[k]);
         }
     }
+#if defined(DEBUG_DESPERATE)
     {
         bool found=false;
         for(k = nkeys-1; k>=0; k--) {
@@ -698,12 +751,14 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
             }
         }
     }
+#endif
 
     sort_keys_t kl(nkeys);
     {
-		generic_CSKF_cookie g; // not used unless set_for_index
+        generic_CSKF_cookie g; // not used unless set_for_index
         CSKF cskfunc;
         for(k = 0; k <  nkeys; k++) {
+            g.clear(); // to avoid asserts in getcmpfunc 
             keycmp[k] = getcmpfunc(t[k], cskfunc, key_cookie_t(&g));
         }
         if(index_output) {
@@ -722,6 +777,7 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
             keep_orig = true;
         }
     }
+
     /*
      * Create the input file and
      * go about creating the records
@@ -760,57 +816,63 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
 
         memset(object_base, '\0', max_total_length);
 
-		// When we create the data, put them in here.
-		// This way we can occasionally create duplicates if !uniq
-		struct {
-			w_base_t::uint1_t ui1;
-			w_base_t::int1_t  i1;
-			w_base_t::uint2_t ui2;
-			w_base_t::int2_t  i2;
-			w_base_t::uint4_t ui4;
-			w_base_t::int4_t  i4;
-			w_base_t::uint8_t ui8;
-			w_base_t::int8_t  i8;
-			float             f4;
-			double            f8;
-		} datum;
+        // When we create the data, put them in here.
+        // This way we can occasionally create duplicates if !uniq
+        struct {
+            w_base_t::uint1_t ui1;
+            w_base_t::int1_t  i1;
+            w_base_t::uint2_t ui2;
+            w_base_t::int2_t  i2;
+            w_base_t::uint4_t ui4;
+            w_base_t::int4_t  i4;
+            w_base_t::uint8_t ui8;
+            w_base_t::int8_t  i8;
+            float             f4;
+            double            f8;
+        } datum;
 
-		int  non_unique_in_a_row=0;
+        int  non_unique_in_a_row=0;
         for(j=0; j < nrecs; j++) {
+            DBG(<< "{ rec#  " << j+1);
             smsize_t    offset = 0;
             object = object_base;
 
-			// Try to cause some duplicate values somewhere.
-			// Let this create duplicates for all but the last key.
-			// Note that if the test re-uses types, this will not
-			// do quite what you expect.
-			bool    create_new_value = 
-					uniq 
-					|| j < 1
-					|| non_unique_in_a_row < nrecs/2
+            // Try to cause some duplicate values somewhere.
+            // Let this create duplicates for all but the last key.
+            // Note that if the test re-uses types, this will not
+            // do quite what you expect.
+            bool    create_new_value = 
+                    uniq 
+                    || j < 1
+                    || non_unique_in_a_row < nrecs/2
 #ifdef ARCH_LP64
-					|| ((generator.rand() & 0xa0b000d01000300) != 0);
+                    || ((generator.rand() & 0xa0b000d01000300) != 0);
 #else
-					|| ((generator.rand() & 0xd1000300) != 0);
+                    || ((generator.rand() & 0xd1000300) != 0);
 #endif
 
-			if( create_new_value ) {
-				non_unique_in_a_row++;
-			} else {
-				non_unique_in_a_row = 0;
-				cout 
-					<< " DUPLICATE " 
-					<< " j=" << j 
-					<< " uniq=" << uniq 
-					<< " non_unique_in_a_row=" << non_unique_in_a_row 
-					<< " nrecs/2=" << nrecs/2 
-					<< endl;
-			}
+            if( create_new_value ) {
+                non_unique_in_a_row++;
+            } else {
+                non_unique_in_a_row = 0;
+#if defined(DEBUG_DESPERATE)
+                cout 
+                    << " DUPLICATE " 
+                    << " j=" << j 
+                    << " uniq=" << uniq 
+                    << " non_unique_in_a_row=" << non_unique_in_a_row 
+                    << " nrecs/2=" << nrecs/2 
+                    << endl;
+#endif
+            }
 
             for(k = 0; k <  nkeys; k++) {
                 smsize_t    length = 0;
                 smsize_t    dlength = 0; // derived (key) length
-                smsize_t buff =  0;
+                smsize_t    buff =  0;
+                smsize_t    addl =  0; // possibly additional size to
+                // account for our pseudo-random variation in offset of
+                // non-fixed keys.
                 if(make_aligned[k]) {
                     /* make sure each key is 8-byte aligned */
                     /* XXX use align tools */
@@ -819,16 +881,32 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
                         buff &= ~0x7;
                         buff -= offset;
                     }
+                    DBG(<<" key " << k <<" buff (aligned)" << buff);
                 } else if(!make_fixed[k]) {
                     if(count_bv_objects > 5) {
                        // Force compare_in_pieces to compare
                        // things that aren't in page-sync
                        buff = count_bv_objects * 5;
+                       DBG(<<" key " << k <<" buff "
+                                << buff
+                                << " (count_bv_objects) " 
+                                << count_bv_objects
+                           );
                     } else {
                         buff = smsize_t(generator.rand() & 0x8);
+                        // The offset at which we find the key is
+                        // going to (randomly) vary by  8 bytes, but
+                        // in order to ensure that later fixed-loc keys
+                        // remain in the same place, we must always
+                        // account for 8 bytes in computing those later
+                        // key offsets.
+                        addl = 8-buff; // 8 or 0
+                        DBG(<<" key " << k <<" buff (random) " << buff
+                                << " addl " << addl);
                     }
-                } // else buff = 0;
-                DBG(<<"buff size " << buff);
+                } else {
+                    DBG(<<" key " << k <<" buff size " << buff);
+                }
                 offset += buff;
                 memset(object, 'z', buff);
                 object += buff;
@@ -837,13 +915,31 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
                  * fixed-location keys, make sure the
                  * data we've computed is the same as it was the last
                  * time around 
+                 * Note: meta[k].offset isn't used unless the key is fixed.
                  */
-                if(j > 0 && make_fixed[k]) {
-                    w_assert1(meta[k].offset == offset);
-                    DBG(<<"offset=" << offset);
+                if(make_fixed[k]) {
+                    if(j > 0 ) {
+                        DBG(<< " record# " << j+1 
+                            << " key " << k << " offset=" << offset
+                            << " check: meta[" << k << "].offset " 
+                            << meta[k].offset
+                        );
+                        w_assert1(meta[k].offset == offset);
+                    } else {
+                        meta[k].offset = offset;
+                        DBG(<< " record# " << j+1 
+                            << " key " << k << " offset=" << offset
+                            << " set: meta[" << k << "].offset " 
+                            << meta[k].offset
+                            );
+                    }
                 } else {
+                    DBG(<< " record# " << j+1 
+                        << " key " << k << " offset=" << offset
+                        << " set: meta[" << k << "].offset " 
+                        << meta[k].offset
+                        );
                     meta[k].offset = offset;
-                    DBG(<<"offset=" << offset);
                 }
                 meta[k].fixed = make_fixed[k];
                 meta[k].aligned = make_aligned[k];
@@ -851,31 +947,32 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
 
                 typed_btree_test t = meta[k].t;
 
-				if (0 && linked.verbose_flag) {
-						cout << "Key " << k << " at offset in body: " 
-							<< offset  << " " << endl;
-				}
+                if (0 && linked.verbose_flag) {
+                    cout << "Key " << k << " at offset in body: " 
+                        << offset  << " " << endl;
+                }
+                DBG(<< "Key " << k << " at offset in body: " << offset );
 
-
-				if(create_new_value || (k+1 == nkeys)
-						// these tests don't save their keys in datum:
-						|| t == test_spatial
-						|| t == test_bv
-						|| t == test_blarge
-						|| t == test_b23
-						|| t == test_b1
-				) {
+                if(create_new_value || (k+1 == nkeys)
+                        // these tests don't save their keys in datum:
+                        || t == test_spatial
+                        || t == test_bv
+                        || t == test_blarge
+                        || t == test_b23
+                        || t == test_b1
+                ) {
                     // cout << " type: " ;
                     switch(t) {
                     case test_spatial: {
-						nbox_t box2(2);
+                        nbox_t box2(2);
                         length = box2.klen();
+                        DBG(<<"");
                         make_random_box(object, length);
                         meta[k].lexico = false;
                         meta[k].aligned = true;
                         meta[k].derived = true;
                         derive_func[k] = mhilbert;
-                        w_assert3(make_derived[k]);
+                        w_assert0(make_derived[k]);
                         }
                         break;
 
@@ -955,13 +1052,13 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
                     case test_u1:
                         smallkeys++;
                         // cout << "U 1";
-						datum.ui1= w_base_t::uint1_t(generator.rand() & 0xff);
+                        datum.ui1= w_base_t::uint1_t(generator.rand() & 0xff);
                         break;
 
                     case test_i1: 
                         smallkeys++;
                         // cout << "I 1";
-						datum.i1= w_base_t::int1_t(generator.rand() & 0xff);
+                        datum.i1= w_base_t::int1_t(generator.rand() & 0xff);
                         break;
 
                     case test_u2:
@@ -976,27 +1073,37 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
 
                     case test_u4:
                         // cout << "U 4";
-						datum.ui4= w_base_t::uint4_t(
-									generator.rand() & 0xffffffff);
+                        datum.ui4= w_base_t::uint4_t(
+                                    generator.rand() & 0xffffffff);
                         break;
 
                     case test_i4: 
                         // cout << "I 4";
-						datum.i4= w_base_t::int4_t(
-									generator.rand() & 0xffffffff);
+                        datum.i4= w_base_t::int4_t(
+                                    generator.rand() & 0xffffffff);
                         break;
 
                     case test_u8:
-						datum.ui8= w_base_t::uint8_t(generator.rand());
+                        datum.ui8= w_base_t::uint8_t(generator.rand());
                         break;
 
                     case test_i8: 
-						datum.i8= w_base_t::int8_t(generator.rand());
+                        datum.i8= w_base_t::int8_t(generator.rand());
                         break;
 
                     case test_f4: 
                         // cout << "F 4";
-                        datum.f4 = float(generator.drand());
+                        // drand() yields nan when converted to
+                        // float, so let's try something a little less
+                        // likely ?.
+                        {
+                        int m1 = int(generator.drand());
+                        int m2 = int(generator.drand());
+                        m2 %= 10;
+                        float f=m1; 
+                        for(int q=0; q < m2; q++) f *= .1;
+                        datum.f4 = f;
+                        }
                         break;
 
                     case test_f8:
@@ -1008,22 +1115,24 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
                         cerr << "switch" <<endl;
                         w_assert3(0);
                     } /* switch */
-				} else {
-					length = meta[k].length;
-				}
+                } else {
+                    length = meta[k].length;
+                }
+                DBG(<< "datum.ui4 (in u4 form) is  " << datum.ui4);
                 {
                     // cout << " type: " ;
                     switch(t) {
                     case test_spatial: 
                         // Derive key and sort as integer
+                        DBG(<<"test_spatial: derive key and sort key as int");
                         dlength = sizeof(int);
-						break;
+                        break;
                     case test_bv:
                     case test_blarge:
                     case test_b23:
                     case test_b1:
-						dlength = length;
-						// these were done above
+                        dlength = length;
+                        // these were done above
                         break;
 
                     case test_u1:
@@ -1045,12 +1154,12 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
                         break;
 
                     case test_u4:
-						dlength = length = 4;
-						memcpy(object, &datum.ui4, length);
+                        dlength = length = 4;
+                        memcpy(object, &datum.ui4, length);
                         break;
                     case test_i4: 
-						dlength = length = 4;
-						memcpy(object, &datum.i4, length);
+                        dlength = length = 4;
+                        memcpy(object, &datum.i4, length);
                         break;
 
                     case test_u8:
@@ -1076,12 +1185,12 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
                         w_assert3(0);
                     } /* switch */
                 } 
-
+                DBG(<< "dlength " << dlength);
 
                 if(j > 0 && make_fixed[k] && !make_nullable[k]) {
                     w_assert1(meta[k].length == dlength);
                 } else {
-                    DBG(<<"set length to " << dlength);
+                    DBG(<<"key " << k << " set length to " << dlength);
                     meta[k].length = dlength;
                 }
                 if(make_nullable[k] && (count_bv_objects <= 4)
@@ -1097,8 +1206,16 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
                     // for the sort, and we don't want to have clobbered
                     // the length info.
                     unsigned int xxx = int(generator.rand());
+                    // TODO: fix this: I'm getting more nulls than
+                    // I'd like
                     if(xxx & 0x00600200) {
-                        DBG(<<"forcing NULL");
+                        DBG(<<"forcing NULL key " << k 
+                                << " record# " << j
+                                << " because random value is " 
+                                << ::hex << (unsigned)(xxx) << ::dec
+                                << " yields " 
+                                << ::hex << (unsigned)(xxx & 0x00600200) << ::dec
+                                );
                         nulls++;
                         meta[k].length = 0;
                         length = 0;
@@ -1106,7 +1223,9 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
                     }
                 }
                 // cout << " length " << length <<endl;
+                offset += addl; // possibly additional size
                 offset += length;
+                object += addl; // possibly additional size
                 object += length; // get ready for next key
                 if(offset > max_total_length) {
                     cerr << "exceeded max length" <<endl;
@@ -1114,6 +1233,7 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
                 }
                 total_length = offset;
             }
+            DBG(<<"done making keys");
 
 
             // Put object in file
@@ -1121,26 +1241,30 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
             vec_t data(object_base, total_length);
 
             rid_t rid;
-            DBG( << "create_rec: sizeof(meta)=" << metadata_size);
+            DBG( << "create_rec: #" << j+1 << " sizeof(meta)=" << metadata_size);
             DBG( << "       total length=" << total_length );
-			if (0 && linked.verbose_flag) {
-				cout << "create rec: total_length =" << total_length <<endl;
-			}
+            if (0 && linked.verbose_flag) {
+                cout << "create rec: total_length =" << total_length <<endl;
+            }
             file_length += total_length;
 
             if(1) { // DEBUG : print keys
             for(int kk=0; kk<nkeys; kk++) {
-				DBG(<< endl <<  "Key offset in object is " << meta[kk].offset
-						<< " value= ");
+                DBG(
+                <<  "Key " << kk << " offset in object is " << meta[kk].offset
+                << " value= ");
                 char *o = object_base + meta[kk].offset;
                 if(meta[kk].length == 0) {
-                    DBG(<<"NULL");
+                    DBG(<<" NULL ");
                 } else switch(meta[kk].t) {
                 case test_spatial: {
                         nbox_t b(2);
                         w_assert3(b.klen() < int(sizeof(b)));
                         b.bytes2box((const char *)o, int(b.klen()));
-                        DBG(<<" BOX(" << b <<" ) hvalue=" << b.hvalue(universe) );
+                        DBG(<<" BOX(" << b <<" ) hvalue=" 
+                                << b.hvalue(universe) 
+                                << " with universe " << universe
+                                );
                     }
                     break;
 
@@ -1155,10 +1279,16 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
                     if(p-o > 0) {
                         DBG(<<" E(" <<(int)(p-o) <<" times)" << p);
                     } else {
-						int len = meta[kk].length;
-						for(int i=0; i < len; i++) {
-							DBG(<<p[i]);
-						}
+                        int len = meta[kk].length;
+                        for(int i=0; i < len; i++) {
+							W_IFDEBUG1(
+                            const int lower_alpha = 0x61;
+                            const int upper_alpha = 0x7a;
+							)
+                            w_assert1(p[i] >= lower_alpha || !p[i]);
+                            w_assert1(p[i] <= upper_alpha || !p[i]);
+                            DBG(<<"record#" << j+1 << " " << p[i] );
+                        }
                     }
                     } 
                     break;
@@ -1217,29 +1347,33 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
                     break;
                 }
             } 
-			}
+            }
             DO( sm->create_rec(fid, hdr, 10, data, rid) );
-			DBG( << " rid=" << rid << endl);
-#if 1
+            DBG( << "record " << j+1 << "  created rid=" << rid 
+                    << " hdr size " << hdr.size()
+                    << " body size " << data.size()
+                    );
+#if defined(DEBUG_DESPERATE)
             {
                 struct metadata *m = (metadata *)hdr.ptr(0);
-				bool is_fixed = true;
+                bool is_fixed = true;
                 for(k = 0; k <  nkeys; k++) {
-				    is_fixed = is_fixed && m[k].fixed;
-				}
-				if(! is_fixed ) {
-					cout <<  rid << " METADATA: " << endl;
-				} else if(j==0) {
-					cout <<  "ALL RECS METADATA: " << endl;
-				}
-				if(j == 0 || !is_fixed) {
-					for(k = 0; k <  nkeys; k++) {
-						cout << m[k] << endl;
-					}
-				}
+                    is_fixed = is_fixed && m[k].fixed;
+                }
+                if(! is_fixed ) {
+                    cout <<  rid << " METADATA: " << endl;
+                } else if(j==0) {
+                    cout <<  "ALL RECS METADATA: " << endl;
+                }
+                if(j == 0 || !is_fixed) {
+                    for(k = 0; k <  nkeys; k++) {
+                        cout << m[k] << endl;
+                    }
+                }
             }
 #endif 
             memset(object_base, '\0', total_length);
+            DBG(<<" } rec# " << j+1 << endl);
         }
         DBG( << "Done creating " << nrecs << " records " );
     }
@@ -1247,6 +1381,7 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
 
     for(k = 0; k <  nkeys; k++) {
         if(make_fixed[k]) {
+            DBG(<<"set_sortkey_fixed " << k);
             kl.set_sortkey_fixed(k, 
                 meta[k].offset, meta[k].length, 
                 false, // in body
@@ -1255,9 +1390,10 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
                 keycmp[k]
                 );
         } else if(derive_func[k] == sort_keys_t::noCSKF) {
-          // else use default info: no offset/length, false for both
-          // fixed and aligned
-          kl.set_sortkey_derived(k, 
+            // else use default info: no offset/length, false for both
+            // fixed and aligned
+            DBG(<<"set_sortkey_derived " << k);
+            kl.set_sortkey_derived(k, 
                 get_key_info,
                 key_cookie_t(k),
                 false, // in body
@@ -1265,13 +1401,15 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
                 meta[k].lexico, 
                 keycmp[k]
                 );
-        } else {
-          /*
-           * Sort on derived key. 
-           */
-          // else use default info: no offset/length, false for both
-          // fixed and aligned
-          kl.set_sortkey_derived(k, 
+        } else if(make_derived[k] ) {
+            w_assert0(make_derived[k]);
+            /*
+             * Sort on derived key. 
+             */
+            // else use default info: no offset/length, false for both
+            // fixed and aligned
+            DBG(<<"set_sortkey_derived key #" << k);
+            kl.set_sortkey_derived(k, 
                 derive_func[k],
                 key_cookie_t(k),
                 false, // in body
@@ -1279,6 +1417,12 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
                 meta[k].lexico, 
                 keycmp[k]
                 );
+        } else {
+            // if nullable, we have to make it derived
+            DBG( <<"not fixed, not derived, key # " << k
+                    << " test type " << t[k] 
+                    << " nullable=" << make_nullable[k]
+                    );
         }
     }
     /*
@@ -1335,7 +1479,7 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
     }
     deleter        d2(ofid); // auto-delete
 
-    const int   min_rec_sz = sizeof(metadata);
+    const int   min_rec_sz = sizeof(metadata)/2;
     vid_t vid(volumeid);
 
     {
@@ -1349,10 +1493,12 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
         cout << "Cannot set ascending to " << ascending <<endl;
         return TCL_ERROR;
     }
+    DBG(<<"kl.set_unique to " << uniq);
     if(kl.set_unique(uniq)) {
         cout << "Cannot set uniq to " << uniq <<endl;
         return TCL_ERROR;
     }
+    DBG(<<"kl.set_null_unique to " << uniq);
     if(kl.set_null_unique(uniq)) {
         cout << "Cannot set nulls_uniq to " << uniq <<endl;
         return TCL_ERROR;
@@ -1365,6 +1511,9 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
         cout << "Cannot set keep_orig to " << keep_orig <<endl;
         return TCL_ERROR;
     }
+
+    DBG(<<"kl.is_unique " << kl.is_unique());
+    DBG(<<"kl.is_ascending " << kl.is_ascending());
 
     // This is the new sort phys version 
     rc = sm->sort_file( 
@@ -1399,9 +1548,11 @@ t_multikey_sort_file(Tcl_Interp* ip, int ac, TCL_AV char* av[])
      */
     if(!keep_orig) d1.disarm();
 
+    DBG(<<"kl.is_unique " << kl.is_unique());
+    DBG(<<"kl.is_ascending " << kl.is_ascending());
     int fck = check_multikey_file(ofid, kl, true);
 
-fprintf(stderr, "check_multikey_file returns %d\n", fck);
+// fprintf(stderr, "check_multikey_file returns %d\n", fck);
 
     switch (fck) {
     case -1:
@@ -1462,18 +1613,18 @@ fprintf(stderr, "check_multikey_file returns %d\n", fck);
                 // w_assert1(0);
             }
         }
-		if(sort_is_instrumented()) {
-			// NOTE: This can only work if we #defined INSTRUMENT_SORT
-			// in sm/newsort.cpp
-			if(int(internal.sm.sort_recs_created) != nrecs) {
-				if(!uniq) {
-					cerr << "recs_created = " 
-							<< internal.sm.sort_recs_created 
-							<< "; expected " << nrecs << endl;
-					w_assert1(0);
-				}
-			}
-		}
+        if(sort_is_instrumented()) {
+            // NOTE: This can only work if we #defined INSTRUMENT_SORT
+            // in sm/newsort.cpp
+            if(int(internal.sm.sort_recs_created) != nrecs) {
+                if(!uniq) {
+                    cerr << "recs_created = " 
+                            << internal.sm.sort_recs_created 
+                            << "; expected " << nrecs << endl;
+                    w_assert1(0);
+                }
+            }
+        }
     }
 
     /* input and output files will be destroyed by d1 and d2 */

@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: stime.cpp,v 1.39 2010/05/26 01:20:22 nhall Exp $
+ $Id: stime.cpp,v 1.40 2010/12/08 17:37:37 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -47,7 +47,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
    st_tod    == time of day part of the time
    st_hires    == "higher resolution" part of the time
    HR_SECOND    == high-resolution units in a second
-   TOD_MAX    == low-resolution (seconds) maximum value
  */  
 
 #define    NS_SECOND    1000000000    /* nanoseconds in a second */
@@ -66,11 +65,6 @@ typedef struct timeval    _stime_t;
 #define    HR_SECOND    US_SECOND
 #endif
 
-#ifdef Alpha
-#define    TOD_MAX        INT_MAX
-#else
-#define    TOD_MAX        LONG_MAX
-#endif
 #define    HR_MAX        (HR_SECOND-1)
 
 
@@ -385,7 +379,7 @@ ostream &stime_t::ctime(ostream &s) const
     const   int buflen(26); 
     char    buf[buflen];    /* XXX well known magic number */
 
-	/// See Makefile.generic for note about this
+    /// See Makefile.generic for note about this
 #ifdef _POSIX_PTHREAD_SEMANTICS 
     char    *when = ctime_r(&kludge, buf);
 #elif defined(SOLARIS2)

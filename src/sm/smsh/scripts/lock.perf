@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: lock.perf,v 1.14.4.3 2009/12/21 18:45:15 nhall Exp $
+#  $Id: lock.perf,v 1.17 2012/01/02 17:02:20 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -32,19 +32,42 @@
 #
 source $script_dir/vol.init
 
-proc lock_stats {} {
+proc lock_stats { lock_time } {
     set stats [sm gather_stats]
-    set req_i [expr [lsearch $stats lock_request_cnt] + 1]
-    set acq_i [expr [lsearch $stats lock_acquire_cnt] + 1]
-    set hit_i [expr [lsearch $stats lock_cache_hit_cnt] + 1]
-    set result [list "r=" [lindex $stats $req_i] "a=" [lindex $stats $acq_i] "h=" [lindex $stats $hit_i]]
+
+    set req_i     [lsearch $stats lock_request_cnt]
+    set acq_i     [lsearch $stats lock_acquire_cnt]
+    set hit_i     [lsearch $stats lock_cache_hit_cnt]
+    set dld_i     [lsearch $stats lock_deadlock_cnt]
+	set dldc_i    [lsearch $stats lock_dld_call_cnt]
+	set dld1c_i   [lsearch $stats lock_dld_first_call_cnt]
+
+	set req_i [expr $req_i + 1]
+	set acq_i [expr $acq_i + 1]
+	set hit_i [expr $hit_i + 1]
+	set dld_i [expr $dld_i + 1]
+	set dldc_i [expr $dldc_i + 1]
+	set dld1c_i [expr $dld1c_i + 1]
+    
+	set req [lindex $stats $req_i]
+	set acq [lindex $stats $acq_i]
+	set hit [lindex $stats $hit_i]
+	set dld [lindex $stats $dld_i]
+	set dldc [lindex $stats $dldc_i]
+	set dld1c [lindex $stats $dld1c_i]
+
+	set sec [lindex $lock_time 0]
+	set secperacq [expr $sec / $acq ]
+
+    set result [list $sec "seconds"  "req=" $req  "acquire=" $acq "hit=" $hit "dld=" $dld  "dldc=" $dldc "dld1c=" $dld1c $secperacq ]
+
     return $result
 }
 
 set config [sm config_info]
 verbose config $config
 
-set num_req 10000
+set num_req 100000
 set hdr "" 
 set data ""
 
@@ -69,7 +92,7 @@ set lock_time [ time {
 } 1 ]
 verbose
 verbose full record locks, cached=[sm lock_cache_enabled]
-verbose "\t" $lock_time , [lock_stats]
+verbose "\t" [lock_stats $lock_time]
 
 
 set dummy [sm gather_stats reset]
@@ -79,7 +102,7 @@ set lock_time [ time {
 } 1 ]
 verbose
 verbose full record locks, cached=[sm lock_cache_enabled] 
-verbose "\t" $lock_time , [lock_stats]
+verbose "\t" [lock_stats $lock_time]
 
 
 set dummy [sm gather_stats reset]
@@ -90,7 +113,7 @@ set lock_time [ time {
 } 1 ]
 verbose
 verbose file is EX locked, cached=[sm lock_cache_enabled]
-verbose "\t" $lock_time , [lock_stats]
+verbose "\t" [lock_stats $lock_time]
 
 
 set dummy [sm gather_stats reset]
@@ -101,7 +124,7 @@ set lock_time [ time {
 } 1 ]
 verbose
 verbose file is EX locked, cached=[sm lock_cache_enabled]
-verbose "\t" $lock_time , [lock_stats]
+verbose "\t" [lock_stats $lock_time]
 
 
 set dummy [sm gather_stats reset]
@@ -112,7 +135,7 @@ set lock_time [ time {
 } 1 ]
 verbose
 verbose volume is EX locked, cached=[sm lock_cache_enabled]
-verbose "\t" $lock_time , [lock_stats]
+verbose "\t" [lock_stats $lock_time]
 
 
 set dummy [sm gather_stats reset]
@@ -123,7 +146,7 @@ set lock_time [ time {
 } 1 ]
 verbose
 verbose volume is EX locked, cached=[sm lock_cache_enabled]
-verbose "\t" $lock_time , [lock_stats]
+verbose "\t" [lock_stats $lock_time]
 
 
 pstats

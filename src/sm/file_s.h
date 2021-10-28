@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='FILE_S_H'>
 
- $Id: file_s.h,v 1.40 2010/06/08 22:28:55 nhall Exp $
+ $Id: file_s.h,v 1.42 2010/07/19 18:35:07 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -41,27 +41,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 typedef w_base_t::uint8_t clust_id_t; // not used at this time
 
 class file_p;
-
-enum pg_policy_t { 
-    t_append        = 0x01, // retain sort order (cache 0 pages)
-    t_cache        = 0x02, // look in n cached pgs 
-    t_compact        = 0x04 // scan file for space in pages 
-    /* These are masks - the following combinations are supported:
-     * t_append    -- preserve sort order
-     * t_cache  -- look only in cache - error if no luck (not really sensible)
-     * t_compact  -- don't bother with cache (bad idea)
-     * t_cache | t_append -- check the cache first, append if no luck
-     * t_cache | t_compact -- check the cache first, if no luck,
-     *                     search the file if histogram if apropos;
-     *                     error if no luck
-     * t_cache | t_compact | t_append  -- like above, but append to
-     *                file as a last resort
-     * t_compact | t_append  -- don't bother with cache (bad idea)
-     *
-     * Of course, not all combos are sensible.
-     */
-    
-};
 
 enum recflags_t { 
     t_badflag        = 0x00,
@@ -120,8 +99,8 @@ private:
  */
 struct file_p_hdr_t {
     clust_id_t    cluster;
-	// See DUMMY_CLUSTER_ID in file.cpp, page.h 
-	// It is the default value of the cluster id here.
+    // See DUMMY_CLUSTER_ID in file.cpp, page.h 
+    // It is the default value of the cluster id here.
 };
 
 inline const char* record_t::hdr() const

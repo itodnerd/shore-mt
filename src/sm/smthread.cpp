@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: smthread.cpp,v 1.78 2010/06/08 22:28:56 nhall Exp $
+ $Id: smthread.cpp,v 1.84 2012/01/02 17:02:17 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -65,14 +65,9 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 #include <w_strstream.h>
 
-#if W_DEBUG_LEVEL > 1
-extern "C" void stophere();
-void stophere()
-{
-}
-#define CHECKRCUNCHECKED(x) if((x).is_unchecked()) { stophere(); }
-#else
-#define CHECKRCUNCHECKED(x)
+#ifdef W_TRACE
+// for use with FUNC
+__thread int func_helper::depth = 0;
 #endif
 
 SmthreadFunc::~SmthreadFunc()
@@ -90,7 +85,7 @@ static atomic_thread_map_t all_fingerprints;
 extern "C" 
 void clear_all_fingerprints()
 {
-    // called from smsh because smsh has points a which
+    // called from smsh because smsh has points at which
     // this is safe to do, and because it forks off so many threads;
     // it can't really create a pool of smthreads.
     smthread_t::init_fingerprint_map() ;
@@ -116,9 +111,6 @@ smthread_t::tcb_t::destroy_TL_stats() {
         _TL_stats = NULL;
     }
 }
-
-const uint4_t eERRMIN = smlevel_0::eERRMIN;
-const uint4_t eERRMAX = smlevel_0::eERRMAX;
 
 static smthread_init_t smthread_init;
 
@@ -239,6 +231,15 @@ smthread_t::add_from_TL_stats(sm_stats_info_t &w) const
 {
     const sm_stats_info_t &x = _tcb.TL_stats_const();
     w += x; 
+
+    // pick these up from the sthread_t stats structure:
+    w.sm.rwlock_r_waits += this->SthreadStats.rwlock_r_wait;
+    w.sm.rwlock_w_waits += this->SthreadStats.rwlock_w_wait;
+
+    w.sm.need_latch_condl += this->SthreadStats.needs_latch_condl;
+    w.sm.latch_condl_nowaits += this->SthreadStats.latch_condl_nowait;
+    w.sm.need_latch_uncondl += this->SthreadStats.needs_latch_uncondl;
+    w.sm.latch_uncondl_nowaits += this->SthreadStats.latch_uncondl_nowait;
 }
 
 /*
@@ -260,17 +261,6 @@ smthread_t::new_xct(xct_t *x)
 }
 
 
-void
-smthread_t::alloc_sdesc_cache()
-{
-    tcb()._sdesc_cache = xct_t::new_sdesc_cache_t();
-}
-void
-smthread_t::free_sdesc_cache()
-{
-    xct_t::delete_sdesc_cache_t(tcb()._sdesc_cache);
-    tcb()._sdesc_cache = 0;
-}
 
 /*********************************************************************
  *
@@ -322,6 +312,10 @@ smthread_t::smthread_t(
 
 void smthread_t::_initialize_fingerprint()
 {
+// We can see if we might be getting false positives here.
+// If we make the finger print maps unique, we can eliminate that
+// possibility.
+#define DEBUG_FINGERPRINTS 0
 #if DEBUG_FINGERPRINTS
     int tries=0;
     const int trylimit = 50;
@@ -359,7 +353,7 @@ bool smthread_t::_try_initialize_fingerprint()
 
     for( int i=0; i < FINGER_BITS; i++) {
     retry:
-        int rval = rng()->randn(atomic_thread_map_t::BITS);
+        int rval = me()->randn(atomic_thread_map_t::BITS);
         for(int j=0; j < i; j++) {
             if(rval == _fingerprint[j])
                 goto retry;
@@ -375,14 +369,14 @@ bool smthread_t::_try_initialize_fingerprint()
 #ifndef PROHIBIT_FALSE_POSITIVES
     return false;
 #else
-	// This uniqueness check is left in for possible turning on
-	// when debugging deadlocks; it is so that we can tell if
-	// we are getting duplicated bits and thus possibly false-positives.  
-	// As long as we are running tests
-	// that pass this check, we know that we don't have false-positives.
-	// To turn it on, define PROHIBIT_FALSE_POSITIVES above.
-	
-	/* Note also that the global map is unable to recycle
+    // This uniqueness check is left in for possible turning on
+    // when debugging deadlocks; it is so that we can tell if
+    // we are getting duplicated bits and thus possibly false-positives.  
+    // As long as we are running tests
+    // that pass this check, we know that we don't have false-positives.
+    // To turn it on, define PROHIBIT_FALSE_POSITIVES above.
+    
+    /* Note also that the global map is unable to recycle
        fingerprints, putting a hard limit on the number of threads the
        system can ever spawn when using this restrictive check.
      */
@@ -480,12 +474,19 @@ smthread_t::join(timeout_in_ms timeout)
     {
         return RC(smlevel_0::ePINACTIVE);
     }
-    xct_t::delete_lock_hierarchy(tcb()._lock_hierarchy);
+    if( tcb()._lock_hierarchy != 0 )
+    {
+        fprintf(stderr, "non-null _lock_hierarcy on join\n");
+        return RC(smlevel_0::eINTRANS);
+    }
     if( tcb()._sdesc_cache != 0 ) {
         fprintf(stderr, "non-null _sdesc_cache on join\n");
         return RC(smlevel_0::eINTRANS);
     }
-    xct_t::delete_xct_log_t(tcb()._xct_log);
+    if( tcb()._xct_log != NULL ) {
+        fprintf(stderr, "non-null _xct_log on join\n");
+        return RC(smlevel_0::eINTRANS);
+    }
 
     return rc;
 }
@@ -656,8 +657,8 @@ smthread_t::_dump(ostream &o) const
           o << "xct " << tcb().xct->tid() << endl;
         }
 // no output operator yet
-//        if(sdesc_cache()) {
-//          o << *sdesc_cache() ;
+//        if(tls_sdesc_cache()) {
+//          o << *tls_sdesc_cache() ;
 //        }
          o << endl;
 }

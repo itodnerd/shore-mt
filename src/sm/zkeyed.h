@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='ZKEYED_H'>
 
- $Id: zkeyed.h,v 1.34 2010/06/08 22:29:01 nhall Exp $
+ $Id: zkeyed.h,v 1.35 2012/01/02 17:02:17 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -69,8 +69,6 @@ public:
     rc_t            remove(slotid_t slot, bool compress=false);
     rc_t            shift(slotid_t snum, zkeyed_p* rsib, bool cmprs=false);
 
-    rc_t            shift(slotid_t snum, slotid_t snum_dest, zkeyed_p* rsib, bool cmprs=false);
-    
     /* gnu has a bug -- can't make this protected
      * TODO: see if this is still the case
      */
@@ -132,7 +130,9 @@ zkeyed_p::min_entry_size()const
     //
     // Count slot table entry too.
     */
-    return sizeof(slot_t) + align(2+ 1 + 2*sizeof(uint2_t));
+#define ZKEYED_P_MIN_ENTRY_SIZE \
+	(sizeof(slot_t) + align(2+ 1 + 2*sizeof(uint2_t)))
+    return ZKEYED_P_MIN_ENTRY_SIZE; 
 }
 
 /*--------------------------------------------------------------*
@@ -142,7 +142,9 @@ inline
 smsize_t            
 zkeyed_p::max_num_entries() const
 {
-    return  (smsize_t)(data_sz/min_entry_size());
+#define ZKEYED_P_MAX_NUM_ENTRIES  \
+    ((smsize_t)(data_sz/(ZKEYED_P_MIN_ENTRY_SIZE)))
+    return  ZKEYED_P_MAX_NUM_ENTRIES;
 }
 
 /*--------------------------------------------------------------*

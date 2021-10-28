@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore'>
 
- $Id: bf_core.cpp,v 1.64.2.26 2010/03/25 18:05:03 nhall Exp $
+ $Id: bf_core.cpp,v 1.82 2010/12/17 19:36:26 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -79,12 +79,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include <sstream>
 #include "w_hashing.h"
 #include "bf_htab.h"
-
-
-extern "C" void bfcore_stophere();
-void bfcore_stophere() 
-{
-}
 
 page_write_mutex_t page_write_mutex_t::page_write_mutex[page_write_mutex_t::PWM_COUNT];
 
@@ -159,10 +153,10 @@ void bfcb_t::unpin_frame() {
 
 // this function is important because of our rule that a page can 
 // become pinned (rather than becoming more pinned) iff the caller
-// holds the appropriate bucket mutex. This function lets threads pin
+// holds the appropriate bucket lock. This function lets threads pin
 // hot pages without breaking the rule.  
 // That is to say, the caller can either increase the pin count
-// or it can go back and grab the appropriate bucket mutex before
+// or it can go back and grab the appropriate bucket lock before
 // doing a first-time pin.
 // 
 // Returns false if it wasn't pinned (and still isn't);  
@@ -189,22 +183,6 @@ bool bfcb_t::pin_frame_if_pinned() {
         // if we get here it's because another thread raced in here,
         // and updated the pin count before we could.
         old_pin_cnt = orig_pin_cnt;
-    }
-}
-
-void bf_stop_here() {};
-
-void bf_stop(bfcb_t *p) 
-{
-    shpid_t pg(808);
-    static int i(0);
-    static int j(0);
-    static int k(0);
-
-    j = atomic_inc_nv(i);
-    if(p->pid().page ==pg || j == k) {
-        bf_stop_here();
-        cerr << "page " << pg << endl;
     }
 }
 
@@ -314,7 +292,7 @@ bf_core_m::latched_by_me( bfcb_t* p) const
 
 bool
 bf_core_m::force_my_dirty_old_pages(lpid_t const* /*wal_page*/) const {
-#warning TODO: actually look for dirty pages instead of just guessing they exist
+// #warning TODO: actually look for dirty pages instead of just guessing they exist
     return false;
 }
 
@@ -367,6 +345,11 @@ void bfcb_t::initialize(const char *const name,
                         )
 {
     _frame = bufpoolframe;
+#if W_DEBUG_LEVEL > 0
+    // Let's trash the frame in a recognizable way.
+    // We need to flush out bogus assertions; this will help.
+    (void) memset(bufpoolframe, 'f', SM_PAGESIZE); // 'f' is 0x66
+#endif
     _dirty = false;
     _pid = lpid_t::null;
     _rec_lsn = lsn_t::null;
@@ -537,7 +520,8 @@ bf_core_m::_in_htab(const bfcb_t* e) const
  *
  *********************************************************************/
 bool
-bf_core_m::get_cb(const bfpid_t& p, bfcb_t*& ret) const
+bf_core_m::get_cb(const bfpid_t& p, bfcb_t*& ret, bool keep_pinned
+        /*=false*/) const
 {
     ret = 0;
 
@@ -551,8 +535,8 @@ bf_core_m::get_cb(const bfpid_t& p, bfcb_t*& ret) const
     if (f)  {
         // if we found it at all, 
         // it should have already been pinned (by this thread)
-        w_assert2(f->pin_cnt() > 1);
-        f->unpin_frame(); // get rid of the extra pin
+        w_assert2(f->pin_cnt() > 0);
+        if(!keep_pinned) f->unpin_frame(); // get rid of the extra pin
         ret = f;
         return true;
     }
@@ -564,6 +548,7 @@ bf_core_m::get_cb(const bfpid_t& p, bfcb_t*& ret) const
 bfcb_t* bfcb_unused_list::take() {
     union {void* v; bfcb_t* b; } u = { pop() };
     if(u.b) {
+        w_assert1(u.b->pin_cnt() == 0);
         u.b->zero_pin_cnt();
         atomic_dec(_count);
     }
@@ -572,17 +557,12 @@ bfcb_t* bfcb_unused_list::take() {
 void bfcb_unused_list::release(bfcb_t* frame) 
 {
     w_assert9(!frame->dirty);
-    w_assert9(frame->pin_cnt == 0);
+    w_assert0(frame->pin_cnt() == 0);
     w_assert9(!frame->latch.is_latched());
 
     push(frame);
     atomic_inc(_count);
 }
-
-
-#if SM_PLP_TRACING
-static __thread timeval my_time;
-#endif
 
 
 /*********************************************************************
@@ -638,8 +618,11 @@ bf_core_m::grab(
     // and no longer freed in publish_partial.
     w_assert1(ret->latch.is_latched()); 
     w_assert1(ret->latch.is_mine());  // EX mode
+
+    // Not yet pinned.  Everywhere else we pin before latching; here we latch then pin.
     w_assert2(!ret->pin_cnt()); 
     ret->pin_frame(); 
+
     ret->check();  // EX mode so strong check
 
     /* now make sure the frame we want isn't already there. It could
@@ -670,9 +653,10 @@ bf_core_m::grab(
 
     /* See if the pid is in the hash table 
      * TODO: NANCY: WHY CAN'T WE JUST DO _htab->lookup()? DOCUMENT THIS
-     * From Ryan: this is because of the race BUG_HTAB_RACE,so perhaps if
-     * we fix the race we can use lookup() here.
-     * Perhaps this residents stuff has to do with
+     * From Ryan: this is because of the race BUG_HTAB_RACE (gnats #35)
+     * ...so perhaps if we fix the race we can use lookup() here.
+     *
+     * See 
      * Shore-MT paper, section 7.3 (page 10) 2nd paragraph, #19
      * */
     int i;
@@ -731,19 +715,7 @@ bf_core_m::grab(
         // (We acquired EX latch on the frame to cover the in-transit-in
         // case. All other fixers will await the release of the page latch.)
         ret->check(); // EX mode : should be strong check
-
-#if SM_PLP_TRACING
-        if (_ptrace_level>=PLP_TRACE_PAGE) {
-            gettimeofday(&my_time, NULL);
-            CRITICAL_SECTION(plpcs,_ptrace_lock);
-            _ptrace_out << pid << " " << pthread_self() << " " << ret->latch.mode() << " "
-                        << my_time.tv_sec << "." << my_time.tv_usec << endl;
-            plpcs.exit();
-        }
-#endif
-
         ret->latch.latch_release(); // PROTOCOL
-
         ret->unpin_frame();
         _unused.release(ret); // put on free list
         
@@ -778,6 +750,7 @@ bf_core_m::grab(
         // all bucket locks already released
         // use the replacement frame. It's latched in EX mode.
         p = ret;
+        w_assert2(pid.page != 0); // should never try to fix page 0
         p->set_pid (pid);
         // insert now tells us if something was moved, not evicted.
         // new htab cannot evict anyone.
@@ -785,8 +758,8 @@ bf_core_m::grab(
         cs.exit(); // PROTOCOL
     }
     w_assert2(
-	      found ? (ret->latch.mode() == mode) : (ret->latch.mode() == LATCH_EX || ret->latch.mode() == LATCH_NLX)
-	      ); 
+        found? (ret->latch.mode() == mode) : (ret->latch.mode() == LATCH_EX)
+    ); 
 
     return RCOK;
 }
@@ -798,7 +771,11 @@ bf_core_m::grab(
  *
  *  If page "pid" is cached, find() acquires a "mode" latch and returns,
  *  in "ret", a pointer to the associated bf control block; returns an
- *   error if the resource is not cached.
+ *   error if the resource is not cached (eFRAMENOTFOUND),
+ *   if we cannot latch it with the given timeout (stTIMEOUT)
+ *   if the pid given is bogus (e.g., eBADVOL)
+ *   or if it's cached and something's wrong with it, e.g.,eBADSTID
+ *
  *
  *********************************************************************/
 /*
@@ -816,7 +793,7 @@ bf_core_m::grab(
    there, and whether we could determine (with effort) that it will be
    there soon is irrelevant.
 
-   (c) If hte page is in transit, it could be a very long time (msec)
+   (c) If the page is in transit, it could be a very long time (msec)
    before the call returns, and half the time we will discover the
    page was in-transit-out anyway. It's not worth extra complexity
    (and bugs) to slow down the program unless we *really* need to.
@@ -841,10 +818,14 @@ bf_core_m::grab(
 w_rc_t 
 bf_core_m::find(
     bfcb_t*&          ret,
-    const bfpid_t&    _pid,
+    const bfpid_t&    _pid, // NOTE: vol and page identify frame; store ignored
     latch_mode_t      mode,
     timeout_in_ms     timeout,
     int4_t            ref_bit
+#if defined(EXPENSIVE_LATCH_COUNTS) && EXPENSIVE_LATCH_COUNTS>0
+        ,
+        base_stat_t*                  wait_stat /*= NULL*/
+#endif
 )
 {
     const bfpid_t        pid = _pid;
@@ -858,6 +839,11 @@ bf_core_m::find(
     if( (p=_htab->lookup(pid)) == NULL )
         return RC(eFRAMENOTFOUND);
     
+    DBGTHRD(<< "lookup page " << pid
+            << " returned frame " 
+            << ::hex << (unsigned long) (p->frame()) << ::dec
+            << " frame's pid " << p->frame()->pid
+            );
 
     w_assert2(p->pin_cnt() > 0);
     /*
@@ -870,42 +856,54 @@ bf_core_m::find(
 
     INC_TSTAT(bf_hit_cnt);
 
+#if defined(EXPENSIVE_LATCH_COUNTS) && EXPENSIVE_LATCH_COUNTS>0
+    int before = GET_STH_STATS(latch_uncondl_nowait);
+#endif
     w_rc_t rc = p->latch.latch_acquire(mode, timeout); // PROTOCOL
     if (rc.is_error())  {
+        // could be stINUSE if we already have the latch and
+        // this consitutes an upgrade. 
+        // else it could be stTIMEOUT
         /*
          *  Clean up and bail out.
          */
         p->unpin_frame();
         return RC_AUGMENT(rc);
     }
-
-    if(p->old_pid_valid() && p->old_pid() == pid) {
-        // this can only happen if we hit an in-transit-in page whose
-        // read failed. Hopefully the next grab() will work...
-        w_assert1(p->latch.held_by_me() >= 1); // a repin should never fail this way!
-        p->check(); // could be weak check
-
-#if SM_PLP_TRACING
-        if (_ptrace_level>=PLP_TRACE_PAGE) {
-            gettimeofday(&my_time, NULL);
-            CRITICAL_SECTION(plpcs,_ptrace_lock);
-            _ptrace_out << p->pid() << " " << pthread_self() << " "  << p->latch.mode() << " "
-                        << my_time.tv_sec << "." << my_time.tv_usec << endl;
-            plpcs.exit();
-        }
+#if defined(EXPENSIVE_LATCH_COUNTS) && EXPENSIVE_LATCH_COUNTS>0
+    int after = *(
+            (volatile base_stat_t *volatile)&(GET_STH_STATS(latch_uncondl_nowait)));
+    if((after > before) || (timeout == WAIT_IMMEDIATE)) {
+        // nowait 
+    } else {
+        // waited
+        INC_TSTAT(bf_hit_wait);
+        if(wait_stat) (*wait_stat)++;
+    }
 #endif
 
-        p->latch.latch_release(); // PROTOCOL
-
-        p->unpin_frame();
-        return RC(fcOS);
+    if(p->old_pid_valid() && p->old_pid() == pid) {
+        // a repin should never fail this way!
+        // We have it pinned, so from the time we found it
+        // in the htab via lookup and now, it should
+        // not have been possible for someone else to have
+        // removed it from the htab.
+        // And... it's removed from the htab before 
+        // old pid is made valid; and old pid is cleared
+        // before the frame is put back in the htab or back
+        // onto the free list (by grab())
+        W_FATAL_MSG(eINTERNAL, << "old pid valid in find() " << p->old_pid() );
     }
 
     ret = p;
-    w_assert2((pid == p->frame()->pid) && (pid == p->pid()));
+    w_assert2((pid == p->pid()));
+    // Moved this check to the caller because if the caller
+    // is a "no-read" case, it's b/c it's about to format the
+    // page and the pid in the frame could be anything.
+    // w_assert2((pid == p->frame()->pid) && (pid == p->pid()));
     w_assert1(p->latch.mode() >= mode); 
     w_assert1(p->latch.held_by_me() >= 1); // since mode is not NL
-    if(mode == LATCH_EX || mode == LATCH_NLX) {
+    if(mode == LATCH_EX) {
         w_assert1(p->latch.is_mine()); 
     }
     return RCOK;
@@ -924,55 +922,34 @@ bf_core_m::find(
  *
  */
 void
-bf_core_m::publish( bfcb_t* p, latch_mode_t mode, bool error_occurred)
+bf_core_m::publish( bfcb_t* p, latch_mode_t mode, const w_rc_t &error_occurred)
 {
-    
     /*
      *  Sanity checks
      */
     w_assert2(p - _buftab >= 0 && p - _buftab < _num_bufs);
     w_assert2(p->pin_cnt() > 0);
-    
-    
-    // mode is LATCH_NL in error case
-    w_assert2(!error_occurred || (mode == LATCH_NL &&  error_occurred));
-    w_assert2(p->latch.is_mine() || (!error_occurred && mode == LATCH_NL));
 
-    w_assert9(!p->old_pid_valid());
+
+    // mode is LATCH_NL in error case
+    w_assert2( (mode != LATCH_NL) || error_occurred.is_error()); 
+    w_assert2(p->latch.is_mine()); 
+    w_assert1(!p->old_pid_valid());
 
     /*
      *  If error, cancel request (i.e. release the latch).
      *  If there exist other requestors, leave the frame in the transit
      *  list, otherwise move it to the free list.
      */
-    if (error_occurred)  {
+    if (error_occurred.is_error())  {
         /* FRJ: the page is already in the htab, and there could
-           easily be other threads waiting on it at this point. We
-           need to set up a protocol where we flag the frame as bad,
-           but leave it in the bpool. Any new requestor will see the
-           "bad" mark and know to re-read. If that read fails, it will
-           publish the error again. Repeat until the read succeeds or
-           an admin notices that trx keep aborting...     
+           easily be other threads waiting on it at this point. 
          */
-        p->set_old_pid();
         
-        // FRJ: yes, there is!
-        //    cs.exit(); // no need to hold _mutex for this...
+        //cs.exit();// no need to hold _mutex for this...// FRJ: yes, there is!
         
         w_assert2(p->latch.is_mine());
-
-#if SM_PLP_TRACING
-        if (_ptrace_level>=PLP_TRACE_PAGE) {
-            gettimeofday(&my_time, NULL);
-            CRITICAL_SECTION(plpcs,_ptrace_lock);
-            _ptrace_out << p->pid() << " " << pthread_self() << " " << p->latch.mode() << " "
-                        << my_time.tv_sec << "." << my_time.tv_usec << endl;
-            plpcs.exit();
-        }
-#endif
-
         p->latch.latch_release(); // PROTOCOL
-
         p->unpin_frame(); // NEH: moved unpin here after latch release,
         // since the protocol seems to be: 
         // pin, then acquire latch
@@ -983,25 +960,16 @@ bf_core_m::publish( bfcb_t* p, latch_mode_t mode, bool error_occurred)
         // downgrade the latch to whatever mode we actually wanted
         if(mode == LATCH_SH)  {
             p->latch.downgrade(); // PROTOCOL
-        } else if(mode == LATCH_EX) {
+        }
+        else if(mode == LATCH_EX) {
             // do nothing
-        } else if(mode == LATCH_NL) {
+        }
+        else if(mode == LATCH_NL)  {
             // is this really allowed?
             // Do we need to unpin the frame here?
             // The assertion will tell us if this ever happens.
             w_assert0(false);
-	    p->latch.latch_release(); // PROTOCOL
-        } else if(mode == LATCH_NLX || mode == LATCH_NLS) { // pin: for plp
-#if SM_PLP_TRACING
-	    if (_ptrace_level>=PLP_TRACE_PAGE) {
-		gettimeofday(&my_time, NULL);
-		CRITICAL_SECTION(plpcs,_ptrace_lock);
-		_ptrace_out << p->pid() << " " << pthread_self() << " "
-			    << p->latch.mode() << " "
-			    << my_time.tv_sec << "." << my_time.tv_usec << endl;
-		plpcs.exit();
-	    }
-#endif	   	
+            p->latch.latch_release(); // PROTOCOL
         }
     }
 }
@@ -1163,6 +1131,7 @@ bf_core_m::pin(bfcb_t* p, latch_mode_t mode)
     w_rc_t rc = p->latch.latch_acquire(mode) ; // PROTOCOL
     p->check();
     w_assert1(p->pin_cnt() > 0);
+
     return rc;    
 }
 
@@ -1199,12 +1168,12 @@ bf_core_m::unpin(bfcb_t*& p, int ref_bit, bool W_IFDEBUG4(in_htab))
 {
 
     w_assert3(ref_bit >= 0);
-    w_assert9(p - _buftab >= 0 && p - _buftab < _num_bufs);
+    w_assert3(p - _buftab >= 0 && p - _buftab < _num_bufs);
     w_assert9(!in_htab || _in_htab(p));
     w_assert1(p->pin_cnt() > 0);
 
     /*  
-     * if we were given a hit about the page's
+     * if we were given a hint about the page's
      * about-to-be-referenced-ness, apply it.
      * but o.w., don't make it referenced. (That
      * shouldn't happen in unfix().)
@@ -1227,8 +1196,15 @@ bf_core_m::unpin(bfcb_t*& p, int ref_bit, bool W_IFDEBUG4(in_htab))
     // LSN integrity checks (only if really unpinning)
     if(p->pin_cnt() == 1) {
         if(p->dirty()) {
-            w_assert1(p->curr_rec_lsn().valid());
-            // We must maintain this invariant else we'll never be
+            // NOTE: this assertion is racy: we just checked dirty, but
+            // before we can check the rec_lsn, it could have been
+            // cleaned, if we have an SH latch.
+            // w_assert1(
+            //       p->curr_rec_lsn().valid() || !smlevel_0::logging_enabled
+            //     || !p->dirty()
+            //   );
+
+            // We must maintain the following invariant else we'll never be
             // able to debug recovery issues.
             // HOWEVER there are some legit exceptions
             // 1) we are in the redo part of recovery, and we
@@ -1307,8 +1283,11 @@ bf_core_m::unpin(bfcb_t*& p, int ref_bit, bool W_IFDEBUG4(in_htab))
         }
     }
           
-    w_assert1(p->latch.held_by_me()); //NEH: changed to assert1
+    w_assert1(p->latch.held_by_me()); 
     p->check();
+
+    DBGTHRD(<<"unpin frame " << ::hex << (unsigned long) (p->frame()) << ::dec
+            << " frame's pid " << p->frame()->pid);
 
     /* FRJ: CLEAN_REC_LSN_RACE arises (at least partly) because we
        would unlatch pages before unpinning. 
@@ -1317,18 +1296,7 @@ bf_core_m::unpin(bfcb_t*& p, int ref_bit, bool W_IFDEBUG4(in_htab))
        See also comments in bf.cpp; search for CLEAN_REC_LSN_RACE
      */
     p->unpin_frame(); // atomic decrement
-
-#if SM_PLP_TRACING
-        if (_ptrace_level>=PLP_TRACE_PAGE) {
-            gettimeofday(&my_time, NULL);
-            CRITICAL_SECTION(plpcs,_ptrace_lock);
-            _ptrace_out << p->pid() << " " << pthread_self() << " " << p->latch.mode() << " "
-                        << my_time.tv_sec << "." << my_time.tv_usec << endl;
-            plpcs.exit();
-        }
-#endif
-
-    p->latch.latch_release(); // PROTOCOL
+    (void) p->latch.latch_release(); // PROTOCOL
 
     // prevent future use of p
     p = 0;
@@ -1347,7 +1315,7 @@ rc_t
 bf_core_m::_remove(bfcb_t*& p)
 {
     w_assert9(p - _buftab >= 0 && p - _buftab < _num_bufs);
-    w_assert9(_in_htab(p));
+    w_assert2(_in_htab(p));
 
     w_assert2(p->latch.is_mine());
     w_assert2(p->latch.latch_cnt() == 1);
@@ -1397,16 +1365,6 @@ bf_core_m::_remove(bfcb_t*& p)
             if(b.get_frame(p->pid()) != p)
                 continue; // cuckoo!
 
-#if SM_PLP_TRACING
-        if (_ptrace_level>=PLP_TRACE_PAGE) {
-            gettimeofday(&my_time, NULL);
-            CRITICAL_SECTION(plpcs,_ptrace_lock);
-            _ptrace_out << p->pid() << " " << pthread_self() << " " << p->latch.mode() << " "
-                        << my_time.tv_sec << "." << my_time.tv_usec << endl;
-            plpcs.exit();
-        }
-#endif
-
             p->latch.latch_release(); // PROTOCOL
             p->unpin_frame(); // adjust pin count; so the 
             // remove can succeed; we still hold the lock
@@ -1422,10 +1380,7 @@ bf_core_m::_remove(bfcb_t*& p)
                 // case a file is being destroyed while the bf cleaner
                 // is trying to write out its dirty pages. The
                 // destroying thread gets here, trying to discard
-                // the pages.  Note that in this case, 
-                // the flushing thread is doing I/O and so it could
-                // take quite a while before it frees up this
-                // page for removal.
+                // the pages.  
                 // If the page doesn't get removed from the buffer 
                 // pool, it's not the end of the world; it'll get
                 // thrown out eventually.
@@ -1433,20 +1388,10 @@ bf_core_m::_remove(bfcb_t*& p)
                 return RC(eHOTPAGE);
             }
             
-            p->clear();
+            p->clear_bfcb();
             break;
         }
         if(i == PATIENCE) {
-
-#if SM_PLP_TRACING
-        if (_ptrace_level>=PLP_TRACE_PAGE) {
-            gettimeofday(&my_time, NULL);
-            CRITICAL_SECTION(plpcs,_ptrace_lock);
-            _ptrace_out << p->pid() << " " << pthread_self() << " " << p->latch.mode() << " "
-                        << my_time.tv_sec << "." << my_time.tv_usec << endl;
-            plpcs.exit();
-        }
-#endif
             // oh well...
             p->latch.latch_release(); // PROTOCOL
             p->unpin_frame();  // adjust pin count
@@ -1472,6 +1417,9 @@ bool bf_core_m::can_replace(bfcb_t* p, int rounds)
      * pin_cnt supercedes the latch -- anyone who holds the latch has
      * incremented pin_cnt (as well as anybody trying to acquire the
      * latch).
+     * NEH: well, that's not strictly true, however, it's true for
+     * frames that are in the hash table,and we call this only for
+     * frames in the hash table.
      */
     bool found =false;
     if(!p->pin_cnt() && !p->old_rec_lsn().valid()) {
@@ -1536,12 +1484,14 @@ bool bf_core_m::can_replace(bfcb_t* p, int rounds)
  *  as in-transit-out and must be flushed if dirty.
  *
  *  When this method is finished, the caller does not hold any
- *  synchronization lock; what it returns is either taken from the
+ *  synchronization lock (except an EX latch on the frame); 
+ *  what it returns is either taken from the
  *  _unused list (in which case, it's no longer accessible to another
  *  thread), or it's taken  out of the hash table and put into the
  *  in-transit-out table.  
  *  Preference is given to non-dirty pages.
  *
+ * The frame is not pinned.  Just EX-latched.
  *
  *********************************************************************/
 bfcb_t* 
@@ -1557,6 +1507,7 @@ bf_core_m::replacement()
         p->clr_old_pid();
         p->mark_clean();
         w_assert1 (! _in_htab(p)); // Not in hash table
+        INC_TSTAT(bf_replaced_unused);
         
         // Get the latch just so that we are consistently
         // returning with the EX latch; this allows all the
@@ -1641,6 +1592,7 @@ bf_core_m::replacement()
                 
                 /*
                  *  Unsuccessful. Decrement ref count. Try next entry.
+                 *  Note that this is racy.  It's an approximation.
                  */
                 if (p->refbit()>0) p->decr_refbit();
                 w_assert3(p->refbit() >= 0);
@@ -1740,17 +1692,6 @@ bf_core_m::replacement()
                         return p;
                     }
                 }
-
-#if SM_PLP_TRACING
-        if (_ptrace_level>=PLP_TRACE_PAGE) {
-            gettimeofday(&my_time, NULL);
-            CRITICAL_SECTION(plpcs,_ptrace_lock);
-            _ptrace_out << p->pid() << " " << pthread_self() << " " << p->latch.mode() << " "
-                        << my_time.tv_sec << "." << my_time.tv_usec << endl;
-            plpcs.exit();
-        }
-#endif
-
                 p->latch.latch_release();
             } 
             // We didn't acquire the latch if rc.is_error
@@ -1790,8 +1731,8 @@ bf_core_m::audit() const
         w_assert2(b._lock.is_mine());
 
         bool found=false;
-        for(int i=0; i < b._count; i++) {
-            if (b._slots[i] == p)  {
+        for(int j=0; j < b._count; j++) {
+            if (b._slots[j] == p)  {
                 found = true;
                 w_assert2(p->hash() == idx);
                 w_assert2(_in_htab(p));

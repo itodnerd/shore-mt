@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='STID_T_H'>
 
- $Id: store_latch_manager.cpp,v 1.2 2010/05/26 01:20:12 nhall Exp $
+ $Id: store_latch_manager.cpp,v 1.3 2010/12/08 17:37:34 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -60,7 +60,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 // This business is to allow us to switch from one kind of
 // lock to another with more ease.
-#if defined(USE_OCC_LOCK_HERE)
+#if defined(USE_OCC_LOCK_SLMGR)
 #define OCCWRITE .write_lock()
 #define OCCREAD .read_lock()
 #else
@@ -86,7 +86,7 @@ latch_t &store_latch_manager::find_latch(stid_t const &store)
         CRITICAL_SECTION(cs, _latch_lock OCCREAD);
         latch_map::iterator pos=_latches.find(store);
         if(pos != _latches.end()) {
-            stid_t MAYBE_UNUSED xxx = pos->first;
+            stid_t xxx = pos->first;
             w_assert1(store==xxx);
             latch=pos->second;
             return *latch; 

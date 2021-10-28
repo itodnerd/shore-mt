@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: btree.21,v 1.11.4.1 2009/10/27 16:44:47 nhall Exp $
+#  $Id: btree.21,v 1.14 2010/08/03 14:24:48 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -36,13 +36,12 @@
 #
 # start up
 #
+set_config_info
+set keylen [expr $max_btree_entry_size/4 ]
 
 echo
-echo RUNNING: btree.21  WARNING: This is long...
+echo RUNNING: btree.21  with keylen, elemlen $keylen WARNING: This is long...
 
-set keylen  2000
-set elemlen  2000
+# set keylen  2000
+# set elemlen  2000
 source $script_dir/btree.2
-
-source $script_dir/vol.init
-

@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: sm_du_stats.cpp,v 1.31 2010/06/15 17:30:07 nhall Exp $
+ $Id: sm_du_stats.cpp,v 1.32 2010/12/08 17:37:43 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -50,10 +50,12 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include "sm_int_1.h"
 #include "sm_du_stats.h"
 
-#if W_DEBUG_LEVEL>=0
-#define DEBUG_GNATS_77 1
+#if W_DEBUG_LEVEL>0
+#define DEBUG_GNATS_77 0
 // This prints the failures to cerr rather than requiring that
 // the debugging be turned on in a trace-enabled build.
+// This bug was a complex combination of things; see the gnats report.
+// We'll leave in the debugging aid.
 #endif
 
 // This function is a convenient debugging breakpoint for
@@ -1020,11 +1022,13 @@ sm_du_stats_t::audit() const
             file.lgindex_pg_cnt // index pages encountered for t_large_1,2
             );
 
+#if DEBUG_GNATS_77 || defined(W_TRACE)
     // separate out unlink_pg_cnts - they are included in the unalloc_pg_cnt
     base_stat_t unlink_pg_cnt3 = 
              btree.unlink_pg_cnt + // unlinked in user btrees
              volume_map.unlink_pg_cnt() // unlinked in root dir and store dir
              ;
+#endif
 
     base_stat_t alloc_and_unalloc_cnt = alloc_pg_cnt2 + unalloc_pg_cnt;
     

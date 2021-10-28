@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='RTREE_H'>
 
- $Id: rtree.h,v 1.75 2010/05/26 01:20:41 nhall Exp $
+ $Id: rtree.h,v 1.77 2010/12/08 17:37:43 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -128,7 +128,10 @@ public:
     bool&                     eof,
     bool                 skip);
 
-    static rc_t            print(const lpid_t& root);
+    static rc_t            print(const lpid_t& root, ostream &f);
+#ifdef RTREE_DEBUG_PRINT_LEAVES
+    static rc_t            print_leaves(const lpid_t& root);
+#endif
 
     static rc_t            draw(
     const lpid_t&             root,

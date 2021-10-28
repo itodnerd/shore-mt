@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: vec_t.cpp,v 1.74.2.6 2010/03/19 22:19:19 nhall Exp $
+ $Id: vec_t.cpp,v 1.77 2012/01/02 17:02:10 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -346,32 +346,6 @@ vec_t& vec_t::copy_from(const cvec_t& ss, size_t offset, size_t limit, size_t my
     return *this;
 }
 
-#ifdef UNDEF
-void cvec_t::common_prefix(
-    const cvec_t& v1,
-    const cvec_t& v2,
-    cvec_t& ret)
-{
-    size_t l1 = v1.size();
-    size_t l2 = v2.size();
-    int i1 = 0;
-    int i2 = 0;
-    int j1 = 0;
-    int j2 = 0;
-
-    while (l1 && l2) {
-        if (v1._ptr[i1][j1] - v2._ptr[i2][j2])  break;
-        if (++j1 >= v1._len[i1])        { j1 = 0; ++i1; }
-        if (++j2 >= v2._len[i2])        { j2 = 0; ++i2; }
-        --l1, --l2;
-    }
-
-    if (l1 < v1.size())  {
-        ret.put(v1, 0, v1.size() - l1);
-    }
-}
-#endif /*UNDEF*/
-
 cvec_t& cvec_t::put(const cvec_t& v)
 {
     w_assert1(! is_pos_inf() && ! is_neg_inf());
@@ -496,25 +470,38 @@ int cvec_t::checksum() const
     return sum;
 }
 
+
+// hash functions back-ported from Foster B-tree
+cvec_t::u32 cvec_t::convert64_32 (cvec_t::u64 num) {
+    return ((uint32_t) (num >> 32)) ^ ((uint32_t) (num & 0xFFFFFFFF));
+}
+
+void cvec_t::_calc_kvl(u32 seed, w_base_t::uint4_t& rh) const
+{
+    // simple iterative multiply-sum method on byte-by-byte 
+	// (safe on every architecture)
+	// [Why not use w_hashing functions?  They don't work on arbitrary-length
+	// byte strings.]
+    u64 ret = 0;
+    for (int i = 0; i < _cnt; i++)  {
+        const unsigned char* str = _base[i].ptr;
+        int32_t len = _base[i].len;
+        for (int16_t i = 0; i < len; ++i) {
+            ret = seed * ret + str[i];
+        }
+    }
+    rh = convert64_32(ret);
+}
+const uint32_t CALC_KVL_MULT_1 = 0xD04C3175;
+const uint32_t CALC_KVL_MULT_2 = 0x53DA9022;
+
 void cvec_t::calc_kvl(w_base_t::uint4_t& rh) const
 {
-    if (size() <= sizeof(w_base_t::uint4_t))  {
-        rh = 0;
-        copy_to(&rh, size());
-    } else {
-        w_base_t::uint4_t h = 0;
-        for (int i = 0; i < _cnt; i++)  {
-            const unsigned char* s = _base[i].ptr;
-            for (size_t j = 0; j < _base[i].len; j++)  {
-                if (h & 0xf8000000)  
-                {
-                    h = (h & ~0xf8000000) + (h >> 27);
-                }
-                h = (h << 5) + *s++;
-            }
-        }
-        rh = h;
-    }
+    _calc_kvl (CALC_KVL_MULT_1, rh);
+}
+void cvec_t::calc_kvl2(w_base_t::uint4_t& rh) const
+{
+    _calc_kvl (CALC_KVL_MULT_2, rh);
 }
 
 void cvec_t::_grow(int total_cnt)

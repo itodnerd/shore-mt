@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='SDISK_UNIX_H'>
 
- $Id: sdisk_unix.h,v 1.8.2.8 2010/03/25 18:04:41 nhall Exp $
+ $Id: sdisk_unix.h,v 1.9 2010/05/26 01:21:29 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -48,7 +48,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 /**\cond skip */
 class sdisk_unix_t : public sdisk_t {
     int    _fd;
-    int _flags;
     char _path[256];
 
     enum    { FD_NONE = -1 };

@@ -26,7 +26,7 @@
 
 #include <atomic_templates.h>
 
-// for placement new support, which users need
+// for placement new support, which some users need
 #include <new>
 #include <cassert>
 #include <stdlib.h>
@@ -35,6 +35,11 @@
 
 /** \brief A thread-safe memory pool based on the atomic container, used by
  * atomic_class_pool.
+ *
+ * \note this code is \e not used by 
+ * the storage manager (or maintained) anymore. The
+ * code is still distributed with releases only because it is used by an 
+ * important client, the "kits" distributed by DIAS.
  *
  * Creates a new atomic_container with \e seed pre-allocated
  * untyped items of size \e nbytes each.
@@ -94,6 +99,11 @@ inline void operator delete(void* ptr, atomic_class_pool<T>& pool);
 
 /** \brief A thread-safe memory pool for typed objects, based on atomic_preallocated_pool.
  *
+ * \note this code is \e not used by 
+ * the storage manager (or maintained) anymore. The
+ * code is still distributed with releases only because it is used by an 
+ * important client, the "kits" distributed by DIAS.
+ *
  * Provides a replacement for new/delete on the specific class. Note
  * that there's actually no way to prevent the user from allocating
  * whatever they want, but they will be unable to destroy anything but
@@ -117,6 +127,11 @@ struct atomic_class_pool : protected atomic_preallocated_pool {
      * T is a base class and this pool is to be used with subclasses,
      * nbytes must be set at least as large as the largest
      * class. Oversized allocations will assert().
+	 * 
+	 * \note this code is \e not used by 
+	 * the storage manager (or maintained) anymore. The
+	 * code is still distributed with releases only because it is used by an 
+	 * important client, the "kits" distributed by DIAS.
      */
     atomic_class_pool(long nbytes=sizeof(T), long seed=128)
         : atomic_preallocated_pool(nbytes, seed)
@@ -128,6 +143,11 @@ struct atomic_class_pool : protected atomic_preallocated_pool {
      *
      * Undefined behavior results if the object did not come from this
      * pool.
+	 * 
+	 * \note this code is \e not used by 
+	 * the storage manager (or maintained) anymore. The
+	 * code is still distributed with releases only because it is used by an 
+	 * important client, the "kits" distributed by DIAS.
      */
     void destroy(T* tptr) {
         // avoid pointer aliasing problems with the optimizer
@@ -148,8 +168,13 @@ struct atomic_class_pool : protected atomic_preallocated_pool {
 };
 
 /** \brief WARNING: When finished, call pool.destroy(t) instead of delete.
+ * 
+ * \note this code is \e not used by 
+ * the storage manager (or maintained) anymore. The
+ * code is still distributed with releases only because it is used by an 
+ * important client, the "kits" distributed by DIAS.
  *
- * NOTE: use placement-style new with the pool. 
+ * \note use placement-style new with the pool. 
  * \code 
  * usage: T* t = new(pool) T(...)
  * \endcode
@@ -161,9 +186,13 @@ inline void* operator new(size_t nbytes, atomic_class_pool<T>& pool) {
     return pool.alloc();
 }
 
-/** Called automatically by the compiler if T's constructor throws
+/**\brief Called automatically by the compiler if T's constructor throws
  * (otherwise memory would leak).
  *
+ * \note this code is \e not used by 
+ * the storage manager (or maintained) anymore. The
+ * code is still distributed with releases only because it is used by an 
+ * important client, the "kits" distributed by DIAS.
  *
  * Unfortunately, there is no "delete(pool)" syntax in C++ so the user
  * must still call pool.destroy()

@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='VOL_H'>
 
- $Id: vol.h,v 1.98 2010/06/08 22:28:57 nhall Exp $
+ $Id: vol.h,v 1.105 2010/11/08 15:07:10 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -136,7 +136,7 @@ class vol_t : public smlevel_1
 {
 public:
     /*WARNING: THIS CODE MUST MATCH THAT IN sm_io.h!!! */
-    typedef mcs_rwlock VolumeLock;
+    typedef srwlock_t  VolumeLock;
     typedef void *     lock_state;
     
     NORET               vol_t(const bool apply_fake_io_latency = false, 
@@ -164,19 +164,21 @@ public:
     bool                is_valid_page_num(const lpid_t& p) const;
     bool                is_valid_store(snum_t f) const;
     bool                is_alloc_ext_of(extnum_t e, snum_t s)const;
-    bool                is_alloc_page(const lpid_t& p) const;
-    bool                is_alloc_page_of(const lpid_t& p, snum_t s) const {
-                                return _is_alloc_page_of(p, s);
-                        }
+    rc_t                is_alloc_page_of(const lpid_t& p, snum_t s, 
+                                bool& result) const {
+                                    return _is_alloc_page_of(p, s, result);
+                                }
 
     // used by io_m: must hold volume mutex
-    bool                is_valid_page_of(const lpid_t& p, snum_t s) const {
-                            return _is_valid_page_of(p,s);
-                        }
+    rc_t                is_valid_page_of(const lpid_t& p, snum_t s,
+                                bool& result) const {
+                                    return _is_valid_page_of(p,s, result);
+                                }
 private:
-    bool                _is_alloc_page_of(const lpid_t& p, snum_t s, 
-                                bool use_cache=true) const ;
-    bool                _is_valid_page_of(const lpid_t& p, snum_t s) const;
+    rc_t                _is_alloc_page_of(const lpid_t& p, snum_t s, 
+                                         bool& result) const ;
+    rc_t                _is_valid_page_of(const lpid_t& p, snum_t s,
+                                         bool& result) const;
 
 public:
     bool                is_alloc_store(snum_t f) const;
@@ -193,7 +195,7 @@ public:
         page_s&             buf);
 
     rc_t            alloc_pages_in_ext(
-		alloc_page_filter_t *filter,
+        alloc_page_filter_t *filter,
         bool                append_only,
         extnum_t            ext, 
         int                 eff,
@@ -215,7 +217,7 @@ public:
     rc_t            store_operation(const store_operation_param&    param);
     rc_t            free_stores_during_recovery(store_deleting_t typeToRecover);
     rc_t            free_exts_during_recovery();
-    rc_t            free_page(const lpid_t& pid, bool check_store_membership);
+    rc_t            free_page(const lpid_t& pid);
     rc_t            find_free_exts(
         uint                 cnt,
         extnum_t             exts[],
@@ -232,7 +234,7 @@ public:
 
 
     rc_t            update_ext_histo(const lpid_t& pid, space_bucket_t b);
-    rc_t            next_ext(extnum_t ext, extnum_t &res);
+    rc_t            get_next_ext(extnum_t ext, extnum_t &res);
     rc_t            dump_exts(ostream &, extnum_t start, extnum_t end);
     rc_t            dump_stores(ostream &, int start, int end);
 
@@ -251,7 +253,8 @@ public:
         bool                   sync_volume);
     rc_t            get_store_flags(
         snum_t                 fnum,
-        store_flag_t&          flags);
+        store_flag_t&          flags,
+        bool                   ok_if_deleting);
     rc_t            free_store(
         snum_t                fnum,
         bool                  acquire_lock);
@@ -434,37 +437,24 @@ private:
     static extnum_t  pid2ext(shpid_t p);
  private:
 
-    // _ext_cache: entries extnum_t  -> snum_t indicate
-    // that the given extent is allocated to the given store. 
-    // The purpose of the cache is to bypass latching the extent map
-    // pages for inspection to find out if an extent or page is allocated
-    // to a given store.
-    // This is use by histograms.
-    typedef std::pair<extnum_t, snum_t> ext2store_entry;
-    typedef std::list<ext2store_entry > histo_extent_cache;
-    enum { EXT_CACHE_SIZE=16 };
-    mutable histo_extent_cache     _histo_ext_cache;
-    histo_extent_cache::iterator   histo_ext_cache_find(extnum_t ext) const;
-    void                           histo_ext_cache_update(
-                                      extnum_t ext, snum_t s) const;
-    void                           histo_ext_cache_erase(snum_t s) const;
 
     // _last_page_cache: entries snum_t  -> extnum_t indicates
     // the given store's last extent in physical order.
+    //
     // The purpose of the cache is to bypass searches of the store
     // list to find the last page or last extent of the store.
     // NOTE: it is NOT the same as the last-referenced-extent cache, nor
     // is it the last-allocated-page, since that could be in the middle
     // of the file.
-    typedef std::map<snum_t, extnum_t> page_cache;
-    mutable page_cache       _last_page_cache;
+    typedef std::map<snum_t, extnum_t> page_cache_t;
+    mutable page_cache_t     _last_page_cache;
     extnum_t                 page_cache_find(
                                 snum_t snum,
                                 extlink_i &ei, 
                                 const extlink_t * &linkp
                              ) const;
-    void                     page_cache_update(snum_t snum, extnum_t e) const ;
  private:
+    void                     _page_cache_update(snum_t snum, extnum_t e) const ;
     bool                     _page_cache_find(snum_t s) const {
                                 return ( _last_page_cache[s] != 0);
                             }
@@ -486,17 +476,23 @@ private:
      * This corresponds to the change described in 6.2.2 (page 8) of the
      * Shore-MT paper
      */
-    class ext_cache_t 
+    class ext_cache_t  // should be renamed resvd_page_cache_t
     {
         struct ext_info {
             snum_t snum; // store
             extnum_t ext; // extent number
             ext_info(snum_t s, extnum_t e) : snum(s), ext(e) { }
 
-            bool operator <(ext_info const &other) const {
+            // comparison operator *must* sort on store first,
+            // so that we can iterate over all extents in a single
+            // store, starting with lower_bound(snum).
+            bool operator <(ext_info const &other) const 
+            {
                 compare_snum_t comp;
+                // first sort on store number
                 if(comp(snum, other.snum)) return true;
                 if(comp(other.snum, snum)) return false;
+                // then on extent number
                 return ext < other.ext;
             }
         };
@@ -526,16 +522,17 @@ private:
 
     }; 
  private:
-    ext_cache_t              _free_ext_cache;
+    // caches, for each store, extents in the store that contain free pages.
+    // Maintained in both vol_t and io_m, used mostly in io_m.
+    ext_cache_t              _resvd_page_cache;
+    volatile snum_t          _min_free_store;
  public:
-    void                     shutdown() {   _free_ext_cache.shutdown(); 
+    void                     shutdown() {   _resvd_page_cache.shutdown(); 
                                             _last_page_cache.clear();
-                                            _histo_ext_cache.clear(); 
                                         }
     void                     shutdown(snum_t s) {   
-                                            _free_ext_cache.erase_all(s); 
+                                            _resvd_page_cache.erase_all(s); 
                                             _last_page_cache.erase(s);
-                                            histo_ext_cache_erase(s); 
                                         }
 
     // Is the volume's reserved-page cache primed?
@@ -554,7 +551,9 @@ private:
     w_rc_t                   prime_cache(snum_t s);
 
     // cache of reserved pages in extents by store number:
-    ext_cache_t&             free_ext_cache() { return _free_ext_cache; }
+    // Maintained in both vol_t and io_m, used mostly
+    // in io_m.
+    ext_cache_t&             resvd_page_cache() { return _resvd_page_cache; }
 
 
     static const char*       prolog[]; // string array for volume hdr
@@ -579,7 +578,9 @@ private:
 inline vol_t::vol_t(const bool apply_fake_io_latency, const int fake_disk_latency) 
              : _unix_fd(-1), _min_free_ext_num(1),
                _apply_fake_disk_latency(apply_fake_io_latency), 
-               _fake_disk_latency(fake_disk_latency) // IP: default fake io values
+               _fake_disk_latency(fake_disk_latency),
+               // IP: default fake io values
+               _min_free_store(1)
 {}
 
 inline vol_t::~vol_t() { 
@@ -607,7 +608,7 @@ inline extnum_t vol_t::pid2ext(shpid_t p)
 
 inline shpid_t vol_t::ext2pid(extnum_t ext) 
 {
-	    // Make sure we convert from the extnum_t to the shpid_t before
+        // Make sure we convert from the extnum_t to the shpid_t before
     // multiplying (for larger page sizes than we now support...):
     shpid_t tmp = ext;
     return tmp * ext_sz; 
@@ -658,7 +659,7 @@ inline bool vol_t::is_valid_store(snum_t f) const
 
     return (f < _num_exts );
 }
-	
+    
 /*<std-footer incl-file-exclusion='VOL_H'>  -- do not edit anything below this line -- */
 
 #endif          /*</std-footer>*/

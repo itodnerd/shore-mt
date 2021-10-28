@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='XCT_DEPENDENT_H'>
 
- $Id: xct_dependent.h,v 1.8 2010/06/08 22:28:59 nhall Exp $
+ $Id: xct_dependent.h,v 1.9 2010/06/21 20:39:39 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

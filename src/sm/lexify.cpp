@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: lexify.cpp,v 1.35.2.5 2010/02/05 20:39:45 nhall Exp $
+ $Id: lexify.cpp,v 1.37 2010/12/08 17:37:42 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -736,10 +736,6 @@ sortorder::unlexify(
         // should be at least 4-byte aligned
         // architectures' alignment requirements
         // for doubles might differ.
-#ifdef BOLO_DEBUG
-        if (((ptrdiff_t)res & ALIGN_MASK_F8))
-        cerr << "f8 unaligned " << res << endl;
-#endif
         w_assert3(((ptrdiff_t)res & ALIGN_MASK_F8) == 0x0);
         dbl_unlexify(str, Dperm, (f8_t *)res);
         break;

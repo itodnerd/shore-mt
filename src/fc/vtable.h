@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='VTABLE_INFO_H'>
 
- $Id: vtable.h,v 1.2 2010/05/26 01:20:23 nhall Exp $
+ $Id: vtable.h,v 1.4 2010/07/07 20:50:12 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -58,7 +58,7 @@ private:
     int            _in_use;
     char           *_list;
     char           *_list_end;
-    char*          _entry[1];
+    char           *_entry[1];
 
 public:
     // Must construct a row with at least 1 attribute.
@@ -122,7 +122,7 @@ public:
             int bytes = sizeof(_entry[0]) * additional;
 
             // move the data. args: dest, src, amt
-            memmove((void *)&_list[additional], (void *)&_list[0], bytes);
+            memmove(&_list[additional], &_list[0], bytes);
             for(int i=N; i < n; i++) {
                 _entry[i] = 0;
             }

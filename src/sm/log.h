@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='LOG_H'>
 
- $Id: log.h,v 1.82 2010/06/15 17:30:07 nhall Exp $
+ $Id: log.h,v 1.86 2010/08/03 14:24:46 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -124,11 +124,11 @@ protected:
                             bool&  old_style
                             );
     void                _make_master_name(
-        const lsn_t&        master_lsn, 
-        const lsn_t&        min_chkpt_rec_lsn,
-        char*               buf,
-        int                 bufsz,
-        bool                old_style = false);
+                            const lsn_t&        master_lsn, 
+                            const lsn_t&        min_chkpt_rec_lsn,
+                            char*               buf,
+                            int                 bufsz,
+                            bool                old_style = false);
 
 public:
     // public for use in xct_impl in log-full handling... 
@@ -147,34 +147,34 @@ public:
 private:
     /**\brief Helper for _write_master */
     static void         _create_master_chkpt_contents(
-                                    ostream&        s,
-                                    int             arraysize,
-                                    const lsn_t*    array
-                                    );
+                            ostream&        s,
+                            int             arraysize,
+                            const lsn_t*    array
+                            );
 
     /**\brief Helper for _make_master_name */
     static void         _create_master_chkpt_string(
                             ostream&        o,
-                            int                arraysize,
-                            const lsn_t* array,
-                            bool        old_style = false
+                            int             arraysize,
+                            const lsn_t*    array,
+                            bool            old_style = false
                             );
 
     /**\brief Helper for _read_master */
     static rc_t         _parse_master_chkpt_contents(
-                            istream&        s,
-                            int&        listlength,
+                            istream&      s,
+                            int&          listlength,
                             lsn_t*        lsnlist
                             );
 
     /**\brief Helper for _read_master */
     static rc_t         _parse_master_chkpt_string(
-                            istream&         s,
+                            istream&      s,
                             lsn_t&        master_lsn,
                             lsn_t&        min_chkpt_rec_lsn,
-                            int&        number_of_others,
+                            int&          number_of_others,
                             lsn_t*        others,
-                            bool&        old_style
+                            bool&         old_style
                             );
 
     /**\brief Helper for parse_master_chkpt_string */
@@ -183,7 +183,7 @@ private:
                             uint4_t        minor
                             );
     // helper for set_master
-    void            _write_master(lsn_t l, lsn_t min);
+    void                _write_master(const lsn_t &l, const lsn_t &min);
 
 
 public:
@@ -200,9 +200,6 @@ protected:
 public:
 
 
-    static rc_t set_log_features(char const* features);
-    static char const* get_log_features();
-    
     /**\brief Create a log manager
      * @param[out] the_log
      * @param[in] path  Absolute or relative path name for directory of 
@@ -239,6 +236,7 @@ public:
      * Used by xct_impl for error-reporting. 
      */
     fileoff_t           space_left() const { return *&_space_available; }
+    fileoff_t           space_for_chkpt() const { return *&_space_rsvd_for_chkpt ; }
 
     /**\brief Return name of log file for given partition number.
      * \details
@@ -296,15 +294,17 @@ public:
                         }
 
     // not called from the implementation:
-    rc_t        scavenge(lsn_t min_rec_lsn, lsn_t min_xct_lsn);
-    rc_t        insert(logrec_t &r, lsn_t* ret);
-    rc_t        compensate(lsn_t orig_lsn, lsn_t undo_lsn);
+    rc_t                scavenge(const lsn_t &min_rec_lsn, 
+                               const lsn_t &min_xct_lsn);
+    rc_t                insert(logrec_t &r, lsn_t* ret);
+    rc_t                compensate(const lsn_t& orig_lsn, 
+                               const lsn_t& undo_lsn);
     // used by log_i and xct_impl
-    rc_t        fetch(lsn_t &lsn, logrec_t* &rec, lsn_t* nxt=NULL);
+    rc_t                fetch(lsn_t &lsn, logrec_t* &rec, lsn_t* nxt=NULL);
 
             // used in implementation also:
     virtual void        release(); // used by log_i
-    virtual rc_t        flush(lsn_t lsn, bool block=true);
+    virtual rc_t        flush(const lsn_t& lsn, bool block=true);
 
     fileoff_t           reserve_space(fileoff_t howmuch);
     void                release_space(fileoff_t howmuch);
@@ -316,7 +316,9 @@ public:
     fileoff_t           consume_chkpt_reservation(fileoff_t howmuch);
     void                activate_reservations() ;
                      
-    void                set_master(lsn_t master_lsn, lsn_t min_lsn, lsn_t min_xct_lsn);
+    void                set_master(const lsn_t& master_lsn, 
+                            const lsn_t& min_lsn, 
+                            const lsn_t& min_xct_lsn);
 
 
     // used by bf_m

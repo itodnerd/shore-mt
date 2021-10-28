@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: errcodes.cpp,v 1.13.2.4 2010/03/19 22:19:21 nhall Exp $
+ $Id: errcodes.cpp,v 1.14 2010/05/26 01:20:15 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

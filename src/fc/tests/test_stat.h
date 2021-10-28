@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='TEST_STAT_H'>
 
- $Id: test_stat.h,v 1.1.2.5 2010/03/19 22:17:53 nhall Exp $
+ $Id: test_stat.h,v 1.4 2010/06/23 23:42:59 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -35,7 +35,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 /*  -- do not edit anything above this line --   </std-header>*/
 
 #include <w_stat.h>
-// DEAD #include "test_stat_def_gen.h"
 class test_stat {
     /* add the stats */
 #include "test_stat_struct_gen.h"

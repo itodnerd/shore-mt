@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore'>
 
- $Id: rand48.cpp,v 1.1.2.3 2010/03/19 22:17:16 nhall Exp $
+ $Id: rand48.cpp,v 1.2 2010/05/26 01:20:21 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

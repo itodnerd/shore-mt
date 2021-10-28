@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: w_base.cpp,v 1.54.2.6 2010/03/19 22:17:19 nhall Exp $
+ $Id: w_base.cpp,v 1.58 2012/01/02 17:02:13 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -54,8 +54,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 /*  -- do not edit anything above this line --   </std-header>*/
 
-#define W_SOURCE
-
 #ifdef __GNUG__
 #pragma implementation "w_base.h"
 #endif
@@ -67,11 +65,11 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  *  constants for w_base_t                                      *
  *--------------------------------------------------------------*/
 const w_base_t::int1_t    w_base_t::int1_max  = 0x7f;
-const w_base_t::int1_t    w_base_t::int1_min  = (const w_base_t::int1_t) 0x80u;
+const w_base_t::int1_t    w_base_t::int1_min  = (w_base_t::int1_t) 0x80u;
 const w_base_t::uint1_t   w_base_t::uint1_max = 0xff;
 const w_base_t::uint1_t   w_base_t::uint1_min = 0x0;
 const w_base_t::int2_t    w_base_t::int2_max  = 0x7fff;
-const w_base_t::int2_t    w_base_t::int2_min  = (const w_base_t::int2_t) 0x8000u;
+const w_base_t::int2_t    w_base_t::int2_min  = (w_base_t::int2_t) 0x8000u;
 const w_base_t::uint2_t   w_base_t::uint2_max = 0xffff;
 const w_base_t::uint2_t   w_base_t::uint2_min = 0x0;
 const w_base_t::int4_t    w_base_t::int4_max  = 0x7fffffff;
@@ -276,4 +274,60 @@ w_base_t::uint4_t w_base_t::w_ntohl(w_base_t::uint4_t net)
 w_base_t::uint4_t w_base_t::w_htonl(w_base_t::uint4_t host)
 {
     return htonl(host);
+}
+
+#ifdef __GNUC__
+#if defined(__x86_64) || defined(i386) || defined(__i386__)
+#define NEED_POPC64 0
+#elif defined(__sparcv9)
+#define NEED_POPC64 0
+#else
+#define NEED_POPC64 1
+#endif
+#else // !defined(__GNUC__)
+#define NEED_POPC64 1
+#endif
+
+#if NEED_POPC64==1
+// adapted from http://chessprogramming.wikispaces.com/Population+Count#SWAR-Popcount
+typedef unsigned long long u64;
+static inline
+long popc64(u64 x) {
+    u64 k1 = 0x5555555555555555ull;
+    u64 k2 = 0x3333333333333333ull;
+    u64 k4 = 0x0f0f0f0f0f0f0f0full;
+    u64 kf = 0x0101010101010101ull;
+    x =  x       - ((x >> 1)  & k1); //put count of each 2 bits into those 2 bits
+    x = (x & k2) + ((x >> 2)  & k2); //put count of each 4 bits into those 4 bits
+    x = (x       +  (x >> 4)) & k4 ; //put count of each 8 bits into those 8 bits
+    x = (x * kf) >> 56; //returns 8 most significant bits of x + (x<<8) + (x<<16) + (x<<24) + ...
+    return x;
+}
+#endif
+
+size_t w_base_t::pop_count(w_base_t::uint8_t bm)
+{
+#if NEED_POPC64==1
+#warning "using home-brew popc routine"
+    return popc64(bm);
+#elif defined(__x86_64) || defined(i386) || defined(__i386__)
+// #warning "Using __builtin_popcountll"
+    return __builtin_popcountll(bm);
+#elif defined(__sparcv9)
+#warning "Using gcc inline asm to access sparcv9 'popc' instruction"
+    long rval;
+    __asm__("popc    %[in], %[out]" : [out] "=r"(rval) : [in] "r"(x));
+    return rval;
+#else
+	// Brian Kernighan's population count
+	// from http://chessprogramming.wikispaces.com/
+	// Population Count
+	// This is not the fastest for densely-populated maps though.
+	int count=0;
+	while(bm) {
+		count++;
+		bm &= bm-1; // reset LS1B
+	}
+	return count;
+#endif 
 }

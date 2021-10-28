@@ -1,6 +1,6 @@
 /*<std-header orig-src='regex'>
 
- $Id: regexec.cpp,v 1.18.2.3 2010/03/19 22:19:19 nhall Exp $
+ $Id: regexec.cpp,v 1.19 2010/05/26 01:20:12 nhall Exp $
 
 
 */

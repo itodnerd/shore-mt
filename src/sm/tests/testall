@@ -72,62 +72,6 @@ function file_scan_test  {
     echo "------------------------------------------------------------}"
 }
 
-function mrbtrees_test_all {
-    echo "{-------------------------------------- MRBTREES TEST -----"
-    echo creating log directory
-    mkdir -p ./log
-    echo creating volume  directory
-    mkdir -p ./volumes
-
-    echo "------------------------------------------cleanup------------"
-    echo blowing away log and volumes before test 0
-    /bin/rm -f ./log/* ./volumes/*
-    echo "------------------------------------------------------------}"
-    echo "running mrbtrees_test -- test 0"
-    execute "mrbtrees_test -i -t 0 " mrbtrees-out-0
-    echo "------------------------------------------cleanup------------"
-    echo blowing away log and volumes before test 1
-    /bin/rm -f ./log/* ./volumes/*
-    echo "------------------------------------------------------------}"
-    echo "running mrbtrees_test -- test 1"
-    execute "mrbtrees_test -i -t 1 " mrbtrees-out-1
-    echo "------------------------------------------cleanup------------"
-    echo blowing away log and volumes before test 2
-    /bin/rm -f ./log/* ./volumes/*
-    echo "------------------------------------------------------------}"
-    echo "running mrbtrees_test -- test 2"
-    execute "mrbtrees_test -i -t 2 " mrbtrees-out-2
-    echo "------------------------------------------cleanup------------"
-    echo blowing away log and volumes before test 3
-    /bin/rm -f ./log/* ./volumes/*
-    echo "------------------------------------------------------------}"
-    echo "running mrbtrees_test -- test 3"
-    execute "mrbtrees_test -i -t 3 " mrbtrees-out-3
-    echo "------------------------------------------cleanup------------"
-    echo blowing away log and volumes before test 4
-    /bin/rm -f ./log/* ./volumes/*
-    echo "------------------------------------------------------------}"
-    echo "running mrbtrees_test -- test 4"
-    execute "mrbtrees_test -i -t 4 " mrbtrees-out-4
-    echo "------------------------------------------cleanup------------"
-    echo blowing away log and volumes before test 5
-    /bin/rm -f ./log/* ./volumes/*
-    echo "------------------------------------------------------------}"
-    echo "running mrbtrees_test -- test 5"
-    execute "mrbtrees_test -i -t 5 " mrbtrees-out-5
-    echo "------------------------------------------cleanup------------"
-    echo blowing away log and volumes before test 6
-    /bin/rm -f ./log/* ./volumes/*
-    echo "------------------------------------------------------------}"
-    echo "running mrbtrees_test -- test 6"
-    execute "mrbtrees_test -i -t 6 " mrbtrees-out-6
-
-    echo "------------------------------------------cleanup------------"
-    echo removing log dir and volume dir after test
-    /bin/rm -rf ./log ./volumes
-    echo "------------------------------------------------------------}"
-}
-
 function print  {
     echo $*
 }
@@ -236,7 +180,7 @@ echo "running hash table tests"
 echo "NOTE : These hash table test can fail with diffs in"
 echo "       counters (based on build optimization level)"
 echo "---------------------------------------------------------"
-execute "htab -n 500 " tmp-out htab-n500-out.`uname -m`
+execute "htab -n 500 " tmp-out htab-n500-out.`sm_pagesize`
 # We are seeing slightly different performance statistics
 # here so we will remove the comparison with output file
 # for the moment.
@@ -246,8 +190,17 @@ execute "htab -n 10000 -R" tmp-out
 execute "htab -n 100000 -R" tmp-out 
 
 
-echo "---------------------------------------------------------"
-echo "running mrbtrees_test"
-mrbtrees_test_all
+##
+## log_exceed -i : run out of log space; show what happens
+## with the callbacks.
+## echo "---------------------------------------------------------"
+## echo "running log_exceed test"
+## echo creating log directory
+## mkdir -p ./log
+## echo creating volume  directory
+## mkdir -p ./volumes
+## echo blowing away log and volumes
+## /bin/rm -f ./log/* ./volumes/* tmp-out
+## execute "log_exceed " log_exceed-out
 
 

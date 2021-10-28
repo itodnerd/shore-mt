@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore'>
 
- $Id: lock.cpp,v 1.151 2010/06/15 17:30:07 nhall Exp $
+ $Id: lock.cpp,v 1.159 2012/01/02 17:02:17 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -78,7 +78,6 @@ template class w_list_t<XctWaitsForLockElem>;
 template class w_list_i<XctWaitsForLockElem>;
 #endif
 
-w_hashing::uhash lockid_t::lockhashfunc;
 
 lock_m::lock_m(int sz)
 {
@@ -105,9 +104,20 @@ void lock_dump_locks() {
     smlevel_0::lm->dump(cerr);
     cerr << flushl;
 }
+
 void lock_m::dump(ostream &o)
 {
+    o << "LOCKS: { " << endl;
     _core->dump(o);
+
+    xct_t *xd = xct();
+    if(xd) {
+        const xct_lock_info_t* theLockInfo = xd->lock_info();
+        o << "CACHE: { " << endl;
+        _core->dump_cache(theLockInfo, o);
+        o << "} " << endl;
+    }
+    o << "} " << endl;
 }
 
 bool 
@@ -179,21 +189,6 @@ lock_m::get_parent(const lockid_t& c, lockid_t& p)
     return p.lspace() != lockid_t::t_bad;
 }
 
-bool lock_m::sli_query(lockid_t const &n)
-{
-    xct_t *        xd = xct();
-    bool rval = false;
-    if (n.lspace() <= lockid_t::t_page && xd 
-	&& xd->lock_cache_enabled())  {
-	xct_lock_info_t* const theLockInfo = xd->lock_info();
-	W_COERCE(theLockInfo->lock_info_mutex.acquire());
-
-	lock_cache_elem_t* e = _core->search_cache(theLockInfo, n, true);
-	rval = (e && e->req->_sli_status == sli_active);
-	W_VOID(theLockInfo->lock_info_mutex.release());
-    }
-    return rval;
-}
 
 rc_t lock_m::query(
     const lockid_t&     n,
@@ -212,14 +207,14 @@ rc_t lock_m::query(
 
         // search the cache first, if you can
 
-        if (n.lspace() <= lockid_t::t_page && xd 
+        if (n.lspace() <= lockid_t::cached_granularity && xd 
                 && tid == xd->tid() && xd->lock_cache_enabled())  {
             xct_lock_info_t* const theLockInfo = xd->lock_info();
             W_COERCE(theLockInfo->lock_info_mutex.acquire());
 
             lock_cache_elem_t* e = _core->search_cache(theLockInfo, n);
             if (e) {
-                m = e->mode;
+                m = e->mode();
                 W_VOID(theLockInfo->lock_info_mutex.release());
                 return RCOK;
             }
@@ -235,7 +230,7 @@ rc_t lock_m::query(
             if (lock) {
                 // lock head mutex was acquired by find_lock_head
                 m = lock->granted_mode;
-                MUTEX_RELEASE(lock->head_mutex);
+                RELEASE_HEAD_MUTEX(lock); // acquired in find_lock_head
             }
             return RCOK;
         }
@@ -249,19 +244,21 @@ rc_t lock_m::query(
         }
         if (req) {
             m = req->mode();
-            MUTEX_RELEASE(lock->head_mutex);
+            RELEASE_HEAD_MUTEX(lock); // acquired in find_lock_head
             return RCOK;
         }
 
         if (lock)
-            MUTEX_RELEASE(lock->head_mutex);
+            RELEASE_HEAD_MUTEX(lock); // acquired in find_lock_head
         return RCOK;
-
     } else {
       rc_t result =  _query_implicit(n, m, tid, cache_only);
       return result;
     }
+#ifndef __GNUC__
+    // quiet some compilers, make others complain:
     return RCOK;
+#endif
 }
 
 
@@ -294,10 +291,10 @@ rc_t lock_m::_query_implicit(
         W_COERCE(theLockInfo->lock_info_mutex.acquire());
 
         for (int curr = pathlen-1; curr >= 0; curr--) {
-            if (path[curr].lspace() <= lockid_t::t_page) {
+            if (path[curr].lspace() <= lockid_t::cached_granularity) {
                 if (lock_cache_elem_t* e = _core->search_cache(
                             theLockInfo, path[curr]))  {
-                    lmode_t cm = e->mode;
+                    lmode_t cm = e->mode();
                     if (curr == 0) {
                         w_assert9(path[curr] == n);
                         if (SIX_found)
@@ -350,12 +347,12 @@ rc_t lock_m::_query_implicit(
                         m = supr[SH][req->mode()];
                     else
                         m = req->mode();
-                    MUTEX_RELEASE(lock->head_mutex);
+                    RELEASE_HEAD_MUTEX(lock); // acquired in find_lock_head
                     return RCOK;
                 } else {
                     if (req->mode() == SH || req->mode() == UD || req->mode() == EX) {
                         m = req->mode();
-                        MUTEX_RELEASE(lock->head_mutex);
+                        RELEASE_HEAD_MUTEX(lock); // acquired in find_lock_head
                         return RCOK;
                     } else if (req->mode() == SIX) {
                         SIX_found = true;
@@ -365,7 +362,7 @@ rc_t lock_m::_query_implicit(
                     }
                 }
             }
-            MUTEX_RELEASE(lock->head_mutex);
+            RELEASE_HEAD_MUTEX(lock); // acquired in find_lock_head
         }
     }
 
@@ -387,21 +384,6 @@ lock_m::close_quark(bool release_locks)
     return RCOK;
 }
 
-void lock_m::disable_sli(xct_lock_info_t* theLockInfo) {
-    /* release any inherited locks. note that the list has newest
-       locks at the front so a forward iterator preserves the
-       hierarchical locking protocol.
-    */
-    W_COERCE(theLockInfo->lock_info_mutex.acquire());
-    request_list_i it(theLockInfo->sli_list);
-    while(lock_request_t* req=it.next()) 
-	_core->sli_abandon_request(req, NULL);
-
-    W_COERCE(theLockInfo->lock_info_mutex.release());
-    theLockInfo->_sli_enabled = false;
-}
-
-
 rc_t
 lock_m::_lock(
     const lockid_t&         _n,
@@ -411,8 +393,11 @@ lock_m::_lock(
     duration_t              duration,
     timeout_in_ms           timeout, 
     bool                    force,
-    lockid_t**              nameInLockHead,
-    const bool              bIgnoreParents)
+    lockid_t**              nameInLockHead
+#ifdef SM_DORA
+    , const bool bIgnoreParents
+#endif
+    )
 {
     FUNC(lock_m::_lock);
     w_rc_t                 rc; // == RCOK
@@ -477,18 +462,20 @@ lock_m::_lock(
                 n.lspace() != lockid_t::t_extent && 
                 n.lspace() != lockid_t::t_kvl &&
                 !n.is_user_lock()) {
-            n.truncate(theLockInfo->lock_level());
+            // Internal error if this truncate fails
+            W_COERCE( n.truncate(theLockInfo->lock_level()));
         }
 
         acquired=true;
 
         // check to see if the exact lock we need is 
         // in the cache, if so we are done.
-        if (n.lspace() <= lockid_t::t_page && xd->lock_cache_enabled()) 
+        if (n.lspace() <= lockid_t::cached_granularity 
+                && xd->lock_cache_enabled()) 
         {
             if (lock_cache_elem_t* e = _core->search_cache(
                         theLockInfo, n, true))  {
-                lmode_t cm = e->mode;
+                lmode_t cm = e->mode();
                 if (cm == supr[m][cm]) {
                     prev_mode = cm;
                     if (n.lspace() == lockid_t::t_page)  {
@@ -496,7 +483,13 @@ lock_m::_lock(
                     }
                     theLastLockReq = e->req;
                     INC_TSTAT(lock_cache_hit_cnt);
-                    goto done; // release mutex
+
+                    // GNATS 112
+                    // Check the duration. If it needs to be
+                    // increased, we'll call this a cache miss.
+                    if(theLastLockReq->get_duration() >= duration) {
+                        goto done; // release mutex
+                    }
                 }
             }
         }
@@ -517,87 +510,99 @@ lock_m::_lock(
         // of the ancestors.
         int i = 1;
 
+#ifdef SM_DORA
         if (!bIgnoreParents) {
+#endif
 
-	    if (xd->lock_cache_enabled() && !n.is_user_lock()) {
-		for (i = 1; i < lockid_t::NUMLEVELS; i++)  {
-		    
-		    if (!get_parent(h[i-1], h[i]))
-			break;
-		    DBGTHRD(<< "  get_parent true" << h[i-1] << " " << h[i]);
-		    
-		    hmode[i] = 0;
-		    {
-			lock_cache_elem_t* e =
-			    _core->search_cache(theLockInfo, h[i], true);
-			hmode[i] = e ? &e->mode : 0;
-			
-			if (hmode[i] && supr[*hmode[i]][pmode] == *hmode[i])  {
-			    // cache hit
-			    DBGTHRD(<< "  " 
-				    << h[i] 
-				    << "(mode=" << int(*hmode[i]) << ") cache hit");
-			    theLastLockReq = e->req;
-			    INC_TSTAT(lock_cache_hit_cnt);
-			    
-			    if (h[i].lspace() == lockid_t::t_page)
-				prev_pgmode = *hmode[i];
-			    
-			    if (! force)  {
-				lmode_t held = *hmode[i];
-				if (held == SH || held == EX || 
-				    held == UD || (held == SIX && m == SH))  {
-				    if (held == SIX && n.lspace() > h[i].lspace()) {
-					// need to release the mutex, since 
-					// _query_implicit acquires it
-					// and it also makes it safe to 
-					// use W_DO macros
-					W_VOID(theLockInfo->lock_info_mutex.release());
-					acquired = false;
-					
-					W_DO(_query_implicit(n, prev_mode, xd->tid()));
-					if (n.lspace() == lockid_t::t_record && 
-					    h[i].lspace() < lockid_t::t_page)  {
-					    lpid_t        tmp_lpid;
-					    n.extract_lpid(tmp_lpid);
-					    lockid_t tmp_lockid(tmp_lpid);
-					    W_DO( _query_implicit(tmp_lockid, 
-								  prev_pgmode, xd->tid()) );
-					}  else  {
-					    prev_pgmode = prev_mode;
-					}
-				    } else {
-					prev_mode = held;
-					prev_pgmode = held;
-				    }
-				    goto done;
-				}
-			    }
-			    break;
-			}
+        if (xd->lock_cache_enabled() && !n.is_user_lock()) {
+            for (i = 1; i < lockid_t::NUMLEVELS; i++)  {
+
+                if (!get_parent(h[i-1], h[i]))
+                    break;
+                DBGTHRD(<< "  get_parent true" << h[i-1] << " " << h[i]);
+
+                hmode[i] = 0;
+                {
+                lock_cache_elem_t* e = _core->search_cache(
+                        theLockInfo, h[i], true);
+                hmode[i] = e ? &e->cache_mode() : 0;
+
+
+                if (hmode[i] && supr[*hmode[i]][pmode] == *hmode[i])  {
+                    // cache hit
+                    DBGTHRD(<< "  " 
+                            << h[i] 
+                            << "(mode=" << int(*hmode[i]) << ") cache hit");
+                    theLastLockReq = e->req;
+                    if(theLastLockReq && 
+                            theLastLockReq->get_duration() < duration) {
+                        // GNATS 112: If we need to lengthen the duration,
+                        // we have to force the acquire.
+                        // call this a cache miss
+                        break;
+                    }
+                    INC_TSTAT(lock_cache_hit_cnt);
+
+                    if (h[i].lspace() == lockid_t::t_page)
+                        prev_pgmode = *hmode[i];
+
+                    if (! force)  {
+                        lmode_t held = *hmode[i];
+                        if (held == SH || held == EX || 
+                                held == UD || (held == SIX && m == SH))  {
+                            if (held == SIX && n.lspace() > h[i].lspace()) {
+                                // need to release the mutex, since 
+                                // _query_implicit acquires it
+                                // and it also makes it safe to 
+                                // use W_DO macros
+                                W_VOID(theLockInfo->lock_info_mutex.release());
+                                acquired = false;
+
+                                W_DO(_query_implicit(n, prev_mode, xd->tid()));
+                                if (n.lspace() == lockid_t::t_record && 
+                                        h[i].lspace() < lockid_t::t_page)  {
+                                    lpid_t        tmp_lpid;
+                                    n.extract_lpid(tmp_lpid);
+                                    lockid_t tmp_lockid(tmp_lpid);
+                                    W_DO( _query_implicit(tmp_lockid, 
+                                                prev_pgmode, xd->tid()) );
+                                }  else  {
+                                    prev_pgmode = prev_mode;
+                                }
+                            } else {
+                                prev_mode = held;
+                                prev_pgmode = held;
+                            }
+                            goto done;
+                        }
+                    }
+                    break;
+                }
 #if W_DEBUG_LEVEL > 2
-			else if (hmode[i])  {
-			    DBGTHRD(<< "  " 
-				    << h[i] 
-				    << "(mode=" << int(*hmode[i]) 
-				    << ") cache hit/wrong mode");
-			}  else  {
-			    DBGTHRD(<< "  " << h[i] << " cache miss");
-			}
-#endif 			
-		    }
-		}
-	    }  else  {
-		DBGTHRD(<< "  Lock cache disabled or is user lock. Initialize h[]");
-		// just initialize h[] when the cache is disabled
-		for (i = 1; i < lockid_t::NUMLEVELS; i++)  {
-		    if (!get_parent(h[i-1], h[i]))
-			break;
-		    DBGTHRD(<< "  get_parent true" << h[i-1] << " " << h[i]);
-		}
-	    }
+                else if (hmode[i])  {
+                    DBGTHRD(<< "  " 
+                    << h[i] 
+                    << "(mode=" << int(*hmode[i]) 
+                            << ") cache hit/wrong mode");
+                }  else  {
+                  DBGTHRD(<< "  " << h[i] << " cache miss");
+                }
+#endif 
+                }
+            }
+        }  else  {
+            DBGTHRD(<< "  Lock cache disabled or is user lock. Initialize h[]");
+            // just initialize h[] when the cache is disabled
+            for (i = 1; i < lockid_t::NUMLEVELS; i++)  {
+                if (!get_parent(h[i-1], h[i]))
+                    break;
+                DBGTHRD(<< "  get_parent true" << h[i-1] << " " << h[i]);
+            }
         }
-	
+
+#ifdef SM_DORA
+        }
+#endif
         DBGTHRD(<< "  i" << i << " is closest correctly-held ancestor :" << h[i]);
         DBGTHRD(<< "Entire array:");
         for(int ii=0;  ii < lockid_t::NUMLEVELS; ii++ ) {
@@ -649,10 +654,11 @@ lock_m::_lock(
                         );
             } while (rce && (rce == eRETRY));
 
-#if W_DEBUG_LEVEL >= 8
+#if W_DEBUG_LEVEL > 2
             if (rce && rce == eDEADLOCK) {
                 w_ostrstream s;
-                s  << _n << " mode " << m;
+                s  << _n << " mode " << m << " tx " << *xd
+                    << " prev_mode " << prev_mode;
                 fprintf(stderr, 
                     "Deadlock detected acquiring %s\n", s.c_str());
             }
@@ -672,14 +678,6 @@ lock_m::_lock(
             if (duration == t_instant) {
 #if W_DEBUG_LEVEL > 0
                 w_assert1(MUTEX_IS_MINE(theLockInfo->lock_info_mutex));
-                // this check is for trying to track down gnats 115,
-                // wherein Ryan says that we get unwanted escalation.
-                // I'm trying to be sure that t_instant locks aren't
-                // affecting the situation.
-                // It should be impossible for two threads of an xct
-                // to acquire t_instant locks at the same time, therefore
-                // driving up the ref count and making the instant locks
-                // hang around.  This assert is part of checking that.
                 if(prev_mode == NL) {
                     w_assert1(req->get_count() == 1);
                 }
@@ -692,11 +690,11 @@ lock_m::_lock(
             {
                 if (hmode[j])
                     *hmode[j] = ret;
-                else if (h[j].lspace() <= lockid_t::t_page)  {
+                else if (h[j].lspace() <= lockid_t::cached_granularity)  {
                     _core->put_in_cache(theLockInfo, h[j], ret, req);
                     lock_cache_elem_t* e = _core->search_cache(
                             theLockInfo, h[j]);
-                    hmode[j] = e? &e->mode : 0;
+                    hmode[j] = e? &e->cache_mode() : 0;
                 }
 
                 // check if lock escalation needs to be performed
@@ -754,7 +752,8 @@ lock_m::_lock(
                                     if (duration >= t_long && xd->lock_cache_enabled())  {
                                         if (hmode[j+1])
                                             *hmode[j+1] = ret;
-                                        else if (h[j+1].lspace() <= lockid_t::t_page)  {
+                                        else if (h[j+1].lspace() <= 
+                                                lockid_t::cached_granularity)  {
                                             _core->put_in_cache(theLockInfo, h[j+1], 
                                                     ret, escalate_req);
                                         }
@@ -782,7 +781,8 @@ lock_m::_lock(
                 }
                 theLastLockReq = req;
 
-                if (h[j].lspace() <= lockid_t::t_page && (brake || ret == SIX)){
+                if (h[j].lspace() <= lockid_t::cached_granularity && 
+                        (brake || ret == SIX)){
                     // remove from the cache the locks subsumed by
                     // this lock. This was originally done in order
                     // not to waste space in the limited-sized cache.
@@ -880,20 +880,29 @@ lock_m::unlock(const lockid_t& n)
 
 
 /* 
- * Free all locks of a given duration
- *  all_less_than : if true, release not just those whose
- *     duration matches, but all those which shorter duration also
- *  dont_clean_exts
+ * Find all extent locks of a given duration (or less that that).
+ * For each of these, free the extent while holding the lock (this used
+ * to be done in unlock_duration) but we had to make sure all the 
+ * locks are held until after all the extents are freed.
+ * Do not free any locks.
+ * Extent locks are upgraded to EX to free the extent; if not possible,
+ * the extent is not freed.
+ * If the lock is already exclusive, the extent is not freed. This
+ * situation predates the change to make all the extent-freeing happen before
+ * the locks are released; this happens to mean that we don't try to 
+ * free an extent twice. Unfortunately, however, it means that we
+ * don't really exactly co-routine through the lock list.  We actually
+ * do a search of the entire theLockInfo list for each extent we are able
+ * to free. It would be better to return a list of extent locks that
+ * got upgraded and then free them.
  */
-rc_t lock_m::unlock_duration(
-    duration_t          duration,
-    bool                all_less_than, // always true, as we use it
-    bool                dont_clean_exts)
+rc_t lock_m::free_extents(
+    duration_t          duration
+    )
 {
-    FUNC(lock_m::unlock_duration);
-    DBGTHRD(<< "lock_m::unlock_duration" 
+    FUNC(lock_m::free_extents);
+    DBGTHRD(<< "lock_m::free_extents" 
         << " duration=" << int(duration)
-        << " all_less_than=" << all_less_than 
     );
     xct_t*         xd = xct();
     xct_lock_info_t* theLockInfo = xd->lock_info();
@@ -903,19 +912,55 @@ rc_t lock_m::unlock_duration(
             extid_t        extid;
             W_COERCE(theLockInfo->lock_info_mutex.acquire());
 
-            rc =  _core->release_duration(theLockInfo, duration, 
-                    all_less_than, dont_clean_exts ? 0 : &extid);
+            // always (re-)starts at the head of theLockInfo list, gak
+            rc =  _core->free_extents(theLockInfo, duration, &extid);
 
             W_VOID(theLockInfo->lock_info_mutex.release());
 
             if (rc.err_num() == eFOUNDEXTTOFREE)  {
+                // _core->free_extents returns this only when we are
+                // asking for the extent id so we can free the extent,
+                // and when it was able to upgrade the lock to EX.
+                // if the lock was already EX we don't get this result,
+                // so we don't try to free an extent if we encounter it
+                // on a 2nd or subsequent call to this method.
                 W_DO( smlevel_0::io->free_ext_after_xct(extid) );
-                lockid_t        name(extid);
-                W_COERCE(theLockInfo->lock_info_mutex.acquire());
-                W_DO( _core->release_lock(theLockInfo, name, 0, 0, true) );
-                W_VOID(theLockInfo->lock_info_mutex.release());
+                DBG(<<"  FREED: "<< extid );
             }
         }  while (rc.err_num() == eFOUNDEXTTOFREE);
+    }
+    return rc;
+}
+
+/* 
+ * Free all locks of a given duration
+ *  release not just those whose
+ *     duration matches, but all those which shorter duration also
+ *  dont_clean_exts: if true, don't free the extents as a side-effect.
+ */
+rc_t lock_m::unlock_duration(
+    duration_t          duration
+    )
+{
+    FUNC(lock_m::unlock_duration);
+    DBGTHRD(<< "lock_m::unlock_duration" 
+        << " duration=" << int(duration)
+    );
+    xct_t*         xd = xct();
+    xct_lock_info_t* theLockInfo = xd->lock_info();
+    w_rc_t        rc;        // == RCOK
+    if (xd)  {
+        do  {
+            extid_t        extid;
+            W_COERCE(theLockInfo->lock_info_mutex.acquire());
+
+            rc =  _core->release_duration(theLockInfo, duration);
+
+            W_VOID(theLockInfo->lock_info_mutex.release());
+
+            w_assert1(rc.err_num() != eFOUNDEXTTOFREE);
+        }  
+        while (0);
     }
     return rc;
 }
@@ -955,8 +1000,11 @@ lock_m::lock(
     timeout_in_ms        timeout,
     lmode_t*             prev_mode,
     lmode_t*             prev_pgmode,
-    lockid_t**           nameInLockHead,
-    const bool           bIgnoreParents)
+    lockid_t**           nameInLockHead
+#ifdef SM_DORA
+    , const bool bIgnoreParents
+#endif
+    )
 {
 #if W_DEBUG_LEVEL > 2
     w_assert3 (n.lspace() != lockid_t::t_bad);
@@ -965,8 +1013,11 @@ lock_m::lock(
     lmode_t _prev_mode;
     lmode_t _prev_pgmode;
 
-    rc_t rc = _lock(n, m, _prev_mode, _prev_pgmode, duration, timeout, false,
-		    nameInLockHead, bIgnoreParents);
+    rc_t rc = _lock(n, m, _prev_mode, _prev_pgmode, duration, timeout, false, nameInLockHead
+#ifdef SM_DORA
+                    , bIgnoreParents
+#endif
+                    );
 
     if (prev_mode != 0)
         *prev_mode = _prev_mode;
@@ -983,14 +1034,20 @@ lock_m::lock_force(
     timeout_in_ms        timeout,
     lmode_t*             prev_mode,
     lmode_t*             prev_pgmode,
-    lockid_t**           nameInLockHead,
-    const bool           bIgnoreParents)
+    lockid_t**           nameInLockHead
+#ifdef SM_DORA
+    , const bool bIgnoreParents
+#endif
+    )
 {
     lmode_t _prev_mode;
     lmode_t _prev_pgmode;
 
-    rc_t rc = _lock(n, m, _prev_mode, _prev_pgmode, duration, timeout, true,
-		    nameInLockHead, bIgnoreParents);
+    rc_t rc = _lock(n, m, _prev_mode, _prev_pgmode, duration, timeout, true, nameInLockHead
+#ifdef SM_DORA
+                    , bIgnoreParents
+#endif
+                    );
 
     if (prev_mode != 0)
         *prev_mode = _prev_mode;

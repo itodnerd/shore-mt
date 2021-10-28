@@ -20,6 +20,34 @@
    DISCLAIM ANY LIABILITY OF ANY KIND FOR ANY DAMAGES WHATSOEVER
    RESULTING FROM THE USE OF THIS SOFTWARE.
 */
+/*<std-header orig-src='shore' incl-file-exclusion='DYNARRAY_H'>
+
+ $Id: dynarray.h,v 1.4 2012/01/02 21:52:21 nhall Exp $
+
+SHORE -- Scalable Heterogeneous Object REpository
+
+Copyright (c) 1994-99 Computer Sciences Department, University of
+                      Wisconsin -- Madison
+All Rights Reserved.
+
+Permission to use, copy, modify and distribute this software and its
+documentation is hereby granted, provided that both the copyright
+notice and this permission notice appear in all copies of the
+software, derivative works or modified versions, and any portions
+thereof, and that both notices appear in supporting documentation.
+
+THE AUTHORS AND THE COMPUTER SCIENCES DEPARTMENT OF THE UNIVERSITY
+OF WISCONSIN - MADISON ALLOW FREE USE OF THIS SOFTWARE IN ITS
+"AS IS" CONDITION, AND THEY DISCLAIM ANY LIABILITY OF ANY KIND
+FOR ANY DAMAGES WHATSOEVER RESULTING FROM THE USE OF THIS SOFTWARE.
+
+This software was developed with support by the Advanced Research
+Project Agency, ARPA order number 018 (formerly 8230), monitored by
+the U.S. Army Research Laboratory under contract DAAB07-91-C-Q518.
+Further funding for this work was provided by DARPA through
+Rome Research Laboratory Contract No. F30602-97-2-0247.
+
+*/
 
 #ifndef __DYNARRAY_H
 #define __DYNARRAY_H
@@ -63,12 +91,6 @@ struct dynarray {
      */
     int init(size_t max_size, size_t align=0);
 
-    /* Attempts to make a deep copy of /to_copy/, setting my capacity
-       to the larger of /to_copy.capacity()/ and /max_size/
-
-       @return 0 on success, appropriate errno on failure
-     */
-    int init(dynarray const &to_copy, size_t max_size=0);
 
     /* Destroys the existing mapping, if any, and returns the object
        to its uninitialized state
@@ -100,9 +122,6 @@ struct dynarray {
      */
     int ensure_capacity(size_t min_size);
 
-    /* UNSAFE, but useful for debugging */
-    int truncate(size_t new_size=0);
-
     /* The currently available size. Assuming sufficient memory is
        available the array can grow to /capacity()/ bytes -- using
        calls to /resize()/.
@@ -122,7 +141,7 @@ private:
     char* _base;
     size_t _size;
     size_t _capacity;
-};
+}; 
 
 
 
@@ -137,7 +156,7 @@ struct dynvector {
        @return 0 on success or an appropriate errno
      */
     int init(size_t max_count) {
-	return _arr.init(count2bytes(max_count));
+    return _arr.init(count2bytes(max_count));
     }
 
     /* Destroy all contained objects and deallocate memory, returning
@@ -146,32 +165,32 @@ struct dynvector {
        @return 0 on success or an appropriate errno
      */
     int fini() {
-	for(size_t i=0; i < _size; i++)
-	    (*this)[i].~T();
+    for(size_t i=0; i < _size; i++)
+        (*this)[i].~T();
 
-	_size = 0;
-	return _arr.fini();
+    _size = 0;
+    return _arr.fini();
     }
 
     /* The largest number of elements the underlying dynarray instance
        can accommodate
      */
     size_t limit() const {
-	return bytes2count(_arr.capacity());
+    return bytes2count(_arr.capacity());
     }
 
     /* The current capacity of this dynvector (= elements worth of
        allocated memory)
      */
     size_t capacity() const {
-	return bytes2count(_arr.size());
+    return bytes2count(_arr.size());
     }
 
     /* The current logical size of this dynvector (= elements pushed
        so far)
      */
     size_t size() const {
-	return _size;
+    return _size;
     }
 
     /* Ensure space for the requested number of elements.
@@ -184,7 +203,7 @@ struct dynvector {
        @return 0 on success or an appropriate errno
     */
     int reserve(size_t new_capacity) {
-	return _arr.ensure_capacity(count2bytes(new_capacity));
+    return _arr.ensure_capacity(count2bytes(new_capacity));
     }
 
     /* Default-construct objects at-end (if needed) to make /size() == new_size/
@@ -192,14 +211,14 @@ struct dynvector {
        @return 0 on success or an appropriate errno
      */
     int resize(size_t new_size) {
-	if(int err=reserve(new_size))
-	    return err;
+    if(int err=reserve(new_size))
+        return err;
 
-	for(size_t i=size(); i < new_size; i++)
-	    new (_at(i).c) T;
-	
-	_size = new_size;
-	return 0;
+    for(size_t i=size(); i < new_size; i++)
+        new (_at(i).c) T;
+    
+    _size = new_size;
+    return 0;
     }
 
     /* Add /obj/ at-end, incrementing /size()/ by one
@@ -207,13 +226,13 @@ struct dynvector {
        @return 0 on success or an appropriate errno
      */
     int push_back(T const &obj) {
-	size_t new_size = _size+1;
-	if(int err=reserve(new_size))
-	    return err;
+        size_t new_size = _size+1;
+        if(int err=reserve(new_size)) 
+             return err;
 
-	new (_at(_size).c) T(obj);
-	_size = new_size;
-	return 0;
+        new (_at(_size).c) T(obj);
+        _size = new_size;
+        return 0;
     }
 
     T &back() { return this->operator[](size()-1); }
@@ -233,8 +252,8 @@ private:
     static size_t bytes2count(size_t bytes) { return bytes/sizeof(T); }
 
     ptr _at(size_t idx) const {
-	ptr rval = {_arr + count2bytes(idx)};
-	return rval;
+        ptr rval = {_arr + count2bytes(idx)};
+        return rval;
     }
     
     dynarray _arr;

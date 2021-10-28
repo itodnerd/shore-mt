@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: regerror.cpp,v 1.18.2.3 2010/03/19 22:19:19 nhall Exp $
+ $Id: regerror.cpp,v 1.19 2010/05/26 01:20:12 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

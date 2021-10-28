@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='W_MINMAX_H'>
 
- $Id: w_minmax.h,v 1.19.2.4 2010/03/19 22:17:20 nhall Exp $
+ $Id: w_minmax.h,v 1.21 2010/12/08 17:37:37 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -55,17 +55,8 @@ min(const T x, const T y)
 }
 #endif /* !__GNUC__ */
 
-#ifdef W_UNIX
 #if HAVE_SYS_PARAM_H
 #include <sys/param.h>
-#endif
-/*
-// on some systems, <sys/param.h> defines 
-// MIN & MAX; it invariably gets included
-// after this, and we get annoying warnings.
-// Let us include it first, and get it out 
-// of the way.
-*/
 #endif
 
 #ifndef MAX

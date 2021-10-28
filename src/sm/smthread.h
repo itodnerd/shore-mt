@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='SMTHREAD_H'>
 
- $Id: smthread.h,v 1.98 2010/05/26 01:20:43 nhall Exp $
+ $Id: smthread.h,v 1.106 2010/12/08 17:37:43 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -131,9 +131,13 @@ typedef w_bitvector_t<256>    sm_thread_map_t;
  * This class provides synchronization (protection) for updating the map.
  *
  * \note: If you want to be sure the fingerprints are unique, for the 
- * purpose of minimizing false-positives in the lock manager's deadlock 
- * detector, look at the code in smthread_t::_initialize_fingerprint(),
- * where you can enable some debugging code.
+ * purpose of eliminating false-positives in the lock manager's deadlock 
+ * detector while debugging something, look at the code 
+ * in smthread_t::_initialize_fingerprint(), where you can 
+ * enable some debugging code.
+ * (There is no need to make them unique -- if there were, 
+ * we'd use 1 bit per... -- but if you are debugging something you might
+ * want to ensure or detect uniqueness for that purpose.)
  */
 class  atomic_thread_map_t : public sm_thread_map_t {
 private:
@@ -223,6 +227,7 @@ class smthread_t : public sthread_t {
         int      prev_pin_count; // previous # of rsrc_m pins
         timeout_in_ms lock_timeout;    // timeout to use for lock acquisitions
         bool    _in_sm;      // thread is in sm ss_m:: function
+        bool    _is_update_thread;// thread is in update function
 #ifdef ARCH_LP64
         /* XXX Really want kc_buf aligned to the alignment of the most
            restrictive type. It would be except sizeof above bool == 8,
@@ -242,17 +247,14 @@ class smthread_t : public sthread_t {
         queue_based_lock_t::ext_qnode _me2;
         // for DEF_LOCK_X_TYPE(3)
         queue_based_lock_t::ext_qnode _me3;
+        // for histo.cpp histoid_me
+        queue_based_lock_t::ext_qnode _histoid_me;
 
         /**\var queue_based_lock_t::ext_qnode _1thread_xct_me;
          * \brief Queue node for holding mutex to serialize access to xct 
          * structure.  Used in xct_impl.cpp
          */
         queue_based_lock_t::ext_qnode _1thread_xct_me;
-        /**\var static __thread queue_based_lock_t::ext_qnode _1thread_log_me;
-         * \brief Queue node for holding mutex to serialize access to log.
-         * Used in xct_impl.cpp
-         */
-        queue_based_lock_t::ext_qnode _1thread_log_me;
         /**\var static __thread queue_based_lock_t::ext_qnode _xct_t_me_node;
          * \brief Queue node for holding mutex to prevent 
          * mutiple-thread/transaction where disallowed. Used in xct.cpp
@@ -264,7 +266,7 @@ class smthread_t : public sthread_t {
          */
         queue_based_lock_t::ext_qnode _xlist_mutex_node;
 
-        /**\var static __thread queue_based_block_lock_t::ext_qnode log_me_node;
+        /**\var static __thread queue_based_block_lock_t::ext_qnode _log_me_node;
          * \brief Queue node for holding partition lock.
          */
         queue_based_block_lock_t::ext_qnode _log_me_node;
@@ -281,17 +283,13 @@ class smthread_t : public sthread_t {
         int __metarecs_in;
 
         // force this to be 8-byte aligned:
-        /**\var static __thread char _kc_buf[] 
+        /**\var static __thread double _kc_buf_double[] 
          * \brief Used in lexify.cpp for scramble/unscramble scratch space.
          */
         double  _kc_buf_double[smlevel_0::page_sz/sizeof(double)]; // not initialized
         cvec_t  _kc_vec;
         // Used by page.cpp check()
         char    _page_check_map[SM_PAGESIZE]; // a little bigger than needed
-	// for scramble/unscramble requests coming from dir_m
-	double  _kc_buf_double_d[smlevel_0::page_sz/sizeof(double)]; // not initialized
-        cvec_t  _kc_vec_d;
-	
 
         void    create_TL_stats();
         void    clear_TL_stats();
@@ -306,6 +304,7 @@ class smthread_t : public sthread_t {
             prev_pin_count(0),
             lock_timeout(WAIT_FOREVER), // default for a thread
             _in_sm(false), 
+            _is_update_thread(false), 
             _sdesc_cache(0), 
             _lock_hierarchy(0), 
             _xct_log(0), 
@@ -314,16 +313,16 @@ class smthread_t : public sthread_t {
             __metarecs(0),
             __metarecs_in(0)
         { 
-            _me1._held = NULL; /*EXT_QNODE_INITIALIZER*/;
-            _me2._held = NULL; /*EXT_QNODE_INITIALIZER*/;
-            _me3._held = NULL; /*EXT_QNODE_INITIALIZER*/;
+            QUEUE_EXT_QNODE_INITIALIZE(_me1);
+            QUEUE_EXT_QNODE_INITIALIZE(_me2);
+            QUEUE_EXT_QNODE_INITIALIZE(_me3);
+            QUEUE_EXT_QNODE_INITIALIZE(_histoid_me);
+            QUEUE_EXT_QNODE_INITIALIZE(_1thread_xct_me);
+            QUEUE_EXT_QNODE_INITIALIZE(_xct_t_me_node);
+            QUEUE_EXT_QNODE_INITIALIZE(_xlist_mutex_node);
 
-            _1thread_xct_me._held = NULL; /*EXT_QNODE_INITIALIZER*/;
-            _1thread_log_me._held = NULL; /*EXT_QNODE_INITIALIZER*/;
-            _xct_t_me_node._held = NULL; /*EXT_QNODE_INITIALIZER*/;
-            _xlist_mutex_node._held = NULL; /*EXT_QNODE_INITIALIZER*/;
-            _log_me_node._held = NULL; /*EXT_QNODE_INITIALIZER*/;
-
+            QUEUE_BLOCK_EXT_QNODE_INITIALIZE(_log_me_node);
+            
             create_TL_stats();
         }
         ~tcb_t() { destroy_TL_stats(); }
@@ -513,21 +512,15 @@ public:
     // are stored in the smthread and collected when the smthread's tcb is
     // destroyed.
     
+#define GET_TSTAT(x) me()->TL_stats().sm.x
 /**\def GET_TSTAT(x) 
  *\brief Get per-thread statistic named x
 */
-#define GET_TSTAT(x) me()->TL_stats().sm.x
 
 /**\def INC_TSTAT(x) 
  *\brief Increment per-thread statistic named x by y
  */
 #define INC_TSTAT(x) me()->TL_stats().sm.x++
-
-
-/**\def INC_TSTAT_BFHT(x) 
- *\brief Increment per-thread statistic named x by y
- */
-#define INC_TSTAT_BFHT(x) me()->TL_stats().bfht.bf_htab #x++
 
 /**\def ADD_TSTAT(x,y) 
  *\brief Increment statistic named x by y
@@ -562,6 +555,12 @@ public:
     inline 
     bool             is_in_sm() const { return tcb()._in_sm; }
 
+    inline
+    bool             is_update_thread() const { 
+                                        return tcb()._is_update_thread; }
+    inline
+    void             set_is_update_thread(bool in) { tcb()._is_update_thread = in; }
+
     void             new_xct(xct_t *);
     void             no_xct(xct_t *);
 
@@ -571,10 +570,7 @@ public:
     lockid_t *       lock_hierarchy() { return tcb()._lock_hierarchy; }
 
     inline
-    sdesc_cache_t *  sdesc_cache() { return tcb()._sdesc_cache; }
-
-    void	     alloc_sdesc_cache();
-    void	     free_sdesc_cache();
+    sdesc_cache_t *  tls_sdesc_cache() { return tcb()._sdesc_cache; }
 
     virtual void     _dump(ostream &) const; // to be over-ridden
     static int       collect(vtable_t&, bool names_too);
@@ -609,6 +605,7 @@ public:
 
     /**\brief  TLS variables Exported to sm.
      */
+    queue_based_lock_t::ext_qnode& get_histoid_me() { return tcb()._histoid_me; }
     queue_based_lock_t::ext_qnode& get_me3() { return tcb()._me3; }
     queue_based_lock_t::ext_qnode& get_me2() { return tcb()._me2; }
     queue_based_lock_t::ext_qnode& get_me1() { return tcb()._me1; }
@@ -616,8 +613,6 @@ public:
                                                return tcb()._log_me_node;}
     queue_based_lock_t::ext_qnode& get_xlist_mutex_node() { 
                                                return tcb()._xlist_mutex_node;}
-    queue_based_lock_t::ext_qnode& get_1thread_log_me() {
-                                               return tcb()._1thread_log_me;}
     queue_based_lock_t::ext_qnode& get_1thread_xct_me() {
                                                return tcb()._1thread_xct_me;}
     queue_based_lock_t::ext_qnode& get_xct_t_me_node() {
@@ -627,20 +622,8 @@ public:
                                                return tcb().__metarecs; }
     int&                           get___metarecs_in() { 
                                                return tcb().__metarecs_in; }
-    char *                         get_kc_buf(bool use_dirbuf = false)  {
-	if(use_dirbuf) {
-	    return (char *)&(tcb()._kc_buf_double_d[0]);
-	} else {
-	    return (char *)&(tcb()._kc_buf_double[0]);
-	}
-    }
-    cvec_t*                        get_kc_vec(bool use_dirbuf = false)  {
-	if(use_dirbuf) {
-	    return &(tcb()._kc_vec_d);
-	} else {
-	    return &(tcb()._kc_vec);
-	}
-    }
+    char *                         get_kc_buf()  { return (char *)&(tcb()._kc_buf_double[0]); }
+    cvec_t*                        get_kc_vec()  { return &(tcb()._kc_vec); }
     char *                         get_page_check_map() {
                                          return &(tcb()._page_check_map[0]);  }
 private:
@@ -736,12 +719,36 @@ DumpBlockedThreads(ostream& o);
 #define DBGTHRD(arg) DBG(<< " th." << smthread_t::me()->id << " " arg)
 #ifdef W_TRACE
 /* 
- * redefine FUNC to print the thread id
+ * Redefine FUNC to print the thread id
+ * (Be careful here that we are basing our printing on the
+ * name given as an argument, not __func__, which would
+ * give us the constructor func_helper::func_helper.)
  */
+class func_helper {
+    static __thread int depth;
+    bool entered;
+    const char *file; 
+    int line;
+public:
+    func_helper(const char *name, 
+            const char *f, int l) : entered(false), file(f), line(l) {
+        if(_w_debug.flag_on(name,file)) {
+        ++depth;
+        entered=true;
+        DBG2(<< " th." << smthread_t::me()->id << " " << name
+                << " " << depth << "-{", line,file);
+        }
+    }
+    ~func_helper() {
+        if(entered) {
+            DBG2(<< " th." << smthread_t::me()->id << " " << depth << "-}",
+                line,file);
+            depth--;
+        }
+    }
+};
 #undef FUNC
-#define FUNC(fn)\
-  do { char const* fname = __func__; \
-    DBGTHRD(<< fname);} while(0)
+#define FUNC(fn) func_helper local_func_helper(__func__, __FILE__, __LINE__);
 #endif /* W_TRACE */
 
 /**\endcond skip */

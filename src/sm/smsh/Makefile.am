@@ -17,11 +17,9 @@ AM_CXXFLAGS          += -I$(top_srcdir)/src/fc \
 
 AM_CXXFLAGS    += -I$(TCL_INCLUDE)
 
-check_PROGRAMS     = smsh$(EXEEXT) random_kick$(EXEEXT)
+check_PROGRAMS     = smsh$(EXEEXT)
 
 TESTS = test-short
-
-random_kick_SOURCES      =  random_kick.cpp
 
 include_HEADERS      =  \
 	shell.h smsh.h smsh_error.h \

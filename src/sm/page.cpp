@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
-  $Id: page.cpp,v 1.147 2010/06/15 17:30:07 nhall Exp $
+  $Id: page.cpp,v 1.159 2010/12/08 17:37:42 nhall Exp $
 
   SHORE -- Scalable Heterogeneous Object REpository
 
@@ -66,12 +66,6 @@
 #include <page.h>
 #include <page_h.h>
 
-// -- for page tracing
-//pthread_mutex_t page_p::_glmutex = PTHREAD_MUTEX_INITIALIZER;
-//ofstream page_p::_accesses("page_accesses.txt");
-//timeval page_p::curr_time;
-// --
-
 w_base_t::w_base_t::uint4_t
 page_p::get_store_flags() const
 {
@@ -95,12 +89,6 @@ page_p::set_store_flags(w_base_t::uint4_t f)
         _pp->set_page_storeflags(f);
     }
 }
-
-// For debugging: tracking down oddities
-extern "C" void pagestophere()
-{
-}
-
 
 /*********************************************************************
  *
@@ -140,7 +128,7 @@ inline void page_s::space_t::_check_reserve()
  *
  *********************************************************************/
 int
-page_s::space_t::usable(xct_t* xd) 
+page_s::space_t::usable(xct_t* xd)  
 {
     w_assert3(nfree() >= nrsvd());
     w_assert3(nrsvd() >= xct_rsvd());
@@ -422,10 +410,15 @@ page_s::space_t::acquire(int amt, int slot_bytes, xct_t* xd,
             << " : avail " << avail
             << " amt " << amt
             << " avail for slots " << avail4slots
-            << " slot_bytes " << slot_bytes); 
+            << " slot_bytes " << slot_bytes
+            << "}"
+            ); 
         return RC(smlevel_0::eRECWONTFIT);
     }
-    if( !do_it)  return RCOK;
+    if( !do_it)  {
+        DBG(<< "}");
+        return RCOK;
+    }
     
     /*
      *  Consume the space
@@ -594,21 +587,22 @@ void page_s::space_t::release(int amt, xct_t* xd)
  *--------------------------------------------------------------*/
 void
 page_p::repair_rec_lsn(bool was_dirty, lsn_t const &new_rlsn) {
+    if( !smlevel_0::logging_enabled) return;
     bfcb_t* bp = bf_m::get_cb(_pp);
     const lsn_t &rec_lsn = bp->curr_rec_lsn();
-	w_assert2(is_latched_by_me());
-	w_assert2(is_mine());
+    w_assert2(is_latched_by_me());
+    w_assert2(is_mine());
     if(was_dirty) {
         // never mind!
         w_assert0(rec_lsn <= lsn());
     }
     else {
-        w_assert0(rec_lsn > lsn());
+        w_assert0(rec_lsn > lsn() );
         if(new_rlsn.valid()) {
             w_assert0(new_rlsn <= lsn());
             w_assert2(bp->dirty());
             bp->set_rec_lsn(new_rlsn);
-			INC_TSTAT(restart_repair_rec_lsn);
+            INC_TSTAT(restart_repair_rec_lsn);
         }
         else {
             bp->mark_clean();
@@ -639,10 +633,6 @@ page_p::tag_name(tag_t t)
         return "t_rtree_p";
     case t_file_p:
         return "t_file_p";
-    case t_ranges_p:
-        return "t_ranges_p";
-    case t_file_mrbt_p:
-        return "t_file_mrbt_p";
     default:
         W_FATAL(eINTERNAL);
     }
@@ -678,9 +668,9 @@ page_p::_format(const lpid_t& pid, tag_t tag,
      *  Check alignments
      */
     w_assert3(is_aligned(data_sz));
-    w_assert3(is_aligned(_pp->data() - (char*) _pp));
+    w_assert3(is_aligned(_pp->data - (char*) _pp));
     w_assert3(sizeof(page_s) == page_sz);
-    w_assert3(is_aligned(_pp->data()));
+    w_assert3(is_aligned(_pp->data));
 
     /*
      *  Do the formatting...
@@ -702,7 +692,7 @@ page_p::_format(const lpid_t& pid, tag_t tag,
      *  pages.
      */
     sf = _pp->get_page_storeflags(); // save flags
-#if defined(SM_FORMAT_WITH_GARBAGE) || defined(ZERO_INIT)
+#if defined(ZERO_INIT)
     /* NB -- NOTE -------- NOTE BENE
     *  Note this is not exactly zero-init, but it doesn't matter
     * WHAT we use to init each byte for the purpose of purify or valgrind
@@ -777,7 +767,7 @@ page_p::_format(const lpid_t& pid, tag_t tag,
     _pp->end = _pp->nslots = _pp->nvacant = 0;
 
 
-    if(_pp->tag != t_file_p || _pp->tag != t_file_mrbt_p) {
+    if(_pp->tag != t_file_p) {
         /* 
          * Could have been a t_file_p when fix() occured,
          * but format could have changed it.  Make the
@@ -789,6 +779,7 @@ page_p::_format(const lpid_t& pid, tag_t tag,
 
     return RCOK;
 }
+
 
 /*********************************************************************
  *
@@ -809,7 +800,7 @@ page_p::_format(const lpid_t& pid, tag_t tag,
  *********************************************************************/
 rc_t
 page_p::_fix(
-    bool                condl,
+    bool                 condl,
     const lpid_t&        pid,
     tag_t                ptag,
     latch_mode_t         m, 
@@ -821,14 +812,9 @@ page_p::_fix(
     w_assert3(!_pp || bf->is_bf_page(_pp, false));
     store_flag_t        ret_store_flags = store_flags;
 
-    // -- for page tracing
-    //pthread_mutex_lock(&_glmutex);
-    //gettimeofday(&curr_time, NULL);
-    //_accesses << "Page: " << pid << " Thread: " << pthread_self() << " Latch mode: " << m
-    //	      << " Time: sec-> " << curr_time.tv_sec << " usec-> " << curr_time.tv_usec << endl;
-    //pthread_mutex_unlock(&_glmutex);
-    // --
-    
+    // store flags will be st_bad in the t_virgin/no_read forward-processing
+    // case because we are fixing the page before a format.
+
     if (store_flags & st_insert_file)  {
         store_flags = (store_flag_t) (store_flags|st_tmp); 
         // is st_tmp and st_insert_file
@@ -836,18 +822,16 @@ page_p::_fix(
     /* allow these only */
     w_assert1((page_flags & ~t_virgin) == 0);
 
-    if (_pp && _pp->pid == pid) {
+    W_IFTRACE(const char * bf_fix="";)
+    if (_pp && _pp->pid == pid) 
+    {
         if(_mode >= m)  {
             /*
              *  We have already fixed the page... do nothing.
              */
-        } else if(m == LATCH_NLX) { // pin: we don't want upgrade for plp
-            bf->unfix(_pp, false, _refbit);
-            W_DO( bf->fix(_pp, pid, ptag, m, 
-			  (page_flags & t_virgin) != 0,  // no_read
-			  ret_store_flags,
-			  ignore_store_id, store_flags) );
-	} else if(condl) {
+            W_IFTRACE(bf_fix="no-op";)
+        } else if(condl) {
+            W_IFTRACE(bf_fix="latch-upgrade";)
               bool would_block = false;
               bf->upgrade_latch_if_not_block(_pp, would_block);
               if(would_block)
@@ -855,12 +839,13 @@ page_p::_fix(
               w_assert2(_pp && bf->is_bf_page(_pp, true));
               _mode = bf->latch_mode(_pp);
         } else {
+            W_IFTRACE(bf_fix="latch-upgrade";)
             /*
              *  We have already fixed the page, but we need
              *  to upgrade the latch mode.
              */
             bf->upgrade_latch(_pp, m); // might block
-	    w_assert2(_pp && bf->is_bf_page(_pp, true));
+            w_assert2(_pp && bf->is_bf_page(_pp, true));
             _mode = bf->latch_mode(_pp);
             w_assert3(_mode >= m);
         }
@@ -875,9 +860,12 @@ page_p::_fix(
              * update the space-usage histogram info in its
              * extent.
              */
+            W_IFTRACE(bf_fix="unfix-refix ****************************";)
             W_DO(update_bucket_info());
             bf->unfix(_pp, false, _refbit);
             _pp = 0;
+        } else {
+            W_IFTRACE(bf_fix="bf-fix **********************************";)
         }
 
 
@@ -917,12 +905,16 @@ page_p::_fix(
         // became tag() == t_file_p
         // w_assert3((tag() != t_file_p) || (rsvd_mode()));
     // }
+    
+    // init_bucket_info deals with case ptag==t_any_p
     init_bucket_info(ptag, page_flags);
     w_assert3(_mode >= m);
     store_flags = ret_store_flags;
 
     w_assert2(is_fixed());
     w_assert2(_pp && bf->is_bf_page(_pp, true));
+    INC_TSTAT(page_fix_cnt);  
+    DBGTHRD(<<"page fix: tag " << ptag << " pid " << pid << bf_fix);
     return RCOK;
 }
 
@@ -1063,7 +1055,7 @@ page_p::mark_free(slotid_t idx)
 #endif
 
     w_assert1(idx >= 0 && idx < _pp->nslots);
-    w_assert1(_pp->slot(idx).offset >= 0);
+    w_assert1(_pp->slot[-idx].offset >= 0);
 
 
     /*
@@ -1083,9 +1075,9 @@ page_p::mark_free(slotid_t idx)
      * is not sufficient to ensure that the page hasn't been deallocated
      * already.)
      */
-    if(idx == 0 && (tag() == t_file_p || tag() == t_file_mrbt_p)) 
+    if(idx == 0 && tag() == t_file_p) 
     {
-      w_assert1(latch_mode() == LATCH_EX || latch_mode() == LATCH_NLX);
+      w_assert1(latch_mode() == LATCH_EX);
       /*
        * Slot 0 is file_p_hdr_t, never a user-created record.
        * If this is slot 0, we are being called from redo, or
@@ -1109,9 +1101,9 @@ page_p::mark_free(slotid_t idx)
      *  We do not release the space for the slot table entry. The
      *  slot table is never shrunk on reserved-space pages.
      */
-    _pp->space.release(int(align(_pp->slot(idx).length)), xct());
-    _pp->slot(idx).length = 0;
-    _pp->slot(idx).offset = -1;
+    _pp->space.release(int(align(_pp->slot[-idx].length)), xct());
+    _pp->slot[-idx].length = 0;
+    _pp->slot[-idx].offset = -1;
     ++_pp->nvacant;
 
     return RCOK;
@@ -1173,7 +1165,7 @@ page_p::reclaim(slotid_t idx, const cvec_t& vec, bool log_it)
 
     // Always true:
     // if( rsvd_mode() ) {
-        W_DO(update_bucket_info());
+    W_DO(update_bucket_info());
     // }
 
     if(log_it) {
@@ -1214,7 +1206,7 @@ page_p::reclaim(slotid_t idx, const cvec_t& vec, bool log_it)
     }
     w_assert1(contig_space() >= need + need_slots);
     
-    slot_t& s = _pp->slot(idx);
+    slot_t& s = _pp->slot[-idx];
     if (idx == _pp->nslots)  {
         /*
          *  Add a new slot
@@ -1234,9 +1226,9 @@ page_p::reclaim(slotid_t idx, const cvec_t& vec, bool log_it)
      *  Copy data to page
      */
     // make sure the slot table isn't getting overrun
-    char* target = _pp->data() + (s.offset = _pp->end);
+    char* target = _pp->data + (s.offset = _pp->end);
     w_assert3((caddr_t)(target + vec.size()) <= 
-              (caddr_t)&_pp->slot(_pp->nslots-1));
+              (caddr_t)&_pp->slot[-(_pp->nslots-1)]);
     vec.copy_to(target);
     _pp->end += int(align( (s.length = vec.size()) ));
 
@@ -1312,8 +1304,8 @@ page_p::find_slot(uint4_t space_needed,
     slotid_t idx = _pp->nslots;
     if (_pp->nvacant) {
         for (slotid_t i = start_search; i < _pp->nslots; ++i) {
-            if (_pp->slot(i).offset == -1)  {
-                w_assert3(_pp->slot(i).length == 0);
+            if (_pp->slot[-i].offset == -1)  {
+                w_assert3(_pp->slot[-i].length == 0);
                 idx = i;
                 break;
             }
@@ -1372,8 +1364,8 @@ page_p::next_slot(
         // search backwards, stop at first non-vacant
         // slot, and return lowest vacant slot above that
         for (int i = _pp->nslots-1; i>=0;  i--) {
-            if (_pp->slot(i).offset == -1)  {
-                w_assert3(_pp->slot(i).length == 0);
+            if (_pp->slot[-i].offset == -1)  {
+                w_assert3(_pp->slot[-i].length == 0);
             } else {
                 idx = i+1;
                 break;
@@ -1481,18 +1473,18 @@ page_p::insert_expand(slotid_t idx, int cnt, const cvec_t *vec,
         /*
          *  Shift left neighbor slots further to the left
          */
-        memmove(&_pp->slot(_pp->nslots + cnt - 1),
-                &_pp->slot(_pp->nslots - 1), 
+        memmove(&_pp->slot[-(_pp->nslots + cnt - 1)],
+                &_pp->slot[-(_pp->nslots - 1)], 
                 (_pp->nslots - idx) * sizeof(slot_t));
     }
 
     /*
      *  Fill up the slots and data
      */
-    register slot_t* p = &_pp->slot(idx);
+    register slot_t* p = &_pp->slot[-idx];
     for (i = 0; i < cnt; i++, p--)  {
         p->offset = _pp->end;
-        p->length = vec[i].copy_to(_pp->data() + p->offset);
+        p->length = vec[i].copy_to(_pp->data + p->offset);
         _pp->end += int(align(p->length));
     }
 
@@ -1536,8 +1528,8 @@ page_p::remove_compress(slotid_t idx, int cnt)
     /*
      *        Compute space space occupied by tuples
      */
-    register slot_t* p = &_pp->slot(idx);
-    register slot_t* q = &_pp->slot(idx + cnt);
+    register slot_t* p = &_pp->slot[-idx];
+    register slot_t* q = &_pp->slot[-(idx + cnt)];
     int amt_freed = 0;
     for ( ; p != q; p--)  {
         w_assert3(p->length < page_s::data_sz+1);
@@ -1547,9 +1539,9 @@ page_p::remove_compress(slotid_t idx, int cnt)
     /*
      *        Compress slot array
      */
-    p = &_pp->slot(idx);
-    q = &_pp->slot(idx + cnt);
-    for (slot_t* e = &_pp->slot(_pp->nslots); q != e; p--, q--) *p = *q;
+    p = &_pp->slot[-idx];
+    q = &_pp->slot[-(idx + cnt)];
+    for (slot_t* e = &_pp->slot[-_pp->nslots]; q != e; p--, q--) *p = *q;
     _pp->nslots -= cnt;
 
     /*
@@ -1578,7 +1570,7 @@ page_p::remove_compress(slotid_t idx, int cnt)
 rc_t
 page_p::set_byte(slotid_t idx, u_char bits, logical_operation op)
 {
-    w_assert3(latch_mode() == LATCH_EX || latch_mode() == LATCH_NLX);
+    w_assert3(latch_mode() == LATCH_EX );
     /*
      *  Compute the byte address
      */
@@ -1631,11 +1623,12 @@ page_p::set_byte(slotid_t idx, u_char bits, logical_operation op)
 rc_t
 page_p::splice(slotid_t idx, int cnt, splice_info_t info[])
 {
+    AUTO_ROLLBACK_work
     DBGTHRD(<<"page_p::splice idx=" <<  idx << " cnt=" << cnt);
     for (int i = cnt; i >= 0; i--)  {
-        // for now, but We should use safe-point to bail out.
-        W_COERCE(splice(idx, info[i].start, info[i].len, info[i].data));
+        W_DO(splice(idx, info[i].start, info[i].len, info[i].data));
     }
+    work.ok();
     return RCOK;
 }
 
@@ -1668,16 +1661,16 @@ page_p::splice(slotid_t idx, slot_length_t start, slot_length_t len, const cvec_
     w_assert1(idx >= 0 && idx < _pp->nslots);
     w_assert1(vecsz >= 0);
 
-	// TEMP: to catch a problem in which we are using a page splice on an
-	// extent map page, which seems wrong
-	if ((idx==0) && (pid().page == 1)) 
-	{
-			static int count(0);
-			count++;
-			DBGTHRD(<< "count " << count);
-	}
+    // TEMP: to catch a problem in which we are using a page splice on an
+    // extent map page, which seems wrong
+    if ((idx==0) && (pid().page == 1)) 
+    {
+            static int count(0);
+            count++;
+            DBGTHRD(<< "count " << count);
+    }
 
-    slot_t& s = _pp->slot(idx);                // slot in question
+    slot_t& s = _pp->slot[-idx];                // slot in question
 
     // Integrity check: the range start -> start+len must be in the
     // existing slot.
@@ -1740,9 +1733,9 @@ page_p::splice(slotid_t idx, slot_length_t start, slot_length_t len, const cvec_
     // Not worth this effort it if the old data aren't larger than
     // the additional logging info needed to save the space.
     */
-#define FUDGE 0
+    const size_t fudge=0;
     // check old
-    if ((size_t)len > FUDGE + (2 * sizeof(int2_t))) {
+    if ((size_t)len > fudge + (2 * sizeof(int2_t))) {
         char        *c;
         int        l;
         for (l = len, c = (char *)tuple_addr(idx)+start;
@@ -1812,7 +1805,7 @@ page_p::splice(slotid_t idx, slot_length_t start, slot_length_t len, const cvec_
         w_assert3(need > 0);
         if (contig_space() < (uint)adjustment)  {
             /*
-             *  Compress and bring tuple of slot(idx) to the end.
+             *  Compress and bring tuple of slot[-idx] to the end.
              */
             _compress(idx);
             w_assert1(contig_space() >= (uint)adjustment);
@@ -1829,14 +1822,14 @@ page_p::splice(slotid_t idx, slot_length_t start, slot_length_t len, const cvec_
                 /*
                  *  copy this record to the end and expand from there
                  */
-                memcpy(_pp->data() + _pp->end,
-                       _pp->data() + s.offset, s.length);
+                memcpy(_pp->data + _pp->end,
+                       _pp->data + s.offset, s.length);
                 s.offset = _pp->end;
                 _pp->end += int(align(s.length));
             } else {
                 /*
                  *  No other choices. 
-                 *  Compress and bring tuple of slot(idx) to the end.
+                 *  Compress and bring tuple of slot[-idx] to the end.
                  */
                 _compress(idx);
             }
@@ -1848,7 +1841,7 @@ page_p::splice(slotid_t idx, slot_length_t start, slot_length_t len, const cvec_
     /*
      *  Put data into the slot
      */
-    char* p = _pp->data() + s.offset;
+    char* p = _pp->data + s.offset;
     if (need && (s.length != start + len))  {
         /*
          *  slide tail forward or backward
@@ -1903,11 +1896,11 @@ page_p::splice(slotid_t idx, slot_length_t start, slot_length_t len, const cvec_
     if (vecsz > 0)  {
         w_assert3((int)(s.offset + start + vec.size() <= data_sz));
         // make sure the slot table isn't getting overrun
-        w_assert3((caddr_t)(p + start + vec.size()) <= (caddr_t)&_pp->slot(_pp->nslots-1));
+        w_assert3((caddr_t)(p + start + vec.size()) <= (caddr_t)&_pp->slot[-(_pp->nslots-1)]);
                 
         vec.copy_to(p + start);
     }
-    _pp->slot(idx).length += need;
+    _pp->slot[-idx].length += need;
 
 
 #if W_DEBUG_LEVEL > 2
@@ -1948,7 +1941,7 @@ page_p::merge_slots(slotid_t idx, slot_offset_t off1, slot_offset_t off2)
      */
     rc_t rc;
     {
-        slot_t& s = _pp->slot(idx);
+        slot_t& s = _pp->slot[-(idx)];
 
         /* 
          * cut out out the end of idx
@@ -1967,8 +1960,8 @@ page_p::merge_slots(slotid_t idx, slot_offset_t off1, slot_offset_t off2)
 
         W_DO(cut(idx2, 0, off2));
     }
-    slot_t& s = _pp->slot(idx);
-    slot_t& t = _pp->slot(idx2);
+    slot_t& s = _pp->slot[-(idx)];
+    slot_t& t = _pp->slot[-(idx2)];
 
     DBG(<<"shift " << idx2 << "," << 0 << ","
             << t.length << "," << idx << "," << s.length);
@@ -2028,6 +2021,8 @@ page_p::split_slot(slotid_t idx, slot_offset_t off, const cvec_t& v1,
     if((int)(need + need_slots) > _pp->space.usable(xct())) {
                 return RC(smlevel_0::eRECWONTFIT);
     }
+
+    AUTO_ROLLBACK_work
     
     /*
      * add a slot at idx+1, and put v2 in it.
@@ -2047,8 +2042,8 @@ page_p::split_slot(slotid_t idx, slot_offset_t off, const cvec_t& v1,
     w_assert1(idx >= 0 && idx < _pp->nslots);
     w_assert1(idx2 >= 0 && idx2 < _pp->nslots);
 
-    slot_t& s = _pp->slot(idx);
-    slot_t& t = _pp->slot(idx2);
+    slot_t& s = _pp->slot[-(idx)];
+    slot_t& t = _pp->slot[-(idx2)];
 
     DBG(<<"shift " << idx2 << "," << 0 << ","
             << t.length << "," << idx << "," << s.length);
@@ -2062,7 +2057,7 @@ page_p::split_slot(slotid_t idx, slot_offset_t off, const cvec_t& v1,
 #endif
     w_assert3(savelength2 == (int)v2.size());
 
-    W_COERCE(page_p::shift(idx, off, s.length-off, idx2, t.length));
+    W_DO(page_p::shift(idx, off, s.length-off, idx2, t.length));
     DBG(<<" usable is now " << _pp->space.usable(xct()) );
     DBG(<<" nfree() " << _pp->space.nfree()
         <<" nrsvd() " << _pp->space.nrsvd()
@@ -2080,9 +2075,10 @@ page_p::split_slot(slotid_t idx, slot_offset_t off, const cvec_t& v1,
      *  end of idx
      */
     DBG(<<"paste " << idx << "," << off << "," << v1.size());
-    W_COERCE(paste(idx, off, v1));
+    W_DO(paste(idx, off, v1));
 
     W_IFDEBUG3( W_COERCE(check()) );
+    work.ok();
     return RCOK;
 }
 
@@ -2117,8 +2113,8 @@ page_p::shift(
      *  We need less space -- compute adjustment for alignment
      */
     {
-        slot_t& t = _pp->slot(idx1); // to
-        slot_t& s = _pp->slot(idx2); // from
+        slot_t& t = _pp->slot[-idx1]; // to
+        slot_t& s = _pp->slot[-idx2]; // from
 
         int adjustment = 
             (        // amount needed after
@@ -2179,7 +2175,7 @@ page_p::_shift_compress(slotid_t from,
      *  Scratch area and mutex to protect it.
      */
     static queue_based_block_lock_t page_shift_compress_mutex;
-    static char shift_scratch[sizeof(_pp->_slots.data)];
+    static char shift_scratch[sizeof(_pp->data)];
 
     /*
      *  Grab the mutex
@@ -2192,21 +2188,21 @@ page_p::_shift_compress(slotid_t from,
     /*
      *  Copy data area over to scratch
      */
-    memcpy(&shift_scratch, _pp->data(), sizeof(shift_scratch));
+    memcpy(&shift_scratch, _pp->data, sizeof(_pp->data));
 
     /*
      *  Move data back without leaving holes
      */
-    register char* p = _pp->data();
+    register char* p = _pp->data;
     slotid_t  nslots = _pp->nslots;
     for (slotid_t  i = 0; i < nslots; i++) {
         if (i == from)  continue;         // ignore this slot for now
         if (i == to)  continue;         // ignore this slot, too
-        slot_t& s = _pp->slot(i);
+        slot_t& s = _pp->slot[-i];
         if (s.offset != -1)  {                 // it's in use
             w_assert3(s.offset >= 0);
             memcpy(p, shift_scratch+s.offset, s.length);
-            s.offset = p - _pp->data();
+            s.offset = p - _pp->data;
             p += align(s.length);
         }
     }
@@ -2225,7 +2221,7 @@ page_p::_shift_compress(slotid_t from,
         slot_offset_t        s_old_offset;
 
         /************** from **********************/
-        slot_t& s = _pp->slot(from);
+        slot_t& s = _pp->slot[-from];
         DBG(<<" copy from slot " << from
                 << " with tuple size " << tuple_size(from)
                 << " offset " << s.offset
@@ -2266,11 +2262,11 @@ page_p::_shift_compress(slotid_t from,
 
         s.length -= middlelen;                // XXXX
         s_old_offset = s.offset;
-        s.offset = base_p - _pp->data();
+        s.offset = base_p - _pp->data;
         p = base_p + align(s.length);
 
         /************** to **********************/
-        slot_t& t = _pp->slot(to);
+        slot_t& t = _pp->slot[-to];
         DBG(<<" copy into slot " << to
                 << " with tuple size " << tuple_size(to)
                 << " offset " << t.offset
@@ -2320,11 +2316,11 @@ page_p::_shift_compress(slotid_t from,
             p += secondpartlen;
         }
 
-        t.offset = base_p - _pp->data();
+        t.offset = base_p - _pp->data;
         t.length += middlelen;                // XXXX
         p = base_p + align(t.length);
     }
-    _pp->end = p - _pp->data();
+    _pp->end = p - _pp->data;
     DBG(<<"end after " << _pp->end);
 
     /*
@@ -2351,7 +2347,7 @@ page_p::_compress(slotid_t idx)
      *  Scratch area and mutex to protect it.
      */
     static queue_based_block_lock_t page_compress_mutex;
-    static char scratch[sizeof(_pp->_slots.data)];
+    static char scratch[sizeof(_pp->data)];
 
     /*
      *  Grab the mutex
@@ -2363,20 +2359,20 @@ page_p::_compress(slotid_t idx)
     /*
      *  Copy data area over to scratch
      */
-    memcpy(&scratch, _pp->data(), sizeof(scratch));
+    memcpy(&scratch, _pp->data, sizeof(_pp->data));
 
     /*
      *  Move data back without leaving holes
      */
-    register char* p = _pp->data();
+    register char* p = _pp->data;
     slotid_t nslots = _pp->nslots;
     for (slotid_t i = 0; i < nslots; i++) {
         if (i == idx)  continue;         // ignore this slot for now
-        slot_t& s = _pp->slot(i);
+        slot_t& s = _pp->slot[-i];
         if (s.offset != -1)  {
             w_assert3(s.offset >= 0);
             memcpy(p, scratch+s.offset, s.length);
-            s.offset = p - _pp->data();
+            s.offset = p - _pp->data;
             p += align(s.length);
         }
     }
@@ -2385,16 +2381,16 @@ page_p::_compress(slotid_t idx)
      *  Move specified slot
      */
     if (idx >= 0)  {
-        slot_t& s = _pp->slot(idx);
+        slot_t& s = _pp->slot[-idx];
         if (s.offset != -1) {
             w_assert3(s.offset >= 0);
             memcpy(p, scratch + s.offset, s.length);
-            s.offset = p - _pp->data();
+            s.offset = p - _pp->data;
             p += align(s.length);
         }
     }
 
-    _pp->end = p - _pp->data();
+    _pp->end = p - _pp->data;
 
     /*
      *  Page is now compressed with a hole after _pp->end.
@@ -2451,7 +2447,7 @@ page_p::check()
     int END = 0;
     int NFREE = data_sz + 2 * sizeof(slot_t);
 
-    slot_t* p = &_pp->slot(0);
+    slot_t* p = _pp->slot;
     for (int i = 0; i < _pp->nslots; i++, p--)  {
         int len = int(align(p->length));
         int j;
@@ -2616,10 +2612,10 @@ page_p::page_usage(int& data_size, int& header_size, int& unused,
     // calculate space wasted in data alignment
     for (int i=0 ; i<_pp->nslots; i++) {
         // if slot is not vacant
-        if ( _pp->slot(i).offset != -1 ) {
-            data_size += _pp->slot(i).length;
-            alignment += int(align(_pp->slot(i).length) -
-                             _pp->slot(i).length);
+        if ( _pp->slot[-i].offset != -1 ) {
+            data_size += _pp->slot[-i].length;
+            alignment += int(align(_pp->slot[-i].length) -
+                             _pp->slot[-i].length);
         }
     }
     // unused space
@@ -2647,7 +2643,10 @@ page_p::init_bucket_info(page_p::tag_t ptag,
     // so that when/if called with unknown (t_any_p) tag,
     // we can get the tag off the page (assuming it's been
     // formatted)
-    if(ptag == page_p::t_any_p) ptag = tag(); 
+    if(ptag == page_p::t_any_p) {
+        ptag = tag(); 
+        INC_TSTAT(any_p_fix_cnt);  
+    }
     if(rsvd_mode(ptag)) {
         /*
          * If the page type calls for it, we must init
@@ -2669,6 +2668,19 @@ page_p::init_bucket_info(page_p::tag_t ptag,
         // check on unfix is notnecessary 
         page_bucket_info.nochecknecessary();
     }
+}
+
+NORET        
+page_p::page_bucket_info_t::~page_bucket_info_t()
+{ 
+    // ideally we'd just assert that _checked==1
+    // but in the case of an error while doing the
+    // operation, the bucket info might not have been
+    // updated because we are rolling back work before
+    // we finished the operation.
+    w_assert3( (_checked==1)
+            || 
+            (xct() && xct()->error_encountered() == true));
 }
 
 w_rc_t        
@@ -2704,14 +2716,14 @@ page_p::update_bucket_info()
         // histograms.
         */
         if(
-             (smlevel_0::operating_mode == smlevel_0::t_in_undo)
-             ||
              (smlevel_0::operating_mode == smlevel_0::t_forward_processing)
+             ||
+             (smlevel_0::operating_mode == smlevel_0::t_in_undo)
         )  
         {
             space_bucket_t b = bucket();
-            if((page_bucket_info.old() != b) && 
-                page_bucket_info.initialized()) {
+            if(page_bucket_info.initialized() &&
+                (page_bucket_info.old() != b)) {
                 DBG(<<"updating extent histo for pg " <<  pid());
                 W_DO(io->update_ext_histo(pid(), b));
                 DBG(<<"page_bucket_info.init " << int(b));

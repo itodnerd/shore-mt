@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: sthread_stats.cpp,v 1.8.2.5 2010/03/19 22:20:01 nhall Exp $
+ $Id: sthread_stats.cpp,v 1.10 2010/07/19 18:35:15 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -52,19 +52,12 @@ ostream &operator <<(ostream &o, const sthread_stats &s)
 {
     o << "STHREAD STATS:" << endl;
 
-    o << "I/O:" << endl 
-        << "  count: " << s.num_io
+    o << "rwlock_r_wait:" << endl 
+        << "  count: " << s.rwlock_r_wait
         << endl;
-
-    o <<   "\tread: " << s.read
-        << "  write: " << s.write
-        << "  sync: " << s.sync
-        << "  trunc: " << s.truncate << endl;
-
-    if (s.writev) {
-        o << "\twritev: " << s.writev;
-        o << endl;
-    }
+    o << "rwlock_w_wait:" << endl 
+        << "  count: " << s.rwlock_w_wait
+        << endl;
 
     return o;
 }

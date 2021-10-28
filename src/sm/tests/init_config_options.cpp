@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: init_config_options.cpp,v 1.3 2010/06/08 22:28:15 nhall Exp $
+ $Id: init_config_options.cpp,v 1.5 2010/09/21 14:26:28 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -33,42 +33,74 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 /**\anchor init_config_options_example */
 /*
- * This file implements configuration option processing for
- * both the client and the server.
+ * This file illustrates processing of run-time options
+ * from the command line and from a file.
+ * The options are processed in a single static function,
+ * init_config_options.  
+ *
+ * It is used by several of the storage manager examples.
  */
 
+
+/* Since this file only deals with the SSM option package,
+ * rather than including sm_vas.h, just include what's needed for
+ * options:
+ */
 #include <w_stream.h>
 #include <cstring>
-
-// since this file only deals with the SSM option package,
-// rather than including sm_vas.h, just include what's needed for
-// options:
-
 #include "w.h"
 #include "option.h"
 #include <w_strstream.h>
 
 /*
- * init_config_options intializes configuration options 
+ * init_config_options() 
  *
- * The options parameter is the option group holding all the options.
- * It is assumed that all SSM options have been added if called
- * by the server.
+ * The first argument, the options parameter,
+ * is the option group holding all the options. It must have
+ * been created by the caller.
  *
- * The prog_type parameter is should be either "client" or "server".
+ * This is designed to be called by server-side code and
+ * by client-side code, so it uses a 3-level hierarchy for
+ * naming the options: example.<server-or-client>.<program-name>,
+ * where, presumably, the server-side code will be written to
+ * call this with the
+ * second argument, prog_type, to be "server", and the
+ * client-side code will use "client" for the prog_type argument.
+ * This function, however, doesn't care what the value of
+ * prog_type is; it just inserts it in the hierarchy.
  *
- * The argc and argv parameters should be argc and argv from main().
- * Recognized options will be located in argv and removed.  argc
- * is changed to reflect the removal.
+ * In the server-side case, because (presumably) the storage manager will be used,
+ * the storage manager options must have been added to the options group before this 
+ * function is called.  
  *
+ * If the argc and argv parameters are argc and argv from main(), then the
+ * executables can be invoked with storage manager options on the command-line, e.g.,
+ * <argv0> -sm_logdir /tmp/logdir -sm_num_page_writers 4
+ *
+ * Recognized options will be located in argv and removed from the argv list, and
+ * argc is changed to reflect the removal, which is why it is passed by
+ * reference.
+ * After this function is used, the calling code can process the remainder
+ * of the command line without interference by storage manager option-value
+ * pairs.
+ *
+ * In this function, we have hard-wired the name of the file (EXAMPLE_SHORECONFIG) to be 
+ * read for options values, and we have hard-wired the options' class hierarchy to be
+ * example.<prog_type>.<program-name>
+ *
+ * You might not want to use such a hierarchy -- if you don't have client- and server-
+ * side executables for the same "program", and if you don't want to collect
+ * options for different programs in the same file, you might dispense with the
+ * hierarchy.
  */
 
 w_rc_t
-init_config_options(option_group_t& options,
-            const char* prog_type,
-            int& argc, char** argv)
+init_config_options(
+            option_group_t& options,
+            const char*     prog_type,
+            int&            argc, 
+            char**          argv)
 {
-
     w_rc_t rc;    // return code
 
     // set prog_name to the file name of the program without the path
@@ -92,9 +124,11 @@ init_config_options(option_group_t& options,
         const char* opt_file = "EXAMPLE_SHORECONFIG";     // option config file
         option_file_scan_t opt_scan(opt_file, &options);
 
-        // scan the file and override any current option settings
-        // options names must be spelled correctly
-        rc = opt_scan.scan(true /*override*/, err_stream, true);
+        // Scan the file and override any default option settings.
+        // Options names must be spelled correctly
+        rc = opt_scan.scan(true /*override*/, 
+                err_stream, 
+                true /*option names must be complete and correct*/ );
         if (rc.is_error()) {
             cerr << "Error in reading option file: " << opt_file << endl;
             cerr << "\t" << err_stream.c_str() << endl;
@@ -102,22 +136,26 @@ init_config_options(option_group_t& options,
         }
     }
 
-    // parse argv for options
+    // parse command line for more options.
     if (!rc.is_error()) {
         // parse command line
         w_ostrstream      err_stream;
-        rc = options.parse_command_line((const char **)argv, 
-                argc, 2, &err_stream);
+        rc = options.parse_command_line(
+                (const char **)argv, 
+                argc, 
+                2,  /* minimum length of an option name*/
+                &err_stream /* send error messages here */
+                );
         err_stream << ends;
         if (rc.is_error()) {
             cerr << "Error on Command line " << endl;
             cerr << "\t" << w_error_t::error_string(rc.err_num()) << endl;
             cerr << "\t" << err_stream.c_str() << endl;
-        return rc;
+            return rc;
         }
     }
  
-    // check required options
+    // check required options for values
     {
         w_ostrstream      err_stream;
         rc = options.check_required(&err_stream);

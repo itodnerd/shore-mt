@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='EXTENT_H'>
 
- $Id: extent.h,v 1.14 2010/06/08 22:28:55 nhall Exp $
+ $Id: extent.h,v 1.21 2010/12/08 17:37:42 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -61,16 +61,31 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 /********************************************************************
  * class extlink_t
  ********************************************************************/
+/**\brief
+ * Persistent structure (on an extent map page) representing an extent.
+ * \details Contains a bitmap indicating which of its pages are allocated,
+ * next and previous pointers to link this extent into a store, and
+ * an owner (store number, zero means not owned).  
+ * Also contains unlogged space-utilization information (bucket map) used by
+ * the file manager.
+ */
 
 class extlink_t {
     // Grot: this became 4-byte aligned when extnum_t grew to 4 bytes
     Pmap_Align4        pmap;        // LOGGED. this must be first
 public:
+    /**\brief Linked list next */
     extnum_t           next;        // 4 bytes
+    /**\brief Linked list previous */
     extnum_t           prev;        // 4 bytes
+    /**\brief Store number of containging store */
     snum_t             owner;       // 4 bytes
-    uint4_t            pbucketmap; // 4 bytes, unlogged !!! used by
-                                   // histograms
+    /**\brief Not logged; space utilization by histograms */
+    uint4_t            pbucketmap; // 4 bytes, unlogged !!! 
+    // NOTE re: pbucketmap: If we change the number of pages per
+    // extent, we have to adjust the size of pbucketmap or 
+    // we have to adjust HBUCKETBITS in page_s.h
+    // They are all closely tied.
 
     static int       logged_size();
     NORET            extlink_t();
@@ -203,10 +218,13 @@ extlink_t::num_clr() const
     return pmap.num_clear();
 }
 
+/**\cond skip */
 
 /********************************************************************
 * class extlink_p
 ********************************************************************/
+/**\brief Extent map page that contains extent links (extlink_t).
+ */
 
 class extlink_p : public page_p {
 public:
@@ -216,11 +234,12 @@ public:
     // max # extent links on a page
     enum { max = data_sz / sizeof(extlink_t) };
 
-    const extlink_t&         get(slotid_t idx);
+    const extlink_t& get_const(slotid_t idx);
+    extlink_t&       get_nonconst(slotid_t idx);
     void             put(slotid_t idx, const extlink_t& e);
-    void             set_byte(slotid_t idx, u_char bits, 
+    w_rc_t           set_byte(slotid_t idx, u_char bits, 
                           enum page_p::logical_operation);
-    void             set_bytes(slotid_t idx,
+    w_rc_t           set_bytes(slotid_t idx,
                           smsize_t    offset,
                           smsize_t     count,
                           const uint1_t* bits, 
@@ -256,8 +275,13 @@ extlink_p::item(int i)
 }
 
 
+inline extlink_t&
+extlink_p::get_nonconst(slotid_t idx) 
+{
+    return item(idx);
+}
 inline const extlink_t&
-extlink_p::get(slotid_t idx)
+extlink_p::get_const(slotid_t idx) 
 {
     return item(idx);
 }
@@ -281,17 +305,33 @@ extlink_p::put(slotid_t idx, const extlink_t& e)
     W_COERCE(overwrite(0, idx * sizeof(extlink_t), extent_vec_tmp));
 }
 
+/**\endcond skip */
 
 
+/**\brief Persistent structure representing the head of a store's extent list.
+ * \details These structures sit on stnode_p pages and point to the
+ * start of the extent list.
+ * The stnode_t structures are indexed by store number.
+ */
 struct stnode_t {
-    extnum_t            head;
+    /**\brief First extent of the store */
+    extnum_t                 head; // 4 bytes
+    /**\brief Fill factor (not used) */
     w_base_t::uint2_t        eff;
+    /**\brief store flags  */
     w_base_t::uint2_t        flags;
-    w_base_t::uint2_t        deleting;
-    fill2            filler; // align to 4 bytes
+    /**\brief non-zero if deleting or deleted */
+    w_base_t::uint2_t        deleting; // see store_operation
+    /**\brief alignment */
+    fill2                    filler; // align to 4 bytes
 };
 
+/**\cond skip */
 
+/**\brief Extent map page that contains store nodes (stnode_t).
+ * \details These are the pages that contain the starting points of 
+ * a store's list of extents.
+ */
 class stnode_p : public page_p {
     public:
     MAKEPAGE(stnode_p, page_p, 1);
@@ -332,17 +372,13 @@ stnode_p::put(slotid_t idx, const stnode_t& e)
     W_DO(overwrite(0, idx * sizeof(stnode_t), stnode_vec_tmp));
     return RCOK;
 }
+/**\endcond skip */
 
-/*********************************************************************
- *
- *  class extlink_i
- *
- *  Iterator on extent link area of the volume.
- *
- *  The general scheme for managing extents is described in the comment
- *  above (COMMENT)
- *
- *********************************************************************/
+/**\brief Iterator over a list of extents.
+ *\details  Constructor latches the given extent-map page.
+ * Get() methods unlatch and latch extent-map pages as needed to return
+ * a reference to the needed extlink_t.
+ */
 class extlink_i {
 public:
     NORET            extlink_i(const lpid_t& root)
@@ -355,9 +391,10 @@ public:
     bool             on_same_root(extnum_t idx);
     
     lpid_t           get_pid(extnum_t idx) const;
-    rc_t             get(extnum_t idx, const extlink_t* &);
-    rc_t             get(extnum_t idx, extlink_t* &);
-    rc_t             get_copy(extnum_t idx, extlink_t &);
+    rc_t             get_const(extnum_t idx, const extlink_t* &);
+    rc_t             get_nonconst(extnum_t idx, extlink_t* &);
+    rc_t             get_copy_SH(extnum_t idx, extlink_t &);
+    rc_t             get_copy_EX(extnum_t idx, extlink_t &);
     rc_t             put(extnum_t idx, const extlink_t&);
     bool             on_same_page(extnum_t ext1, extnum_t ext2) const ;
 
@@ -378,12 +415,12 @@ private:
     lpid_t              _root;
     extlink_p           _page;
 
-    inline void        update_pmap(extnum_t idx,
-                        const Pmap &pmap,
-                        page_p::logical_operation how);
-    inline void        update_pbucketmap(extnum_t idx,
-                        uint4_t map,
-                        page_p::logical_operation how);
+    inline w_rc_t       update_pmap(extnum_t idx,
+                            const Pmap &pmap,
+                            page_p::logical_operation how);
+    inline w_rc_t       update_pbucketmap(extnum_t idx,
+                            uint4_t map,
+                            page_p::logical_operation how);
 };
 
 
@@ -394,6 +431,13 @@ private:
  *  Iterator over store node area of volume.
  *
  *********************************************************************/
+/**\brief Iterator over store nodes.
+ * \details  Constructor latches the given store node page; the get
+ * methods unlatch and latch pages as necessary to return a reference to
+ * a stnode_t for the given store number.
+ * The store_operation method effects operations on entire stores, such
+ * as deletion and changing logging attributes.
+ */
 class stnode_i: private smlevel_0 {
 public:
     NORET               stnode_i(const lpid_t& root) : _root(root) {

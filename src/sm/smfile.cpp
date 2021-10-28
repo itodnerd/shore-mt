@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: smfile.cpp,v 1.62 2010/06/08 22:28:56 nhall Exp $
+ $Id: smfile.cpp,v 1.69 2010/12/17 19:36:26 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -67,15 +67,11 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include "sm.h"
 
 
-#if W_DEBUG_LEVEL > 0
+#if W_DEBUG_LEVEL > 2
 #define  FILE_LOG_COMMENT_ON 1
 #else
 #define  FILE_LOG_COMMENT_ON 0
 #endif
-
-/*==============================================================*
- *  Physical ID version of all the storage operations           *
- *==============================================================*/
 
 /*--------------------------------------------------------------*
  *  ss_m::set_store_property()                                  *
@@ -110,10 +106,10 @@ ss_m::create_file(
     shpid_t                        cluster_hint // = 0
 )
 {
+    SM_PROLOGUE_RC(ss_m::create_file, in_xct, read_write, 0);
 #if FILE_LOG_COMMENT_ON
     W_DO(log_comment("create_file"));
 #endif
-    SM_PROLOGUE_RC(ss_m::create_file, in_xct, read_write, 0);
     DBGTHRD(<<"create_file " <<vid << " " << property );
     W_DO(_create_file(vid, fid, property, cluster_hint));
     DBGTHRD(<<"create_file returns " << fid);
@@ -138,9 +134,13 @@ ss_m::destroy_file(const stid_t& fid)
 rc_t
 ss_m::create_rec(const stid_t& fid, const vec_t& hdr,
                  smsize_t len_hint, const vec_t& data, rid_t& new_rid,
-                 const bool bIgnoreLocks
-)
+#ifdef SM_DORA
+                 const bool bIgnoreLocks,
+#endif
+                 uint4_t  policy
+                 )
 {
+    SM_PROLOGUE_RC(ss_m::create_rec, in_xct,read_write, 0);
 #if FILE_LOG_COMMENT_ON
     {
         w_ostrstream s;
@@ -148,8 +148,13 @@ ss_m::create_rec(const stid_t& fid, const vec_t& hdr,
         W_DO(log_comment(s.c_str()));
     }
 #endif
-    SM_PROLOGUE_RC(ss_m::create_rec, in_xct,read_write, 0);
-    W_DO(_create_rec(fid, hdr, len_hint, data, new_rid, bIgnoreLocks));
+
+    W_DO(_create_rec(fid, hdr, len_hint, data, new_rid, policy 
+#ifdef SM_DORA
+                     , bIgnoreLocks
+#endif
+                     ));
+
     return RCOK;
 }
 
@@ -157,11 +162,21 @@ ss_m::create_rec(const stid_t& fid, const vec_t& hdr,
  *  ss_m::destroy_rec()                                                *
  *--------------------------------------------------------------*/
 rc_t
-ss_m::destroy_rec(const rid_t& rid, const bool bIgnoreLocks)
+ss_m::destroy_rec(const rid_t& rid
+#ifdef SM_DORA
+                  , const bool bIgnoreLocks
+#endif
+                  )
 {
     SM_PROLOGUE_RC(ss_m::destroy_rec, in_xct,read_write, 0);
     DBG(<<"destroy_rec " <<rid);
-    W_DO(_destroy_rec(rid, bIgnoreLocks));
+
+    W_DO(_destroy_rec(rid
+#ifdef SM_DORA
+                      , bIgnoreLocks
+#endif
+                      ));
+
     return RCOK;
 }
 
@@ -171,6 +186,7 @@ ss_m::destroy_rec(const rid_t& rid, const bool bIgnoreLocks)
 rc_t
 ss_m::update_rec(const rid_t& rid, smsize_t start, const vec_t& data)
 {
+    SM_PROLOGUE_RC(ss_m::update_rec, in_xct,read_write, 0);
 #if FILE_LOG_COMMENT_ON
     {
         w_ostrstream s;
@@ -178,7 +194,6 @@ ss_m::update_rec(const rid_t& rid, smsize_t start, const vec_t& data)
         W_DO(log_comment(s.c_str()));
     }
 #endif
-    SM_PROLOGUE_RC(ss_m::update_rec, in_xct,read_write, 0);
     W_DO(_update_rec(rid, start, data));
     return RCOK;
 }
@@ -200,6 +215,7 @@ ss_m::update_rec_hdr(const rid_t& rid, smsize_t start, const vec_t& hdr)
 rc_t
 ss_m::append_rec(const rid_t& rid, const vec_t& data)
 {
+    SM_PROLOGUE_RC(ss_m::append_rec, in_xct,read_write, 0);
 #if FILE_LOG_COMMENT_ON
     {
         w_ostrstream s;
@@ -207,7 +223,6 @@ ss_m::append_rec(const rid_t& rid, const vec_t& data)
         W_DO(log_comment(s.c_str()));
     }
 #endif
-    SM_PROLOGUE_RC(ss_m::append_rec, in_xct,read_write, 0);
     W_DO(_append_rec(rid, data));
     return RCOK;
 }
@@ -218,6 +233,7 @@ ss_m::append_rec(const rid_t& rid, const vec_t& data)
 rc_t
 ss_m::truncate_rec(const rid_t& rid, smsize_t amount, bool &should_forward)
 {
+    SM_PROLOGUE_RC(ss_m::truncate_rec, in_xct,read_write, 0);
 #if FILE_LOG_COMMENT_ON
     {
         w_ostrstream s;
@@ -225,13 +241,13 @@ ss_m::truncate_rec(const rid_t& rid, smsize_t amount, bool &should_forward)
         W_DO(log_comment(s.c_str()));
     }
 #endif
-    SM_PROLOGUE_RC(ss_m::truncate_rec, in_xct,read_write, 0);
     W_DO(_truncate_rec(rid, amount, should_forward));
     if (should_forward) {
         // The record is still implemented as large, even though
         // it could fit on a page (though not on this one).
         // It's possible to forward it, but that only seems useful
-        // in the context of logical IDs.
+        // in the context of logical IDs, which are no longer part of
+        // the sm. TODO we should remove should_forward  from the api.
     }
     return RCOK;
 }
@@ -239,6 +255,7 @@ ss_m::truncate_rec(const rid_t& rid, smsize_t amount, bool &should_forward)
 rc_t
 ss_m::truncate_rec(const rid_t& rid, smsize_t amount)
 {
+    SM_PROLOGUE_RC(ss_m::truncate_rec, in_xct,read_write, 0);
 #if FILE_LOG_COMMENT_ON
     {
         w_ostrstream s;
@@ -268,440 +285,6 @@ ss_m::vid_to_lvid(vid_t vid, lvid_t& lvid)
     SM_PROLOGUE_RC(ss_m::lvid_to_vid, can_be_in_xct,read_only, 0);
     lvid = io->get_lvid(vid);
     if (lvid == lvid_t::null) return RC(eBADVOL);
-    return RCOK;
-}
-
-
-/*--------------------------------------------------------------*
- *  ss_m::create_mrbt_file()                                    *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::create_mrbt_file(
-    vid_t                          vid, 
-    stid_t&                        fid, 
-    store_property_t               property,
-    shpid_t                        cluster_hint // = 0
-)
-{
-#if FILE_LOG_COMMENT_ON
-    W_DO(log_comment("create_mrbt_file"));
-#endif
-    SM_PROLOGUE_RC(ss_m::create_mrbt_file, in_xct, read_write, 0);
-    DBGTHRD(<<"create_mrbt_file " <<vid << " " << property );
-    W_DO(_create_mrbt_file(vid, fid, property, cluster_hint));
-    DBGTHRD(<<"create_mrbt_file returns " << fid);
-    return RCOK;
-}
-
-/*--------------------------------------------------------------*
- *  ss_m::destroy_mrbt_file()                                   *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::destroy_mrbt_file(const stid_t& fid)
-{
-    SM_PROLOGUE_RC(ss_m::destroy_mrbt_file, in_xct,read_write, 0);
-    DBGTHRD(<<"destroy_mrbt_file " <<fid);
-    W_DO(_destroy_file(fid));
-    return RCOK;
-}
-
-/*--------------------------------------------------------------*
- *  ss_m::create_mrbt_rec()                                     *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::create_mrbt_rec(const stid_t& fid, const vec_t& hdr,
-		      smsize_t len_hint, const vec_t& data, rid_t& new_rid,
-		      const bool bIgnoreLocks
-)
-{
-#if FILE_LOG_COMMENT_ON
-    {
-        w_ostrstream s;
-        s << "create_mrbt_rec " << fid;
-        W_DO(log_comment(s.c_str()));
-    }
-#endif
-    SM_PROLOGUE_RC(ss_m::create_mrbt_rec, in_xct,read_write, 0);
-    W_DO(_create_mrbt_rec(fid, hdr, len_hint, data, new_rid, bIgnoreLocks));
-    return RCOK;
-}
-
-/*--------------------------------------------------------------*
- *  ss_m::create_mrbt_rec_in_page()                             *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::create_mrbt_rec_in_page(const stid_t& fid, file_p& page, const vec_t& hdr,
-			      smsize_t len_hint, const vec_t& data, rid_t& new_rid, bool& space_found,
-			      const bool bIgnoreLocks, const bool bIgnoreLatches)
-{
-#if FILE_LOG_COMMENT_ON
-    {
-        w_ostrstream s;
-        s << "create_mrbt_rec_in_page: file=" << fid << " page=" << page.pid() ;
-        W_DO(log_comment(s.c_str()));
-    }
-#endif
-    SM_PROLOGUE_RC(ss_m::create_mrbt_rec_in_page, in_xct,read_write, 0);
-    W_DO(_create_mrbt_rec_in_page(fid, page, hdr, len_hint, data, new_rid,
-				  space_found, bIgnoreLocks, bIgnoreLatches));
-
-    return RCOK;
-}
-
-/*--------------------------------------------------------------*
- *  ss_m::create_mrbt_rec_in_page()                             *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::find_page_and_create_mrbt_rec(const stid_t& fid, const lpid_t& leaf, const vec_t& hdr,
-				    smsize_t len_hint, const vec_t& data, rid_t& new_rid,
-				    const bool bIgnoreLocks, const bool bIgnoreLatches)
-{
-#if FILE_LOG_COMMENT_ON
-    {
-        w_ostrstream s;
-        s << "find_page_and_create_mrbt_rec: file=" << fid ;
-        W_DO(log_comment(s.c_str()));
-    }
-#endif
-    SM_PROLOGUE_RC(ss_m::find_page_and_create_mrbt_rec, in_xct,read_write, 0);    
-    W_DO(_find_page_and_create_mrbt_rec(fid, leaf, hdr, len_hint, data, new_rid,
-					bIgnoreLocks, bIgnoreLatches));
-    return RCOK;
-}
-
-/*--------------------------------------------------------------*
- *  ss_m::destroy_mrbt_rec()                                    *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::destroy_mrbt_rec(const rid_t& rid,
-		       const bool bIgnoreLocks, const bool bIgnoreLatches
-)
-{
-    SM_PROLOGUE_RC(ss_m::destroy_mrbt_rec, in_xct,read_write, 0);
-    DBG(<<"destroy_mrbt_rec " <<rid);
-    W_DO(_destroy_mrbt_rec(rid, bIgnoreLocks, bIgnoreLatches));
-    return RCOK;
-}
-
-/*--------------------------------------------------------------*
- *  ss_m::update_mrbt_rec()                                     *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::update_mrbt_rec(const rid_t& rid, smsize_t start, const vec_t& data,
-		      const bool bIgnoreLocks, const bool bIgnoreLatches)
-{
-#if FILE_LOG_COMMENT_ON
-    {
-        w_ostrstream s;
-        s << "update_mrbt_rec " << rid;
-        W_DO(log_comment(s.c_str()));
-    }
-#endif
-    SM_PROLOGUE_RC(ss_m::update_mrbt_rec, in_xct,read_write, 0);
-    W_DO(_update_mrbt_rec(rid, start, data, bIgnoreLocks, bIgnoreLatches));
-    return RCOK;
-}
-
-/*--------------------------------------------------------------*
- *  ss_m::update_mrbt_rec_hdr()                                 *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::update_mrbt_rec_hdr(const rid_t& rid, smsize_t start, const vec_t& hdr,
-			  const bool bIgnoreLocks, const bool bIgnoreLatches)
-{
-    SM_PROLOGUE_RC(ss_m::update_mrbt_rec_hdr, in_xct,read_write, 0);
-    W_DO(_update_mrbt_rec_hdr(rid, start, hdr, bIgnoreLocks, bIgnoreLatches));
-    return RCOK;
-}
-
-/*--------------------------------------------------------------*
- *  ss_m::append_mrbt_rec()                                     *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::append_mrbt_rec(const rid_t& rid, const vec_t& data,
-		      const bool bIgnoreLocks, const bool bIgnoreLatches)
-{
-#if FILE_LOG_COMMENT_ON
-    {
-        w_ostrstream s;
-        s << "append_mrbt_rec " << rid;
-        W_DO(log_comment(s.c_str()));
-    }
-#endif
-    SM_PROLOGUE_RC(ss_m::append_mrbt_rec, in_xct,read_write, 0);
-    W_DO(_append_mrbt_rec(rid, data, bIgnoreLocks, bIgnoreLatches));
-    return RCOK;
-}
-
-/*--------------------------------------------------------------*
- *  ss_m::truncate_mrbt_rec()                                   *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::truncate_mrbt_rec(const rid_t& rid, smsize_t amount, bool &should_forward,
-			const bool /*bIgnoreLocks*/, const bool bIgnoreLatches)
-{
-#if FILE_LOG_COMMENT_ON
-    {
-        w_ostrstream s;
-        s << "truncate_mrbt_rec " << rid;
-        W_DO(log_comment(s.c_str()));
-    }
-#endif
-    SM_PROLOGUE_RC(ss_m::truncate_mrbt_rec, in_xct,read_write, 0);
-    W_DO(_truncate_mrbt_rec(rid, amount, should_forward, bIgnoreLatches));
-    if (should_forward) {
-        // The record is still implemented as large, even though
-        // it could fit on a page (though not on this one).
-        // It's possible to forward it, but that only seems useful
-        // in the context of logical IDs.
-    }
-    return RCOK;
-}
-
-rc_t
-ss_m::truncate_mrbt_rec(const rid_t& rid, smsize_t amount,
-			const bool bIgnoreLocks, const bool bIgnoreLatches)
-{
-#if FILE_LOG_COMMENT_ON
-    {
-        w_ostrstream s;
-        s << "truncate_mrbt_rec " << rid;
-        W_DO(log_comment(s.c_str()));
-    }
-#endif
-    if(!bIgnoreLocks) {
-	W_DO(lm->lock(rid, EX, t_long, WAIT_SPECIFIED_BY_XCT));
-    }
-    bool should_forward;
-    W_DO(fi->truncate_mrbt_rec(rid, amount, should_forward, bIgnoreLatches));
-    return RCOK;
-}
-
-/*--------------------------------------------------------------*
- *  ss_m::_create_mrbt_file()                                   *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::_create_mrbt_file(vid_t vid, stid_t& fid,
-			store_property_t property,
-			shpid_t        cluster_hint // = 0
-			)
-{
-    FUNC(ss_m::_create_mrbt_file);
-    DBG( << "Attempting to create a file on volume " << vid.vol );
-
-    store_flag_t st_flag = _make_store_flag(property);
-    extnum_t first_extent = extnum_t(cluster_hint? cluster_hint / ss_m::ext_sz : 0);
-
-    DBGTHRD(<<"about to create a store starting about extent " << first_extent);
-    W_DO( io->create_store(vid, 100/*unused*/, st_flag, fid, first_extent) );
-
-    DBGTHRD(<<"created first store " << fid << " now create 2nd...");
-
-    /*
-    // create a store for holding large record pages 
-    // always allocates 1 extent -- otherwise
-    // asserts fail elsewhere
-    // If this fails, we have to by-hand back out the creation
-    // of the first store
-    */
-    stid_t lg_stid;
-    w_rc_t rc= io->create_store(vid, 100/*unused*/, 
-                st_flag, lg_stid, first_extent, 1);
-    if(rc.is_error()) {
-        // it would be a problem if this didn't work, but
-        // if all else fails, abort should work.
-        DBGTHRD(<<"2nd create failed; destroying first= " << fid);
-        W_DO( io->destroy_store(fid) );
-        return rc;
-    }
-
-    DBGTHRD(<<"created 2nd store (for lg recs) " << lg_stid);
-
-    // RACE: theoretically, some other thread could use/destroy
-    //       the above stores before the following lock request
-    //       is granted.  The only forseable way for this to
-    //       happen would be due to a bug in a vas causing
-    //       it to destroy the wrong store.  We make no attempt
-    //       to prevent this.
-    W_DO(lm->lock(fid, EX, t_long, WAIT_SPECIFIED_BY_XCT));
-
-    DBGTHRD(<<"locked " << fid);
-
-    lpid_t first;
-    //W_DO( fi->create_mrbt(fid, first) );
-    //DBGTHRD(<<"locked &created -- put in store directory: " << fid);
-
-    sinfo_s sinfo(fid.store, t_file, 100/*unused*/, 
-           t_bad_ndx_t, t_cc_none/*not used*/, first.page, 0, 0);
-    sinfo.set_large_store(lg_stid.store);
-    W_DO( dir->insert(fid, sinfo) );
-
-    DBGTHRD(<<"inserted " << fid.store);
-
-    return RCOK;
-}
-
-/*--------------------------------------------------------------*
- *  ss_m::_create_mrbt_rec()                                    *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::_create_mrbt_rec(const stid_t& fid, const vec_t& hdr, smsize_t len_hint, 
-		       const vec_t& data, rid_t& new_rid, const bool bIgnoreLocks
-)
-{
-    FUNC(ss_m::_create_mrbt_rec);
-    sdesc_t* sd;
-
-    lock_mode_t lmode = IX;
-    if (bIgnoreLocks) lmode = NL;
-
-    W_DO( dir->access(fid, sd, lmode) );
-
-    DBG( << "create in fid " << fid << " data.size " << data.size());
-
-    W_DO(fi->create_mrbt_rec(fid, len_hint, hdr, data, *sd, new_rid, bIgnoreLocks));
-
-    // NOTE: new_rid need not be locked, since lock escalation
-    // or explicit file/page lock might obviate it.
-
-    return RCOK;
-}
-
-/*--------------------------------------------------------------*
- *  ss_m::_create_mrbt_rec_in_page()                            *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::_create_mrbt_rec_in_page(const stid_t& fid, file_p& page, const vec_t& hdr, smsize_t len_hint, 
-			       const vec_t& data, rid_t& new_rid, bool& space_found,
-			       const bool bIgnoreLocks, const bool bIgnoreLatches)
-{
-    FUNC(ss_m::_create_mrbt_rec_in_page);
-    sdesc_t* sd;
-
-    lock_mode_t lmode = IX;
-    if (bIgnoreLocks) lmode = NL;
-
-    W_DO( dir->access(fid, sd, lmode) );
-
-    DBG( << "create in fid " << fid << " in page " << page.pid() << " data.size " << data.size());
-
-    W_DO( fi->create_mrbt_rec_in_given_page(len_hint, *sd, hdr, data, new_rid, page, space_found, bIgnoreLatches) );
-
-    return RCOK;
-}
-
-/*--------------------------------------------------------------*
- *  ss_m::_find_page_and_create_mrbt_rec()                      *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::_find_page_and_create_mrbt_rec(const stid_t& fid, const lpid_t& leaf, const vec_t& hdr,
-				     smsize_t len_hint, const vec_t& data, rid_t& new_rid,
-				     const bool bIgnoreLocks, const bool bIgnoreLatches)
-{
-    FUNC(ss_m::_find_page_and_create_mrbt_rec);
-    sdesc_t* sd_heap;
-    sdesc_t* sd_index;
-
-    lock_mode_t lmode = IX;
-    if (bIgnoreLocks) lmode = NL;
-
-    W_DO( dir->access(fid, sd_heap, lmode) );
-    W_DO( dir->access(leaf._stid, sd_index, lmode) );
-
-    DBG( << "create in fid " << fid << " data.size " << data.size());
-
-    if (sd_index->sinfo().stype != t_index)   return RC(eBADSTORETYPE);
-    switch (sd_index->sinfo().ntype)  {
-    case t_mrbtree_l:
-    case t_uni_mrbtree_l:
-
-	W_DO( fi->create_mrbt_rec_l(leaf, *sd_heap, hdr, data, len_hint, new_rid, bIgnoreLatches) );
-	break;
-	
-    case t_mrbtree_p:
-    case t_uni_mrbtree_p:
-	 
-	W_DO( fi->create_mrbt_rec_p(leaf, *sd_heap, hdr, data, len_hint, new_rid, bIgnoreLatches) );
-	break;
-
-    default:
-        return RC(eBADNDXTYPE);
-    }
-    
-    return RCOK;
-}
-
-/*--------------------------------------------------------------*
- *  ss_m::_destroy_mrbt_rec()                                        *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::_destroy_mrbt_rec(const rid_t& rid,
-			const bool bIgnoreLocks, const bool bIgnoreLatches
-)
-{
-    DBG(<<"_destroy_rec " << rid);
-    W_DO(lm->lock(rid, EX, t_long, WAIT_SPECIFIED_BY_XCT,
-		  // If set it will cause to bIgnoreParents
-                  0, 0, 0, bIgnoreLocks));
-    W_DO(fi->destroy_rec(rid, bIgnoreLatches));
-    return RCOK;
-}
-
-/*--------------------------------------------------------------*
- *  ss_m::_update_mrbt_rec()                                                *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::_update_mrbt_rec(const rid_t& rid, smsize_t start, const vec_t& data,
-		       const bool bIgnoreLocks, const bool bIgnoreLatches)
-{
-    if (!bIgnoreLocks) W_DO(lm->lock(rid, EX, t_long, WAIT_SPECIFIED_BY_XCT));
-    W_DO(fi->update_rec(rid, start, data, bIgnoreLatches));
-    return RCOK;
-}
-
-/*--------------------------------------------------------------*
- *  ss_m::_update_mrbt_rec_hdr()                                        *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::_update_mrbt_rec_hdr(const rid_t& rid, smsize_t start, const vec_t& hdr,
-			   const bool bIgnoreLocks, const bool bIgnoreLatches)
-{
-    if (!bIgnoreLocks) {	
-        W_DO(lm->lock(rid, EX, t_long, WAIT_SPECIFIED_BY_XCT));
-    }
-    W_DO(fi->splice_hdr(rid, u4i(start), hdr.size(), hdr, bIgnoreLatches));
-    return RCOK;
-}
-
-/*--------------------------------------------------------------*
- *  ss_m::_append_mrbt_rec()                                    *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::_append_mrbt_rec(const rid_t& rid, const vec_t& data,
-		       const bool bIgnoreLocks, const bool bIgnoreLatches)
-{
-    sdesc_t* sd;
-    lock_mode_t lmode = IX;
-    if (bIgnoreLocks) lmode = NL;
-    W_DO( dir->access(rid.stid(), sd, lmode) );
-    if (!bIgnoreLocks) {	
-        W_DO(lm->lock(rid, EX, t_long, WAIT_SPECIFIED_BY_XCT));
-    }
-    W_DO(fi->append_mrbt_rec(rid, data, *sd, bIgnoreLatches));
-    return RCOK;
-}
-
-/*--------------------------------------------------------------*
- *  ss_m::_truncate_mrbt_rec()                                  *
- *--------------------------------------------------------------*/
-rc_t
-ss_m::_truncate_mrbt_rec(const rid_t& rid, smsize_t amount, bool& should_forward,
-			 const bool bIgnoreLocks, const bool bIgnoreLatches)
-{
-    if (!bIgnoreLocks) {	
-        W_DO(lm->lock(rid, EX, t_long, WAIT_SPECIFIED_BY_XCT));
-    }
-    W_DO(fi->truncate_mrbt_rec(rid, amount, should_forward, bIgnoreLatches));
     return RCOK;
 }
 
@@ -747,7 +330,7 @@ ss_m::_set_store_property(
 
 
     sdesc_t* sd;
-    W_DO( dir->access(stid, sd, EX) );  // also locks the store in EX
+    W_DO( dir->access(t_file, stid, sd, EX) );  // also locks the store in EX
 
     if (newflags == st_regular)  {
         /*
@@ -892,9 +475,10 @@ ss_m::_create_file(vid_t vid, stid_t& fid,
     sinfo_s sinfo(fid.store, t_file, 100/*unused*/, 
            t_bad_ndx_t, t_cc_none/*not used*/, first.page, 0, 0);
     sinfo.set_large_store(lg_stid.store);
+    DBGTHRD(<<"inserting in directory fid:" << fid);
     W_DO( dir->insert(fid, sinfo) );
 
-    DBGTHRD(<<"inserted " << fid.store);
+    DBGTHRD(<<"_create_file done fid:" << fid);
 
     return RCOK;
 }
@@ -920,7 +504,7 @@ ss_m::_destroy_file(const stid_t& fid)
     sdesc_t* sd;
 
     DBGTHRD(<<"want to destroy store " << fid);
-    W_DO( dir->access(fid, sd, EX) );
+    W_DO( dir->access(t_file, fid, sd, EX) );
 
     if (sd->sinfo().stype != t_file) return RC(eBADSTORETYPE);
 
@@ -962,10 +546,10 @@ ss_m::_destroy_n_swap_file(const stid_t& old_fid, const stid_t& new_fid)
 {
     sdesc_t *sd1, *sd2;
 
-    W_DO( dir->access(old_fid, sd1, EX) );
+    W_DO( dir->access(t_file, old_fid, sd1, EX) );
     if (sd1->sinfo().stype != t_file) return RC(eBADSTORETYPE);
 
-    W_DO( dir->access(new_fid, sd2, EX) );
+    W_DO( dir->access(t_file, new_fid, sd2, EX) );
     if (sd2->sinfo().stype != t_file) return RC(eBADSTORETYPE);
 
     store_flag_t old_store_flags = st_bad;
@@ -1004,23 +588,37 @@ ss_m::_destroy_n_swap_file(const stid_t& old_fid, const stid_t& new_fid)
  *--------------------------------------------------------------*/
 rc_t
 ss_m::_create_rec(const stid_t& fid, const vec_t& hdr, smsize_t len_hint, 
-                  const vec_t& data, rid_t& new_rid, const bool bIgnoreLocks
-)
+                  const vec_t& data, rid_t& new_rid,
+                  uint4_t policy
+#ifdef SM_DORA
+                  , const bool bIgnoreLocks
+#endif
+                 )
 {
     FUNC(ss_m::_create_rec);
     sdesc_t* sd;
 
     lock_mode_t lmode = IX;
+#ifdef SM_DORA
     if (bIgnoreLocks) lmode = NL;
+#endif
 
-    W_DO( dir->access(fid, sd, lmode) );
+    W_DO( dir->access(t_file, fid, sd, lmode) );
+    // TODO: should have a default policy for a store
 
     DBG( << "create in fid " << fid << " data.size " << data.size());
 
-    W_DO(fi->create_rec(fid, len_hint, hdr, data, *sd, new_rid, bIgnoreLocks));
+    W_DO( fi->create_rec(fid, len_hint, hdr, data, *sd, new_rid,
+                          policy
+#ifdef SM_DORA
+                         , bIgnoreLocks
+#endif
+                         ) );
 
     // NOTE: new_rid need not be locked, since lock escalation
     // or explicit file/page lock might obviate it.
+
+    //cout << "sm create_rec " << new_rid << " size(hdr, data) " << hdr.size() <<  " " << data.size() << endl;
 
     return RCOK;
 }
@@ -1029,13 +627,22 @@ ss_m::_create_rec(const stid_t& fid, const vec_t& hdr, smsize_t len_hint,
  *  ss_m::_destroy_rec()                                        *
  *--------------------------------------------------------------*/
 rc_t
-ss_m::_destroy_rec(const rid_t& rid, const bool bIgnoreLocks)
+ss_m::_destroy_rec(const rid_t& rid
+#ifdef SM_DORA
+                   , const bool bIgnoreLocks
+#endif
+                   )
 {
     DBG(<<"_destroy_rec " << rid);
-    W_DO(lm->lock(rid, EX, t_long, WAIT_SPECIFIED_BY_XCT,
-		  // If set it will cause to bIgnoreParents
-                  0, 0, 0, bIgnoreLocks));
+
+    W_DO(lm->lock(rid, EX, t_long, WAIT_SPECIFIED_BY_XCT
+#ifdef SM_DORA
+                  , 0, 0, 0, bIgnoreLocks // If set it will cause to bIgnoreParents
+#endif
+                  ));
+
     W_DO(fi->destroy_rec(rid));
+    //cout << "sm destroy_rec " << rid << endl;
     return RCOK;
 }
 
@@ -1043,12 +650,19 @@ ss_m::_destroy_rec(const rid_t& rid, const bool bIgnoreLocks)
  *  ss_m::_update_rec()                                                *
  *--------------------------------------------------------------*/
 rc_t
-ss_m::_update_rec(const rid_t& rid, smsize_t start, const vec_t& data,
-                  const bool bIgnoreLocks
-)
+ss_m::_update_rec(const rid_t& rid, smsize_t start, const vec_t& data
+#ifdef SM_DORA
+                  , const bool bIgnoreLocks
+#endif
+                  )
 {
+#ifdef SM_DORA
     if (!bIgnoreLocks) W_DO(lm->lock(rid, EX, t_long, WAIT_SPECIFIED_BY_XCT));
     W_DO(fi->update_rec(rid, start, data, bIgnoreLocks));
+#else
+    W_DO(lm->lock(rid, EX, t_long, WAIT_SPECIFIED_BY_XCT));
+    W_DO(fi->update_rec(rid, start, data));
+#endif
     return RCOK;
 }
 
@@ -1056,13 +670,21 @@ ss_m::_update_rec(const rid_t& rid, smsize_t start, const vec_t& data,
  *  ss_m::_update_rec_hdr()                                        *
  *--------------------------------------------------------------*/
 rc_t
-ss_m::_update_rec_hdr(const rid_t& rid, smsize_t start, const vec_t& hdr,
-                      const bool bIgnoreLocks
-)
+ss_m::_update_rec_hdr(const rid_t& rid, smsize_t start, const vec_t& hdr
+#ifdef SM_DORA
+                      , const bool bIgnoreLocks
+#endif
+                      )
 {
+#ifdef SM_DORA
     if (!bIgnoreLocks) {
+#endif
         W_DO(lm->lock(rid, EX, t_long, WAIT_SPECIFIED_BY_XCT));
+#ifdef SM_DORA
     }
+#endif
+
+    W_DO(fi->verify_rid(rid));
     W_DO(fi->splice_hdr(rid, u4i(start), hdr.size(), hdr));
     return RCOK;
 }
@@ -1074,7 +696,9 @@ rc_t
 ss_m::_append_rec(const rid_t& rid, const vec_t& data)
 {
     sdesc_t* sd;
-    W_DO( dir->access(rid.stid(), sd, IX) );
+    W_DO( dir->access(t_file, rid.stid(), sd, IX) );
+    //cout << "sm append_rec " << rid << " size " << data.size() << endl;
+
     W_DO(lm->lock(rid, EX, t_long, WAIT_SPECIFIED_BY_XCT));
     W_DO(fi->append_rec(rid, data, *sd));
     return RCOK;

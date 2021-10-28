@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='SM_BASE_H'>
 
- $Id: sm_base.h,v 1.149 2010/06/15 17:30:07 nhall Exp $
+ $Id: sm_base.h,v 1.158 2010/12/08 17:37:43 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -73,7 +73,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include "opt_error_def_gen.h"
 #endif
 
-#include <vector>
 
 class ErrLog;
 class sm_stats_info_t;
@@ -90,9 +89,6 @@ class lock_m;
 class tid_t;
 class option_t;
 
-class stid_t;
-class rid_t;
-
 #ifndef        SM_EXTENTSIZE
 #define        SM_EXTENTSIZE        8
 #endif
@@ -103,12 +99,11 @@ class rid_t;
 typedef   w_rc_t        rc_t;
 
 
-/* This structure collects the depth on construction
+/**\cond skip
+ * This structure collects the depth on construction
  * and checks that it matches the depth on destruction; this
  * is to ensure that we haven't forgotten to release
  * an anchor somewhere.
- * It's been extended to check the # times
- * we have acquired the 1thread_log_mutex. 
  *
  * We're defining the CHECK_NESTING_VARIABLES macro b/c
  * this work is spread out and we want to have 1 place to
@@ -121,8 +116,11 @@ typedef   w_rc_t        rc_t;
  * to zero, another thread can change it and throw off all the
  * counts. To be sure, we'd have to use a TLS copy as well
  * as the common copy of these counts.
+ *
+ * This was on for debug level > 0 but it's been stable
+ * enough to change it to > 2
  */
-#if W_DEBUG_LEVEL > 0
+#if W_DEBUG_LEVEL > 2
 #define CHECK_NESTING_VARIABLES 1
 #else
 #define CHECK_NESTING_VARIABLES 0
@@ -131,18 +129,15 @@ struct check_compensated_op_nesting {
 #if CHECK_NESTING_VARIABLES
     xct_t* _xd;
     int _depth;
-    int _depth_of_acquires;
     int _line;
     const char *const _file;
     // static methods are so we can avoid having to
     // include xct.h here.
     static int compensated_op_depth(xct_t* xd, int dflt);
-    static int acquire_1thread_log_depth(xct_t* xd, int dflt);
 
     check_compensated_op_nesting(xct_t* xd, int line, const char *const file)
     : _xd(xd), 
     _depth(_xd? compensated_op_depth(_xd, 0) : 0), 
-    _depth_of_acquires(_xd? acquire_1thread_log_depth(_xd, 0) : 0), 
     _line(line),
     _file(file)
     {
@@ -157,16 +152,8 @@ struct check_compensated_op_nesting {
                     _line, _file, _depth, compensated_op_depth(_xd, _depth));
             }
 
-            if(_depth_of_acquires != acquire_1thread_log_depth(_xd, _depth)) {
-                fprintf(stderr, 
-                "th.%d check_acquire_1thread_log_depth (%d,%s) depth was %d is %d\n",
-                    sthread_t::me()->id,
-                    _line, _file, _depth_of_acquires, 
-                    acquire_1thread_log_depth(_xd, _depth));
-            }
 
             w_assert0(_depth == compensated_op_depth(_xd, _depth));
-            w_assert0(_depth_of_acquires == acquire_1thread_log_depth(_xd, _depth));
         }
     }
 #else
@@ -175,14 +162,12 @@ struct check_compensated_op_nesting {
 };
 
 
-
-/**\cond skip */
-
-/**\brief Encapsulates a few types used in the API */
+/**\brief Encapsulates a few types uses in the API */
 class smlevel_0 : public w_base_t {
 public:
-    enum { eNOERROR = 0, eFAILURE = -1 };
-    enum { 
+    // Give these enums names for doxygen purposes:
+    enum error_constant_t { eNOERROR = 0, eFAILURE = -1 };
+    enum sm_constant_t { 
         page_sz = SM_PAGESIZE,        // page size (SM_PAGESIZE is set by makemake)
         ext_sz = SM_EXTENTSIZE,        // extent size
         max_exts = max_int4,        // max no. extents, must fit extnum_t
@@ -226,6 +211,8 @@ public:
      */
     typedef sthread_t::fileoff_t smksize_t;
     typedef w_base_t::base_stat_t base_stat_t; 
+
+    /**\endcond skip */
 
     /*
      * rather than automatically aborting the transaction, when the
@@ -310,11 +297,6 @@ public:
             partition_number_t num
         );
 
-    typedef w_rc_t (*RELOCATE_RECORD_CALLBACK_FUNC) (
-	   vector<rid_t>&    old_rids, 
-           vector<rid_t>&    new_rids
-       );
-
 /**\cond skip */
     enum switch_t {
         ON = 1,
@@ -358,13 +340,7 @@ public:
         t_bad_ndx_t,             // illegal value
         t_btree,                 // B+tree with duplicates
         t_uni_btree,             // Unique-key btree
-        t_rtree,                 // R*tree
-	t_mrbtree,       // Multi-rooted B+tree with regular heap files   
-	t_uni_mrbtree,          
-	t_mrbtree_l,          // Multi-rooted B+tree where a heap file is pointed by only one leaf page 
-	t_uni_mrbtree_l,               
-	t_mrbtree_p,     // Multi-rooted B+tree where a heap file belongs to only one partition
-	t_uni_mrbtree_p
+        t_rtree                  // R*tree
     };
 
     /**\enum concurrency_t 
@@ -393,6 +369,31 @@ public:
         t_cc_im,                 // ARIES IM, not supported yet
         t_cc_modkvl,                 // modified ARIES KVL, for paradise use
         t_cc_append                 // append-only with scan_file_i
+    };
+
+    /**\enum pg_policy_t 
+     * \brief 
+     * File-compaction policy for creating records.
+     * \details
+     * - t_append : append new record to file (preserve order)
+     * - t_cache  : look in cache for pages with space for new record (does
+     *              not preserve order)
+     * - t_compact: keep file compact even if it means searching the file
+     *              for space in which to create the file (does not preserve
+     *              order)
+     *
+     * These are masks - the following combinations are sensible:
+     *
+     * - t_append                        -- preserve sort order
+     * - t_cache | t_append              -- check the cache first, 
+     *                                      append if no luck
+     * - t_cache | t_compact | t_append  -- append to file as a last resort
+     */
+    enum pg_policy_t {
+        t_append        = 0x01, // retain sort order (cache 0 pages)
+        t_cache        = 0x02, // look in n cached pgs 
+        t_compact        = 0x04 // scan file for space in pages 
+        
     };
 
 /**\cond skip */
@@ -433,7 +434,7 @@ public:
     static LOG_ARCHIVED_CALLBACK_FUNC log_archived_callback;
     static fileoff_t              log_warn_trigger; 
     static int                    log_warn_exceed_percent; 
-    
+
     static int    dcommit_timeout; // to convey option to coordinator,
                                    // if it is created by VAS
 
@@ -442,6 +443,7 @@ public:
     static bool        shutdown_clean;
     static bool        shutting_down;
     static bool        logging_enabled;
+    static bool        lock_caching_default;
     static bool        do_prefetch;
 
     static operating_mode_t operating_mode;
@@ -493,10 +495,6 @@ public:
         store_id_extentmap = 0,
         store_id_directory = 1,
         store_id_root_index = 2 
-        // The store numbers for the lid indexes (if
-        // the volume has logical ids) are kept in the
-        // volume's root index, constants for them aren't needed.
-        //
     };
 
     enum {
@@ -541,26 +539,14 @@ public:
             t_set_first_ext};
 
     enum store_deleting_t  {
-            t_not_deleting_store, 
+            t_not_deleting_store = 0,  // must be 0: code assumes it
             t_deleting_store, 
             t_store_freeing_exts, 
             t_unknown_deleting};
-/**\endcond  skip */
-
-#if SM_PLP_TRACING
-    static uint     _ptrace_level;
-    static mcs_lock _ptrace_lock;
-    static ofstream _ptrace_out;
-    enum plp_tracing_level_t { 
-        PLP_TRACE_NONE  = 0x0, 
-        PLP_TRACE_PAGE  = 0x01,
-        PLP_TRACE_CS    = 0x02
-    };
-#endif
-
+/**\endcond skip */
 };
 
-/**\cond  skip */
+/**\cond skip */
 ostream&
 operator<<(ostream& o, smlevel_0::store_flag_t flag);
 
@@ -570,7 +556,7 @@ operator<<(ostream& o, const smlevel_0::store_operation_t op);
 ostream&
 operator<<(ostream& o, const smlevel_0::store_deleting_t value);
 
-/**\endcond  skip */
+/**\endcond skip */
 
 /*<std-footer incl-file-exclusion='SM_BASE_H'>  -- do not edit anything below this line -- */
 

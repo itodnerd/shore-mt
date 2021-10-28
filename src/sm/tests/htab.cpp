@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: htab.cpp,v 1.3 2010/06/08 22:28:15 nhall Exp $
+ $Id: htab.cpp,v 1.8 2010/12/08 17:37:49 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -38,6 +38,7 @@ typedef unsigned short uint2_t;
 #include "w_getopt.h"
 #include "rand48.h"
 
+rand48  tls_rng  = RAND48_INITIALIZER;
 bool    debug(false);
 bool    Random(false);
 bool    Random_uniq(false);
@@ -93,7 +94,7 @@ class htab_tester : public smthread_t
     //    bf_core::replacement evicted it
     // Returned: got moved by an insert (we don't get told about every move)  
     // Removed: we removed it
-    bf_m *     _bfm;
+    bf_m *     _bfmgr;
     int        _tries;
     signed48_t _pagebound;
     uint2_t    _vol;
@@ -125,7 +126,7 @@ private:
 
 public:
     htab_tester(int i, signed48_t pb, uint2_t v, uint    s) : 
-         _bfm(NULL),
+         _bfmgr(NULL),
          _tries(i),
          _pagebound(pb),
          _vol(v), _store(s)
@@ -147,16 +148,16 @@ public:
                 W_COERCE(e);
             }
             w_assert1(is_aligned(shmbase));
-            bf_m *_bfm = new bf_m(nbufpages, shmbase, npgwriters);
+            bf_m *_bfmgr = new bf_m(nbufpages, shmbase, npgwriters);
 
-            if (! _bfm) {
+            if (! _bfmgr) {
                 W_FATAL(fcOUTOFMEMORY);
             }
         }
 
         _pid2info = new pidinfo[int(pb)];
         _i2pid = new lpid_t[i];
-        core = _bfm->_core;
+        core = _bfmgr->_core;
         memset(&S, '\0', sizeof(S));
     }
     ~htab_tester() 
@@ -181,7 +182,7 @@ public:
         }
         return false;
     }
-	// non-const b/c it updates the stats
+    // non-const b/c it updates the stats
     void printstats(ostream &o, bool final=false);
     void print_bf_fill(ostream &o) const;
 
@@ -230,7 +231,7 @@ htab_tester::printstats(ostream &o, bool final)
 #define D(x) if(S.x > 0) o << #x << " " << S.x << endl;
     else
     {
-        _bfm->htab_stats(S);
+        _bfmgr->htab_stats(S);
         S.compute();
 
         D(bf_htab_insertions);
@@ -254,8 +255,8 @@ void htab_tester::cleanup()
     delete[] _pid2info;
     delete[] _i2pid;
     // delete core;
-    delete   _bfm;
-    _bfm=0;
+    delete   _bfmgr;
+    _bfmgr=0;
 }
 
 void htab_tester::run()
@@ -276,7 +277,7 @@ void htab_tester::run()
             // the already-created pids and if this pgnum is
             // already there, we have to jettison it and
             // try another.
-	  pgnum = rng()->randn(_pagebound);
+            pgnum = tls_rng.randn(_pagebound);
 
             if(Random_uniq)  {
                 // give it at most _pagebound tries
@@ -287,23 +288,12 @@ void htab_tester::run()
                     // Is it already in use?
                     if(info.status == Zero) break;
                     // yes -> try again
-                    pgnum = rng()->randn(_pagebound);
+                    pgnum = tls_rng.randn(_pagebound);
                 }
                 if(j == 0) {
                     cerr << " Could not create unique random set " << endl;
                     exit (-1);
                 }
-#if 0
-            } else {
-                pidinfo &info = _pid2info[pgnum];
-                if(info.status != Zero)  
-                if(debug) {
-                // merely report duplicate
-                cout << " random produced duplicate " 
-                    << info.pid
-                    << endl;
-                }
-#endif
             }
         } else {
             // sequential
@@ -318,29 +308,12 @@ void htab_tester::run()
         lpid_t p(_vol, _store, pgnum);
         pidinfo &info = pid2info(p);
 
-#if 0
-        if(info.status != Zero) if(debug) 
-        {
-            // duplicate
-            cout << __LINE__ 
-            << " detected duplicate " << p
-            << " at index " << i 
-            // << " info: " << info
-            << endl;
-            w_assert1(info.status == Init);
-            w_assert1(info.pid == p);
-            w_assert1(info.count > 0);
-        }
-#endif
         _i2pid[i] = p;
         info.pid = p;
         info.count ++;
         // info.returned is null pid
         info.status = Init;
         info.inserts = info.evicts = 0;
-#if 0
-        if(debug) cout << p << endl;
-#endif
     }
 
     // let's verify that we have no dups if we don't want dups
@@ -348,12 +321,6 @@ void htab_tester::run()
     {
         pidinfo &info=_pid2info[_i2pid[i].page];
         if(Random_uniq) w_assert0(int(info.pid.page) == i || info.pid.page == 0);
-#if 0
-        if(info.count > 1) {
-            cout << info.pid << " duplicated; count= "
-            << info.count << endl;
-        }
-#endif
     }
     if(Random_uniq) {
         cout << "verified no dups" << endl;
@@ -604,36 +571,6 @@ main (int argc, char *const argv[])
              << "-KB is needed" << flushl;
         W_FATAL(fcOUTOFMEMORY);
     }
-#if DEAD
-    long  space_needed = bf_m::mem_needed(nbufpages);
-    /*
-     * Allocate the buffer-pool memory
-     */ 
-    char    *shmbase;
-    w_rc_t    e;
-#ifdef HAVE_HUGETLBFS
-    // fprintf(stderr, "setting path to  %s\n", _hugetlbfs_path->value());
-     e = smthread_t::set_hugetlbfs_path(HUGETLBFS_PATH);
-#endif
-
-    e = smthread_t::set_bufsize(space_needed, shmbase);
-    if (e.is_error()) {
-        W_COERCE(e);
-    }
-    w_assert1(is_aligned(shmbase));
-
-    // cout <<"SHM at address " << W_ADDR(shmbase) << endl;
-
-    bf_m *bf = new bf_m(nbufpages, shmbase, npgwriters);
-
-    if (! bf) {
-        W_FATAL(fcOUTOFMEMORY);
-    }
-    // cout <<"bfm at address " << W_ADDR(bf) 
-    // << " nbufpages " << nbufpages
-    // << " npagewriters " << npgwriters
-    // << endl;
-#endif
 
     latch_t::on_thread_init(me());
     {
@@ -648,7 +585,7 @@ main (int argc, char *const argv[])
         anon.fork();
         anon.join();
     }
-	// cerr << endl << flushl;
+    // cerr << endl << flushl;
     latch_t::on_thread_destroy(me());
     return 0;
 }

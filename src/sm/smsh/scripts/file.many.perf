@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: file.many.perf,v 1.12 2010/06/08 22:28:29 nhall Exp $
+#  $Id: file.many.perf,v 1.13 2010/10/27 17:04:29 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -128,7 +128,7 @@ set dummy [sm gather_stats reset]
 set dummyX [sm gather_xct_stats reset]
 verbose [select_stat $dummy bf_prefetches ]
 verbose [select_stat $dummy bf_prefetch_requests ]
-verbose [select_stat $dummyX page_fix_cnt ]
+verbose [select_stat $dummyX bf_fix_cnt ]
 sm force_buffers true
 
 doscans $nfiles $nobjeach $noprefetch
@@ -136,7 +136,7 @@ set dummy [sm gather_stats reset]
 set dummyX [sm gather_xct_stats reset]
 verbose [select_stat $dummy bf_prefetches ]
 verbose [select_stat $dummy bf_prefetch_requests ]
-verbose [select_stat $dummyX page_fix_cnt ]
+verbose [select_stat $dummyX bf_fix_cnt ]
 
 verbose destroying files...
 cleanup $nfiles
@@ -156,14 +156,14 @@ doscans $nfiles $nobjeach $prefetch
 set dummy [sm gather_stats reset]
 verbose [select_stat $dummy bf_prefetches ]
 verbose [select_stat $dummy bf_prefetch_requests ]
-verbose [select_stat $dummy page_fix_cnt ]
+verbose [select_stat $dummy bf_fix_cnt ]
 sm force_buffers true
 
 doscans $nfiles $nobjeach $noprefetch
 set dummy [sm gather_stats reset]
 verbose [select_stat $dummy bf_prefetches ]
 verbose [select_stat $dummy bf_prefetch_requests ]
-verbose [select_stat $dummy page_fix_cnt ]
+verbose [select_stat $dummy bf_fix_cnt ]
 
 verbose destroying files...
 cleanup $nfiles

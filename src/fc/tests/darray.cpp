@@ -20,6 +20,34 @@
    DISCLAIM ANY LIABILITY OF ANY KIND FOR ANY DAMAGES WHATSOEVER
    RESULTING FROM THE USE OF THIS SOFTWARE.
 */
+/*<std-header orig-src='shore' incl-file-exclusion='DARRAY_CPP'>
+
+ $Id: darray.cpp,v 1.5 2012/01/02 21:52:22 nhall Exp $
+
+SHORE -- Scalable Heterogeneous Object REpository
+
+Copyright (c) 1994-99 Computer Sciences Department, University of
+                      Wisconsin -- Madison
+All Rights Reserved.
+
+Permission to use, copy, modify and distribute this software and its
+documentation is hereby granted, provided that both the copyright
+notice and this permission notice appear in all copies of the
+software, derivative works or modified versions, and any portions
+thereof, and that both notices appear in supporting documentation.
+
+THE AUTHORS AND THE COMPUTER SCIENCES DEPARTMENT OF THE UNIVERSITY
+OF WISCONSIN - MADISON ALLOW FREE USE OF THIS SOFTWARE IN ITS
+"AS IS" CONDITION, AND THEY DISCLAIM ANY LIABILITY OF ANY KIND
+FOR ANY DAMAGES WHATSOEVER RESULTING FROM THE USE OF THIS SOFTWARE.
+
+This software was developed with support by the Advanced Research
+Project Agency, ARPA order number 018 (formerly 8230), monitored by
+the U.S. Army Research Laboratory under contract DAAB07-91-C-Q518.
+Further funding for this work was provided by DARPA through
+Rome Research Laboratory Contract No. F30602-97-2-0247.
+
+*/
 
 #include <shore-config.h>
 #include <w_base.h>
@@ -31,11 +59,6 @@
 #include <cassert>
 #include <cstring>
 #include <cstdio>
-
-// no system I know of *requires* larger pages than this
-static size_t const MM_PAGE_SIZE = 8192;
-// most systems can't handle bigger than this, and we need a sanity check
-static size_t const MM_MAX_CAPACITY = MM_PAGE_SIZE*1024*1024*1024;
 
 #include <unistd.h>
 #include <cstdio>
@@ -54,22 +77,26 @@ int main() {
 	dynarray mm;
 	w_base_t::int8_t err;
 
-	// NOTE: the casts to size_t enable us to build
-	// on -m32, but this isn't tested there yet.
-	err = mm.init(size_t(5l*1024*1024*1024));
+#ifdef ARCH_LP64
+#define BIGNUMBER 1024*1024*1024
+#else
+#define BIGNUMBER 1024*1024
+#endif
+	err = mm.init(size_t(5l*BIGNUMBER));
 	// char const* base = mm;
 	// std::fprintf(stdout, "&mm[0] = %p\n", base);
 	err = mm.resize(10000);
 	err = mm.resize(100000);
 	err = mm.resize(1000000);
 	err = mm.fini();
+	w_assert0(!err);
     }
     {
-	// test alignment
-	dynarray mm;
-	int err;
-	
-	err = mm.init(size_t(5l*1024*1024*1024), size_t(1024*1024*1024));
+		// test alignment
+		dynarray mm;
+		w_base_t::int8_t err =
+		mm.init(size_t(5l*BIGNUMBER), size_t(BIGNUMBER));
+		w_assert0(!err);
     }
 
     {
@@ -94,6 +121,7 @@ int main() {
 	std::fprintf(stdout, "size:%llu  capacity:%llu  limit:%llu\n", 
 	(unsigned long long) dv.size(), (unsigned long long) dv.capacity(), (unsigned long long) dv.limit());
 	err = dv.fini();
+	w_assert0(!err);
     }
 
     return 0;

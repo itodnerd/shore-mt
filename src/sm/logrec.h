@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='LOGREC_H'>
 
- $Id: logrec.h,v 1.67 2010/06/08 22:28:55 nhall Exp $
+ $Id: logrec.h,v 1.73 2010/12/08 17:37:42 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -132,6 +132,7 @@ public:
     const lsn_t&         undo_nxt() const;
     const lsn_t&         prev() const;
     void                 set_clr(const lsn_t& c);
+    void                 set_undoable_clr(const lsn_t& c);
     kind_t               type() const;
     const char*          type_str() const;
     const char*          cat_str() const;
@@ -162,7 +163,8 @@ protected:
         // So far this limitation has been fine.
     // old: t_cpsn = 020 | t_redo,
     t_cpsn = 020,
-    t_rollback = 040 // Not a category, but issued in abort/undo --
+    t_rollback = 040 // Not a category, but means log rec was issued in 
+        // rollback/abort/undo --
         // adding a bit is cheaper than adding a comment log record
     };
     u_char             cat() const;
@@ -192,8 +194,8 @@ protected:
     
     // lsn_t            _undo_nxt; // (xct) used in CLR only
     /*
-     * NB: you might think it would be nice to use one lsn_t for _prev and
-     * for _undo_lsn, but for the moment we need both because
+     * originally: you might think it would be nice to use one lsn_t for 
+     * both _prev and for _undo_lsn, but for the moment we need both because
      * at the last minute, fill_xct_attr() is called and that fills in 
      * _prev, clobbering its value with the prior generated log record's lsn.
      * It so happens that set_clr() is called prior to fill_xct_attr().
@@ -252,7 +254,7 @@ struct chkpt_bf_tab_t {
     const lpid_t*             p, 
     const lsn_t*             l);
     
-    int                size();
+    int                size() const;
 };
 
 struct prepare_stores_to_free_t  
@@ -269,7 +271,7 @@ struct prepare_stores_to_free_t
         stids[i] = theStids[i];
     };
     
-    int size()  { return sizeof(uint4_t) + num * sizeof(stid_t); };
+    int size() const  { return sizeof(uint4_t) + num * sizeof(stid_t); };
 };
 
 struct chkpt_xct_tab_t {
@@ -296,7 +298,7 @@ struct chkpt_xct_tab_t {
     const smlevel_1::xct_state_t* state,
     const lsn_t*             last_lsn,
     const lsn_t*             undo_nxt);
-    int             size();
+    int             size() const;
 };
 
 struct chkpt_dev_tab_t 
@@ -320,9 +322,25 @@ struct chkpt_dev_tab_t
                             int                 count,
                             const char          **dev_name,
                             const vid_t*        vid);
-    int             size();
+    int             size() const;
 };
 
+struct xct_list_t {
+    struct xrec_t {
+        tid_t                 tid;
+    };
+
+    // max is set to make chkpt_xct_tab_t fit in logrec_t::data_sz
+    enum {     max = ((logrec_t::data_sz - sizeof(tid_t) -
+            2 * sizeof(uint4_t)) / sizeof(xrec_t))
+    };
+    uint4_t            count;
+    fill4              filler;
+    xrec_t             xrec[max];
+    
+    NORET             xct_list_t(const xct_t* list[], int count);
+    int               size() const;
+};
 
 /************************************************************************
  * Structures for prepare records
@@ -335,12 +353,30 @@ struct prepare_lock_totals_t {
     int    num_extents;
     fill4   filler; //for 8-byte alignment
     lsn_t    first_lsn;
-    prepare_lock_totals_t(int a, int b, int c, int d, const lsn_t &l) :
+    prepare_lock_totals_t(
+        int a, int b, int c, int d, const lsn_t &l) :
         num_EX(a), num_IX(b), num_SIX(c), num_extents(d),
         first_lsn(l){ }
     int size() const     // in bytes
         { return 4 * sizeof(int) + sizeof(lsn_t) + sizeof(fill4); }
 };
+
+struct prepare_log_resv_t  {
+    int _rsvd;
+    int _ready;
+    int _used;
+    prepare_log_resv_t(int a, int b, int c) : _rsvd(a), _ready(b), _used(c) {}
+};
+
+struct prepare_end_t {
+    prepare_end_t(int a, int b, int c, int d, const lsn_t &l,
+            int rsvd, int ready, int used) :
+        _lock(a,b,c,d,l), _log(rsvd, ready, used) {}
+    struct prepare_lock_totals_t _lock;
+    struct prepare_log_resv_t    _log;
+    int size() const  { return sizeof(_lock) + sizeof(_log); }
+};
+
 struct prepare_info_t {
     // don't use bool - its size changes with compilers
     char               is_external;
@@ -373,7 +409,7 @@ struct prepare_lock_t
     // -tid is stored in the log rec hdr
     // -all locks are long-term
 
-	lock_mode_t    mode; // for this group of locks
+    lock_mode_t    mode; // for this group of locks
     uint4_t     num_locks; // in the array below
     enum            { max_locks_logged = (logrec_t::data_sz - sizeof(lock_mode_t) - sizeof(uint4_t)) / sizeof(lockid_t) };
 
@@ -403,7 +439,7 @@ struct prepare_all_lock_t
     // 
     struct LockAndModePair {
         lockid_t    name;
-		lock_mode_t    mode; // for this lock
+        lock_mode_t    mode; // for this lock
     };
 
     uint4_t             num_locks; // in the array below
@@ -531,6 +567,16 @@ logrec_t::set_clr(const lsn_t& c)
     _cat &= ~t_undo; // can't undo compensated
              // log records, whatever kind they might be
              // except for special case below
+             // Thus, if you set_clr, you're meaning to compensate
+             // around this log record (not undo it).
+             // The t_undo bit is what distinguishes this normal
+             // compensate-around case from the special undoable-clr
+             // case, which requires set_undoable_clr.
+             // NOTE: the t_undo bit is set by the log record constructor.
+             // Once we turn it off, we do not re-insert that bit (except
+             // as done with the special-case set_undoable_clr).
+            
+     w_assert0(!is_undoable_clr());
     _cat |= t_cpsn;
 
     // To shrink log records,
@@ -543,9 +589,7 @@ logrec_t::set_clr(const lsn_t& c)
 inline bool 
 logrec_t::is_undoable_clr() const
 {
-    return false;
-    // DISABLED -- see comment below
-    // return (_cat & (t_cpsn|t_undo)) == (t_cpsn|t_undo);
+    return (_cat & (t_cpsn|t_undo)) == (t_cpsn|t_undo);
 }
 
 
@@ -569,6 +613,20 @@ logrec_t::is_undo() const
 }
 
 
+/* The only case of undoable_clr now is the alloc_file_page.
+ * This log record is not redoable, so it is not is_page_update.
+ * If you add more cases of undoable_clr, you will have to analyze
+ * the code in analysis_pass carefully, esp where is_page_update() is
+ * concerned.
+ */
+inline void 
+logrec_t::set_undoable_clr(const lsn_t& c)
+{
+    bool undoable = is_undo();
+    set_clr(c);
+    if(undoable) _cat |= t_undo;
+}
+
 inline bool 
 logrec_t::is_cpsn() const
 {
@@ -589,22 +647,55 @@ logrec_t::is_logical() const
 }
 
 inline int
-chkpt_bf_tab_t::size()
+chkpt_bf_tab_t::size() const
 {
     return (char*) &brec[count] - (char*) this;
 }
 
 inline int
-chkpt_xct_tab_t::size()
+chkpt_xct_tab_t::size() const
 {
     return (char*) &xrec[count] - (char*) this; 
 }
 
 inline int
-chkpt_dev_tab_t::size()
+xct_list_t::size() const
+{
+    return (char*) &xrec[count] - (char*) this; 
+}
+
+inline int
+chkpt_dev_tab_t::size() const
 {
     return (char*) &devrec[count] - (char*) this; 
 }
+
+// define 0 or 1
+// Should never use this in production. This code is in place
+// so that we can empirically estimate the fudge factors
+// for rollback for the various log record types.
+#define LOGREC_ACCOUNTING 0
+#if LOGREC_ACCOUNTING 
+class logrec_accounting_t {
+public:
+    static void account(logrec_t &l, bool fwd);
+    static void account_end(bool fwd);
+    static void print_account_and_clear();
+};
+#define LOGREC_ACCOUNTING_PRINT logrec_accounting_t::print_account_and_clear();
+#define LOGREC_ACCOUNT(x,y) \
+        if(!smlevel_0::in_recovery()) { \
+            logrec_accounting_t::account((x),(y)); \
+        }
+#define LOGREC_ACCOUNT_END_XCT(y) \
+        if(!smlevel_0::in_recovery()) { \
+            logrec_accounting_t::account_end((y)); \
+        }
+#else
+#define LOGREC_ACCOUNTING_PRINT 
+#define LOGREC_ACCOUNT(x,y) 
+#define LOGREC_ACCOUNT_END_XCT(y) 
+#endif
 
 /*<std-footer incl-file-exclusion='LOGREC_H'>  -- do not edit anything below this line -- */
 

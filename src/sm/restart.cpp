@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: restart.cpp,v 1.136 2010/06/08 22:28:55 nhall Exp $
+ $Id: restart.cpp,v 1.145 2010/12/08 17:37:43 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -97,19 +97,15 @@ public:
     NORET                        dirty_pages_tab_t(int sz);
     NORET                        ~dirty_pages_tab_t();
     
-    dirty_pages_tab_t&                 insert(
-        const lpid_t&                     pid,
-        const lsn_t&                     lsn);
-
+    dirty_pages_tab_t&           insert(const lpid_t&  pid, const lsn_t& lsn);
     dirty_pages_tab_t&           remove(const lpid_t& pid);
 
-    bool                         look_up(
-        const lpid_t&                     pid,
-        lsn_t**                           lsn = 0); 
+    bool                         look_up(const lpid_t& pid, lsn_t** lsn = 0); 
 
     lsn_t                        min_rec_lsn();
 
     int                          size() const { return tab.num_members(); }
+    void                         check(ostream &) const;
     
     friend ostream& operator<<(ostream&, const dirty_pages_tab_t& s);
     
@@ -167,6 +163,30 @@ restart_m::recover(lsn_t master)
 
 
     DBG(<<"starting analysis at " << master << " redo_lsn = " << redo_lsn);
+    if(logtrace) {
+        // Print some info about the log tracing that will follow.
+        // It's so hard to deciper if you're not always looking at this, so
+        // we print a little legend.
+        fprintf(stderr, "\nLEGEND:\n");
+        w_ostrstream s; 
+        s <<" th.#" 
+        << " STT" 
+        << " lsn"
+        << " A/R/I/U"
+        << "LOGREC(TID, TYPE, FLAGS:F/U PAGE <INFO> (prev)|[prev]";
+        fprintf(stderr, "%s\n", s.c_str()); 
+        fprintf(stderr, " #: thread id\n");
+        fprintf(stderr, " STT: xct state or ??? if unknown\n");
+        fprintf(stderr, " A: read for analysis\n");
+        fprintf(stderr, " R: read for redo\n");
+        fprintf(stderr, " U: read for rollback\n");
+        fprintf(stderr, " I: inserted (undo pass or after recovery)\n");
+        fprintf(stderr, " F: inserted by xct in forward processing\n");
+        fprintf(stderr, " U: inserted by xct while rolling back\n");
+        fprintf(stderr, " [prev-lsn] for non-compensation records\n");
+        fprintf(stderr, " (undo-lsn) for compensation records\n");
+        fprintf(stderr, "\n\n");
+    }
     analysis_pass(master, dptab, redo_lsn, found_xct_freeing_space);
 
     if(dptab.size() || xct_t::num_active_xcts()) {
@@ -179,6 +199,8 @@ restart_m::recover(lsn_t master)
         smlevel_0::errlog->clog << info_prio  
             << "Database is clean" << flushl;
     }
+
+    // For recovery debugging: dptab.check(cerr);
     
     /*
      *  Phase 2: REDO -- use dirty page table and redo lsn of phase 1
@@ -233,7 +255,7 @@ restart_m::recover(lsn_t master)
         smlevel_0::errlog->clog << info_prio << "Freeing stores before undo ..." << flushl;
         W_COERCE( io_m::free_stores_during_recovery(t_store_freeing_exts) );
         W_COERCE( xd->commit(false) );
-	xct_t::destroy_xct(xd);
+        xct_t::destroy_xct(xd);
     }
 
 
@@ -259,7 +281,7 @@ restart_m::recover(lsn_t master)
         smlevel_0::errlog->clog << info_prio << "Freeing extents ..." << flushl;
         W_COERCE( io_m::free_exts_during_recovery() );
         W_COERCE( xd->commit(false) );
-	xct_t::destroy_xct(xd);
+        xct_t::destroy_xct(xd);
     }
 
     smlevel_0::errlog->clog << info_prio << "Oldest active transaction is " 
@@ -270,14 +292,14 @@ restart_m::recover(lsn_t master)
 
 #if W_DEBUG_LEVEL >= 0
     /* Print the prepared xcts even if not in debug mode 
-	 * because the locks held by prepared transactions
-	 * can prevent any other work from being done
-	 */
+     * because the locks held by prepared transactions
+     * can prevent any other work from being done
+     */
     {
         int number=0;
 
         smlevel_0::errlog->clog << info_prio 
-		<< "Prepared transactions:" << endl;
+        << "Prepared transactions:" << endl;
         DBG(<<"TX TABLE at end of recovery:");
         xct_i iter(true); // lock list
         xct_t* xd;
@@ -302,16 +324,16 @@ restart_m::recover(lsn_t master)
         if(number == 0) {
             smlevel_0::errlog->clog << info_prio  << " none." << endl;
         } else {
-			smlevel_0::errlog->clog << info_prio 
-			<< "*************************  WARNING ****************************"
-			<< endl
-			<< endl
-			<< "WARNING: There are prepared transactions to be resolved!" 
-			<< endl
-			<< endl
-			<< "***************************************************************"
-			<< endl;
-		}
+            smlevel_0::errlog->clog << info_prio 
+            << "*************************  WARNING ****************************"
+            << endl
+            << endl
+            << "WARNING: There are prepared transactions to be resolved!" 
+            << endl
+            << endl
+            << "***************************************************************"
+            << endl;
+        }
         DBG(<<"END TX TABLE at end of recovery:");
     }
 #endif 
@@ -331,18 +353,18 @@ restart_m::recover(lsn_t master)
 void 
 restart_m::analysis_pass(
     lsn_t                 master,
-    dirty_pages_tab_t&        dptab,
-    lsn_t&                 redo_lsn,
-    bool&                found_xct_freeing_space
+    dirty_pages_tab_t&    dptab,
+    lsn_t&                redo_lsn,
+    bool&                 found_xct_freeing_space
 )
 {
     FUNC(restart_m::analysis_pass);
 
     AutoTurnOffLogging turnedOnWhenDestroyed;
 
-    redo_lsn = null_lsn;
+    redo_lsn = lsn_t::null;
     found_xct_freeing_space = false;
-    if (master == null_lsn) return;
+    if (master == lsn_t::null) return;
 
     smlevel_0::operating_mode = smlevel_0::t_in_analysis;
 
@@ -386,7 +408,8 @@ restart_m::analysis_pass(
         /*
          *  Scan next record
          */
-        LOGTRACE1( << lsn << " A: " << r );
+        LOGTRACE1( << setiosflags(ios::right) << lsn 
+                  << resetiosflags(ios::right) << " A: " << r );
         w_assert1(lsn == r.lsn_ck());
 
         if(lsn.hi() != cur_segment) {
@@ -401,10 +424,13 @@ restart_m::analysis_pass(
          *  If log is transaction related, insert the transaction
          *  into transaction table if it is not already there.
          */
-        if ((r.tid() != tid_t::null) && ! (xd = xct_t::look_up(r.tid()))) {
+        if ((r.tid() != tid_t::null) && ! (xd = xct_t::look_up(r.tid()))
+                // comments can be after xct has ended
+                    && r.type()!=logrec_t::t_comment ) {
             DBG(<<"analysis: inserting tx " << r.tid() << " active ");
             xd = xct_t::new_xct(r.tid(), xct_t::xct_active, lsn, r.prev());
             w_assert1(xd);
+            xct_t::update_youngest_tid(r.tid());
         }
 
         /*
@@ -470,8 +496,9 @@ restart_m::analysis_pass(
                  *         If the xct is not in xct tab, insert it.
                  */
                 const chkpt_xct_tab_t* dp = (chkpt_xct_tab_t*) r.data();
+                xct_t::update_youngest_tid(dp->youngest);
                 for (uint i = 0; i < dp->count; i++)  {
-                    xct_t* xd = xct_t::look_up(dp->xrec[i].tid);
+                    xd = xct_t::look_up(dp->xrec[i].tid);
                     if (!xd) {
                         if (dp->xrec[i].state != xct_t::xct_ended)  {
                             xd = xct_t::new_xct(dp->xrec[i].tid,
@@ -589,12 +616,50 @@ restart_m::analysis_pass(
                 xd->change_state(xct_t::xct_freeing_space);
                 break;
 
+        case logrec_t::t_xct_end_group: 
+                {
+                // Do what we do for t_xct_end for each of the
+                // transactions in the list, then drop through
+                // and do it for the xct named in "xd" (the attached one)
+            
+                const xct_list_t* list = (xct_list_t*) r.data();
+                int listlen = list->count;
+                for(int i=0; i < listlen; i++)
+                {
+                    xd = xct_t::look_up(list->xrec[i].tid);
+                    // If it's not there, it could have been a read-only xct?
+                    w_assert0(xd);
+                    /* Now do exactly what's done below */
+                    /*
+                     *  Remove xct from xct tab
+                     */
+                    if (xd->state() == xct_t::xct_prepared || 
+                            xd->state() == xct_t::xct_freeing_space) 
+                    {
+                        /*
+                         * was prepared in the master
+                         * checkpoint, so the locks
+                         * were acquired.  have to free them
+                         */
+                        me()->attach_xct(xd);        
+                        // release all locks (1st true) and don't 
+                        // free extents which hold locks (2nd true)
+                        W_COERCE( lm->unlock_duration(t_long) );
+                        me()->detach_xct(xd);        
+                    }
+                    xd->change_state(xct_t::xct_ended);
+                    xct_t::destroy_xct(xd);
+                }
+                }
+                break;
+
         case logrec_t::t_xct_abort:
         case logrec_t::t_xct_end:
             /*
              *  Remove xct from xct tab
              */
-            if (xd->state() == xct_t::xct_prepared || xd->state() == xct_t::xct_freeing_space) 
+            if (xd->state() == xct_t::xct_prepared || 
+                    xd->state() == xct_t::xct_freeing_space) 
             {
                 /*
                  * was prepared in the master
@@ -604,22 +669,34 @@ restart_m::analysis_pass(
                 me()->attach_xct(xd);        
                 // release all locks (1st true) and don't 
                 // free extents which hold locks (2nd true)
-                W_COERCE( lm->unlock_duration(t_long, true, true) );
+                W_COERCE( lm->unlock_duration(t_long) );
                 me()->detach_xct(xd);        
             }
             xd->change_state(xct_t::xct_ended);
-	    xct_t::destroy_xct(xd);
+            xct_t::destroy_xct(xd);
             break;
 
         default: {
             lpid_t page_of_interest = r.construct_pid();
+            DBG(<<"analysis: default " << 
+                    r.type() << " tid " << r.tid()
+                    << " page of interest " << page_of_interest);
             if (r.is_page_update()) {
+                DBG(<<"is page update " );
+                LOGTRACE1( << setiosflags(ios::right) << lsn 
+                    << resetiosflags(ios::right) << " A: " 
+                    << "is page update " << page_of_interest );
+                // redoable, has a pid, and is not compensated.
+                // Why the compensated predicate?
                 if (r.is_undo()) {
                     /*
                      *  r is undoable. Update next undo lsn of xct
                      */
                     xd->set_undo_nxt(lsn);
                 }
+                w_assert0(r.is_redo());
+                // TODO: remove the predicate is_redo below. It's
+                // superfluous
                 if (r.is_redo() && !(dptab.look_up(page_of_interest))) {
                     /*
                      *  r is redoable and not in dptab ...
@@ -627,6 +704,9 @@ restart_m::analysis_pass(
                      */
                     DBG(<<"dptab.insert dirty pg " << page_of_interest 
                         << " " << lsn);
+                    LOGTRACE1( << setiosflags(ios::right) << lsn
+                            << resetiosflags(ios::right) << " A: " 
+                            << "insert in dirty page table " << page_of_interest );
                     dptab.insert( page_of_interest, lsn );
                 }
 
@@ -635,12 +715,14 @@ restart_m::analysis_pass(
                  *  Update undo_nxt lsn of xct
                  */
                 if(r.is_undo()) {
+                    DBG(<<"is cpsn, undo " << " undo_nxt<--lsn " << lsn );
                     /*
                      *  r is undoable. There is one possible case of
                      *  this (undoable compensation record)
                      */
                     xd->set_undo_nxt(lsn);
                 } else {
+                    DBG(<<"is cpsn, not undo " << " undo_next<--lsn " << r.undo_nxt() );
                     xd->set_undo_nxt(r.undo_nxt());
                 }
                 if (r.is_redo() && !(dptab.look_up(page_of_interest))) {
@@ -650,10 +732,16 @@ restart_m::analysis_pass(
                      */
                     DBG(<<"dptab.insert dirty pg " << page_of_interest 
                         << " " << lsn);
+                    LOGTRACE1( << setiosflags(ios::right) << lsn
+                          << resetiosflags(ios::right) << " A: " 
+                          << "insert in dirty page table " << page_of_interest );
                     dptab.insert( page_of_interest, lsn );
                 }
-            } else if ((r.type()!=logrec_t::t_comment)
-                    && (r.type()!=logrec_t::t_alloc_file_page)
+            } else if (r.type() == logrec_t::t_alloc_file_page) {
+                DBG(<<"alloc_file_page " << " undo_next<--lsn " << lsn );
+                xd->set_undo_nxt(lsn);
+            } else if (
+                    r.type()!=logrec_t::t_comment
                     ) {
                 W_FATAL(eINTERNAL);
             }
@@ -728,23 +816,24 @@ restart_m::analysis_pass(
     /*
      * delete xcts which are freeing space
      */
-
-    {
+    bool done = false;
+    while (!done)  {
         {  // start scope so iter gets reinitialized
-            xct_i        iter;
-            xct_t*       next;
+            xct_i        iter(false); // don't lock list
+            xct_t*       xd;
 
-	    for(xct_t* xd=iter.next(); xd; xd=next) {
+            done = true;
+            while ((xd = iter.next()))  {
                 if (xd->state() == xct_freeing_space)  {
                     DBG( << xd->tid() << " was found freeing space after analysis, deleting" );
+                    done = false;
                     found_xct_freeing_space = true;
                     me()->attach_xct(xd);
-		    next = iter.erase_and_next();
                     W_COERCE( xd->dispose() );
-		    xct_t::destroy_xct(xd);
+                    xct_t::destroy_xct(xd);
+                    break;
                 }  else  {
                     DBG( << xd->tid() << " was not freeing space after analysis" );
-		    next = iter.next(true);
                 }
             }
         }
@@ -755,7 +844,10 @@ restart_m::analysis_pass(
         smlevel_0::errlog->clog << info_prio 
             << "After analysis_pass: " 
             << f << " log_fetches, " 
-            << i << " log_inserts " << flushl;
+            << i << " log_inserts " 
+            << " redo_lsn is "  << redo_lsn
+            << flushl;
+
     }
 }
 
@@ -794,6 +886,7 @@ restart_m::redo_pass(
             << "Redoing log from " << redo_lsn 
             << " to " << cur_lsn << flushl;
     }
+    LOGTRACE1( << "LSN " << " A/R/I(pass): " << "LOGREC(TID, TYPE, FLAGS:F/U(fwd/rolling-back) PAGE <INFO>");
 
     /*
      *  Allocate a (temporary) log record buffer for reading 
@@ -801,7 +894,11 @@ restart_m::redo_pass(
     logrec_t* log_rec_buf=0;
 
     lsn_t lsn;
+    lsn_t expected_lsn = redo_lsn;
     while (scan.next(lsn, log_rec_buf))  {
+        DBG(<<"redo scan returned lsn " << lsn
+                << " expected " << expected_lsn);
+
         logrec_t& r = *log_rec_buf;
         /*
          *  For each log record ...
@@ -818,8 +915,12 @@ restart_m::redo_pass(
         }
 
         bool redone = false;
-        LOGTRACE1( << lsn << " R: " << r );
+        LOGTRACE1( << setiosflags(ios::right) << lsn
+                      << resetiosflags(ios::right) << " R: " << r);
         w_assert1(lsn == r.lsn_ck());
+        w_assert1(lsn == expected_lsn || lsn.hi() == expected_lsn.hi()+1);
+        expected_lsn.advance(r.length());
+
         if ( r.is_redo() ) {
             if (r.null_pid()) {
                 /*
@@ -869,7 +970,8 @@ restart_m::redo_pass(
 
             } else {
                 lpid_t        page_updated = r.construct_pid();
-                if(dptab.look_up(page_updated, &rec_lsn) && lsn >= *rec_lsn)  {
+                bool found = dptab.look_up(page_updated, &rec_lsn);
+                if(found && (lsn >= *rec_lsn))  {
                     /*
                      *  We are only concerned about log records that involve
                      *  page updates.
@@ -936,8 +1038,10 @@ restart_m::redo_pass(
 #endif 
 
                     lsn_t page_lsn = page.lsn();
-                    LOGTRACE1(<<"Lsn " << lsn << " page's lsn " << page_lsn
-                            << " will redo: " << int(page_lsn < lsn));
+                    LOGTRACE1( << setiosflags(ios::right) << lsn
+                              << resetiosflags(ios::right) << " R: " 
+                                << " page_lsn " << page_lsn
+                                << " will redo if 1: " << int(page_lsn < lsn));
                     if (page_lsn < lsn) 
                     {
                         /*
@@ -976,11 +1080,11 @@ restart_m::redo_pass(
                          *  Perform the redo. Do not generate log.
                          */
                         {
-                bool was_dirty = page.is_dirty();
-                            redone = true;
+                            bool was_dirty = page.is_dirty();
                             // remember the tid for space resv hack.
                             _redo_tid = r.tid();
                             r.redo(page.is_fixed() ? &page : 0);
+                            redone = true;
                             _redo_tid = tid_t::null;
                             page.set_lsns(lsn);        /* page is updated */
 
@@ -1007,12 +1111,12 @@ restart_m::redo_pass(
                                update cases have to expend a little more
                                effort to keep the rec_lsn accurate.
                    
-                   FRJ: in our case the correct rec_lsn is
-                   anything not later than the new
-                   page_lsn (as if it had just been logged
-                   the first time, back in the past)
+                               FRJ: in our case the correct rec_lsn is
+                               anything not later than the new
+                               page_lsn (as if it had just been logged
+                               the first time, back in the past)
                              */
-                page.repair_rec_lsn(was_dirty, lsn);
+                            page.repair_rec_lsn(was_dirty, lsn);
                         }
                             
                         if (xd) me()->detach_xct(xd);
@@ -1030,10 +1134,16 @@ restart_m::redo_pass(
                     } else
 #endif 
                     {
+                        LOGTRACE1( << setiosflags(ios::right) << lsn
+                                  << resetiosflags(ios::right) << " R: " 
+                                  << " page_lsn " << page_lsn
+                                  << " will skip & increment rec_lsn ");
                         /*
-                         *  Increment recovery lsn of page to indicate that 
-                         *  the page is younger than this record
-                         *  NOTE: this changes the lsn on the page.
+                         *  Bump the recovery lsn for the page to indicate that 
+                         *  the page is younger than this record; the earliest
+                         *  record we have to apply is that after the page lsn.
+                         *  NOTE: rec_lsn points INTO the dirty page table so
+                         *  this changes the rec_lsn in the dptab.
                          */
                         *rec_lsn = page_lsn.advance(1); // non-const method
                     }
@@ -1041,6 +1151,18 @@ restart_m::redo_pass(
                     // page.destructor is supposed to do this:
                     // page.unfix();
                 } else {
+                    if(found) {
+                        LOGTRACE1( << setiosflags(ios::right) << lsn
+                          << resetiosflags(ios::right) << " R: page " 
+                          << page_updated << " found in dptab but lsn " << lsn
+                           << " < page rec_lsn=" << 
+                        (lsn_t)(rec_lsn?(*rec_lsn):(lsn_t::null))
+                            << " will skip ");
+                    } else {
+                        LOGTRACE1( << setiosflags(ios::right) << lsn
+                          << resetiosflags(ios::right) << " R: page " 
+                          << page_updated << " not found in dptab; will skip " );
+                    }
                     DBG(<<"not found in dptab: log record/lsn= " << lsn 
                         << " page_updated=" << page_updated
                         << " page=" << r.shpid()
@@ -1050,13 +1172,15 @@ restart_m::redo_pass(
                 }
             }
         }
-        LOGTRACE1( << (redone ? " redo" : " skip") );
+        LOGTRACE1( << setiosflags(ios::right) << lsn
+                      << resetiosflags(ios::right) << " R: " 
+                      << (redone ? " redone" : " skipped") );
     }
     {
         w_base_t::base_stat_t f = GET_TSTAT(log_fetches);
         w_base_t::base_stat_t i = GET_TSTAT(log_inserts);
         smlevel_0::errlog->clog << info_prio 
-            << "After redo_pass: "
+            << "Redo_pass: "
             << f << " log_fetches, " 
             << i << " log_inserts " << flushl;
     }
@@ -1064,6 +1188,14 @@ restart_m::redo_pass(
 
 
 #ifdef CONCURRENT_UNDO
+/* This code dates from the days when we were doing concurrent undo.
+ * We now undo in strict reverse chronological order to deal with
+ * oddball corner recovery case(s) (having to do with SMOs that
+ * need to allocate a page when we have filled the disk).  
+ * see GNATS 49.
+ * Code left in place for when we find a better solution to the 
+ * problem and are free to use concurrent undo again.
+ */
 
 /*********************************************************************
  *
@@ -1165,7 +1297,7 @@ restart_m::undo_pass()
             // in aborting state.
             me()->attach_xct(xd);
 
-#if W_DEBUG_LEVEL > 1
+#if 0 && W_DEBUG_LEVEL > 4
             {
                 lsn_t tmp = heap.Second()->undo_nxt();
                 if(tmp == lsn_t::null) {
@@ -1176,6 +1308,10 @@ restart_m::undo_pass()
                 }
             }
 #endif
+            // Undo until the next-highest undo_nxt for an active
+            // xct. If that xct's last inserted log record is a compensation,
+            // the compensated-to lsn will be the lsn we find -- just
+            // noted that for the purpose of deciphering the log...
             W_COERCE( xd->rollback(heap.Second()->undo_nxt()) );
             me()->detach_xct(xd);
 
@@ -1198,13 +1334,13 @@ restart_m::undo_pass()
 
         me()->attach_xct(xd);
         W_COERCE( xd->abort() );
-	xct_t::destroy_xct(xd);
+        xct_t::destroy_xct(xd);
     }
     {
         w_base_t::base_stat_t f = GET_TSTAT(log_fetches);
         w_base_t::base_stat_t i = GET_TSTAT(log_inserts);
         smlevel_0::errlog->clog << info_prio 
-            << "After redo_pass: "
+            << "Undo_pass: "
             << f << " log_fetches, " 
             << i << " log_inserts " << flushl;
     }
@@ -1249,6 +1385,25 @@ dirty_pages_tab_t::~dirty_pages_tab_t()
     }
 }
 
+void
+dirty_pages_tab_t::check(ostream &o) const
+{
+    w_hash_i<dp_entry_t, unsafe_list_dummy_lock_t, bfpid_t> iter(tab);
+    const dp_entry_t* p;
+    lpid_t            pid;
+    o << " Dirty page table: " <<endl;
+    while ((p = iter.next()))  {
+        pid = p->pid;
+        dp_entry_t* p2 = tab.lookup(pid);
+        w_assert3(p2);
+        w_assert3(p2==p);
+        o << " Page " << p->pid
+        << " lsn " << p->rec_lsn
+        << " ok " << int((p2 == p)?1:0)
+        << endl;
+    }
+}
+
 /*********************************************************************
  *
  *  friend operator<< for dirty page table
@@ -1280,14 +1435,14 @@ ostream& operator<<(ostream& o, const dirty_pages_tab_t& s)
 lsn_t
 dirty_pages_tab_t::min_rec_lsn()
 {
-    lsn_t l = max_lsn;
+    lsn_t l = lsn_t::max;
     if (validCachedMinRecLSN)  {
         l = cachedMinRecLSN;
     }  else  {
         w_hash_i<dp_entry_t, unsafe_list_dummy_lock_t, bfpid_t> iter(tab);
         dp_entry_t* p;
         while ((p = iter.next())) {
-            if (l > p->rec_lsn && p->rec_lsn != null_lsn) {
+            if (l > p->rec_lsn && p->rec_lsn != lsn_t::null) {
                 l = p->rec_lsn;
             }
         }
@@ -1308,7 +1463,7 @@ dirty_pages_tab_t::min_rec_lsn()
  *********************************************************************/
 dirty_pages_tab_t&
 dirty_pages_tab_t::insert( 
-    const lpid_t&         pid,
+    const lpid_t&       pid,
     const lsn_t&        lsn)
 {
     if (validCachedMinRecLSN && lsn < cachedMinRecLSN)  {
@@ -1318,6 +1473,7 @@ dirty_pages_tab_t::insert(
     dp_entry_t* p = new dp_entry_t(pid, lsn);
     w_assert1(p);
     tab.push(p);
+    w_assert3(tab.lookup(pid));
     return *this;
 }
 
@@ -1335,8 +1491,7 @@ dirty_pages_tab_t::insert(
 bool
 dirty_pages_tab_t::look_up(const lpid_t& pid, lsn_t** lsn)
 {
-    if (lsn)
-        *lsn = 0;
+    if (lsn) *lsn = 0;
 
     dp_entry_t* p = tab.lookup(pid);
     if (p && lsn) *lsn = &p->rec_lsn;

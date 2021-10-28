@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: sort_funcs3.cpp,v 1.19 2010/05/26 01:20:52 nhall Exp $
+ $Id: sort_funcs3.cpp,v 1.23 2010/08/23 14:28:21 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -56,7 +56,9 @@ const int upper_alpha = 0x7a;
 template class w_auto_delete_array_t<const char *>;
 #endif
 
-nbox_t universe(2); // in sort_funcs3.cpp
+#define UNIVERSE_BOUND 1000
+int universe_constructor[4] = { 0,0,UNIVERSE_BOUND,UNIVERSE_BOUND };
+nbox_t universe(2, universe_constructor); // in sort_funcs3.cpp
 
 w_rc_t 
 get_key_info(
@@ -78,8 +80,8 @@ get_key_info(
             << meta[k].offset << " length=" << meta[k].length );
 
     new(key) skey_t(obj_in, meta[k].offset, meta[k].length, false);
-#if W_DEBUG_LEVEL > 2
-    if(1) 
+#if defined(W_TRACE) && (W_DEBUG_LEVEL > 2)
+    if(0) 
     {
 #undef DBG
 #define DBG(x) cout x << endl;
@@ -187,60 +189,77 @@ get_key_info(
 w_rc_t 
 hilbert(
     const rid_t&        W_IFTRACE(rid),        // record id
-    const object_t&        obj_in,
-    key_cookie_t            cookie,  // type info
-    factory_t&                internal,
-    skey_t*                key
+    const object_t&     obj_in,
+    key_cookie_t        cookie,  // type info
+    factory_t&          internal,
+    skey_t*             key
 ) 
 {
     metadata*                meta = (metadata *)(cookie.make_ptr());
     smsize_t                 length = meta->length;
     smsize_t                 off = meta->offset;
+    DBG(<<"hilbert: meta length " << length << " meta off " << off
+            << " rid " << rid);
 
+	nbox_t box(2);
     if(obj_in.body_size() != obj_in.contig_body_size()) {
-            /* large-object special case for derive function of rtree test */
-            length = obj_in.body_size() - off - sizeof(rid_t);
+        /* large-object special case for derive function of rtree test */
+        length = obj_in.body_size() - off - sizeof(rid_t);
+        if(length > 0 && length < smsize_t(box.klen()) ) {
+            DBG(<<"length " << length
+                    << " expected at least " 
+                    << smsize_t(box.klen()));
+            return RC(ss_m::eBADLENGTH);
+        }
     }
-    smsize_t resultlen = 0;
 
     int hvalue=0;
 
+	// length could be 0 because it was nulled.
+	// If not, it's the key size or the derived key size.
+	// Note that the derived key size isn't what we need here.
     if(length) {
-            nbox_t box(2);
-            if(length < smsize_t(box.klen()) ) {
-                    return RC(ss_m::eBADLENGTH);
-            }
-            length = smsize_t(box.klen());
+        length = smsize_t(box.klen());
 
-            // The data form a box. Materialize it.
-            DBG(<<"get box at offset " << off << " with length " << length);
+        // The data form a box. Materialize it.
 
-            char *tmp = new char[length];
-            if(!tmp) return RC(ss_m::eOUTOFMEMORY);
-            vec_t bx(tmp,length);
-            rc_t rc = obj_in.copy_out(false/* not in hdr */, off, length, bx);
-            if(rc.is_error()) {
-                    delete[] tmp;
-                    DBG(<<"got error " << rc);
-                    return rc;
-            }
+        char *tmp = new char[length];
+        if(!tmp) return RC(ss_m::eOUTOFMEMORY);
+        vec_t bx(tmp,length);
+        DBG(<<"got box at offset " << off << " with length " << length
+				<< bx
+				);
+        rc_t rc = obj_in.copy_out(false/* not in hdr */, off, length, bx);
+        if(rc.is_error()) {
+                delete[] tmp;
+                DBG(<<"got error " << rc);
+                return rc;
+        }
 
-            box.bytes2box(tmp, length);
-            delete[] tmp;
+        box.bytes2box(tmp, length);
+        delete[] tmp;
 
-            hvalue = box.hvalue(universe);
-            DBG(<<"hilbert: hvalue for rid " << rid << " == " << hvalue
-                            << " based on box " << box
-                            << " and universe " << universe
-               );
+        hvalue = box.hvalue(universe);
+        DBG(<<"hilbert: hvalue for rid " << rid << " == " << hvalue
+                        << " universe " << universe
+                        << " box " << box
+           );
 
-            /* allocate space for the result */
-            void *c = internal.allocfunc(resultlen);
-            memcpy(c, &hvalue, sizeof(hvalue));
+        /* allocate space for the result */
+        void *c = internal.allocfunc(length);
+        memcpy(c, &hvalue, sizeof(hvalue));
 
-            new(key) skey_t(c, 0, sizeof(hvalue), internal);
+		{
+		vec_t junk(c, sizeof(hvalue));
+		DBG(<< rid << "BUF c is  " << junk
+						<< " located at "
+						<< ::hex << u_long(c)
+						<< ::dec);
+		}
+
+        new(key) skey_t(c, 0, sizeof(hvalue), internal);
     } else {
-            new(key) skey_t(0, 0, 0, *factory_t::none);
+        new(key) skey_t(0, 0, 0, *factory_t::none);
     }
 
     return RCOK;
@@ -307,22 +326,24 @@ make_random_box(char *object, w_base_t::uint4_t W_IFDEBUG1(length))
 {
     rand48&  generator(get_generator());
     int array[2 * 2];
-    // We only test 2-d boxed
+    // We only test 2-d boxes
     w_assert1(length == sizeof(array));
     for(int i=0; i<4; i++) {
         int x = w_base_t::int4_t(generator.rand());
         if(x < 0) x = 0 - x;
-        x = x % 10000; // keep universe 0->10000
+        x = x % UNIVERSE_BOUND; // keep within universe 0->10000
         array[i] = x;
     }
     nbox_t box(2);
     box.bytes2box( (const char *)&array[0], int(sizeof(array)));
     box.canonize();
-    universe += box;
+    // universe += box;
     memcpy(object, box.kval(), box.klen());
     DBG(<<"make_random_box returns " << box 
         << "; hvalue=" << box.hvalue(universe)
         << "; universe=" << universe
+        << "; universe.bound(0)=" << universe.bound(0)
+        << "; universe.bound(1)=" << universe.bound(1)
     );
 }
 
@@ -601,7 +622,9 @@ check_file_is_sorted2(stid_t  fid,
 
     DBG(<<"check_file_is_sorted2 " << fid 
             << " n " << n
-            << " numnulls " << numnulls);
+            << " numnulls " << numnulls
+            << " use_unsigned " << use_unsigned
+            );
 
     scan = new scan_file_i(fid, ss_m::t_cc_file);
 
@@ -636,7 +659,9 @@ check_file_is_sorted2(stid_t  fid,
 
         DBG(<<"      hdr for " << handle.rid() 
                 << " contains value (" << thiskey
-                << "," << int(hasnokey) << ")"
+                << "," 
+                << (const char *)(hasnokey?"NULL key":"non-null key")
+                << ")"
                 << " j " << j
                 << " numnulls " << numnulls
                 );
@@ -648,13 +673,18 @@ check_file_is_sorted2(stid_t  fid,
                 if(priorkey > thiskey)  {
                     bool bad(true);
                     if(use_unsigned) {
+                        DBG(<<"      check unsigned " 
+                                << unsigned(priorkey)
+                                << " <= " 
+                                << unsigned(thiskey) );
                         if(unsigned(priorkey) <= unsigned(thiskey))  {
                             bad = false;
                         }
                     }
                     if(bad) {
                         if(use_unsigned) {
-                            DBG(<<"      ascending but priorkey=" << unsigned(priorkey)
+                            DBG(<<"      ascending but priorkey=" 
+                                    << unsigned(priorkey)
                             << " thiskey=" << unsigned(thiskey)
                             << " use_unsigned " << use_unsigned
                             );
@@ -981,7 +1011,7 @@ getcmpfunc(typed_btree_test t,
 void 
 convert_to(int kk, typed_value &k, typed_btree_test t, char *stringbuffer ) 
 {
-	DBG(<<"convert_to("<<kk<<") t " << t);
+    DBG(<<"convert_to("<<kk<<") t " << t);
     switch(t) {
     case test_bv:
     case test_blarge:
@@ -1000,9 +1030,14 @@ convert_to(int kk, typed_value &k, typed_btree_test t, char *stringbuffer )
             c = 'o';
         }
         memset(stringbuffer, c, len);
-        stringbuffer[len] = '\0';
-        k._length = len+1;
+        stringbuffer[len] = (kk < 0) ? 'z' :'a';
+        k._length = len + 1;
+        if(len < MAXBV-2) { 
+            // for debugging convenience, add a null char
+            stringbuffer[len+1] = '\0';
         }
+        }
+        DBG(<<"convert_to("<<kk<<")->" << stringbuffer << "<-");
         break;
     case test_b1:
         k._u.b1 = w_base_t::uint1_t(kk);
@@ -1025,7 +1060,7 @@ convert_to(int kk, typed_value &k, typed_btree_test t, char *stringbuffer )
     case test_spatial: 
     case test_i4: 
         k._u.i4_num = w_base_t::int4_t(kk);
-		DBG(<<"convert_to("<<kk<<") yields " << k._u.i4_num);
+        DBG(<<"convert_to("<<kk<<") yields " << k._u.i4_num);
         break;
     case test_u8:
         k._u.u8_num = w_base_t::uint8_t(kk);

@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='W_RC_H'>
 
- $Id: gethrtime.h,v 1.1.2.1 2009/07/21 16:21:15 nhall Exp $
+ $Id: gethrtime.h,v 1.2 2010/05/26 01:20:21 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

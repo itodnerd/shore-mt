@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: scan.cpp,v 1.158 2010/06/15 17:30:07 nhall Exp $
+ $Id: scan.cpp,v 1.163 2010/12/09 15:20:14 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -121,8 +121,7 @@ scan_index_i::scan_index_i(
     const cvec_t&         bound2_, 
     bool                  include_nulls,
     concurrency_t         cc,
-    lock_mode_t           mode,
-    const bool            bIgnoreLatches
+    lock_mode_t           mode
     ) 
 : xct_dependent_t(xct()),
   _stid(stid_),
@@ -131,12 +130,11 @@ scan_index_i::scan_index_i(
   _error_occurred(),
   _btcursor(0),
   _skip_nulls( ! include_nulls ),
-  _cc(cc),
-  _bIgnoreLatches(bIgnoreLatches)
+  _cc(cc)
 {
     INIT_SCAN_PROLOGUE_RC(scan_index_i::scan_index_i, prologue_rc_t::read_only, 1);
 
-    _init(c1, bound1_, c2, bound2_, mode, bIgnoreLatches);
+    _init(c1, bound1_, c2, bound2_, mode);
     register_me();
 }
 
@@ -162,8 +160,7 @@ scan_index_i::_init(
     const cvec_t&         bound,
     cmp_t                 c2, 
     const cvec_t&         b2,
-    lock_mode_t           mode,
-    const bool            bIgnoreLatches)
+    lock_mode_t           mode)
 {
     _finished = false;
 
@@ -217,7 +214,7 @@ scan_index_i::_init(
      *  Access directory entry
      */
     sdesc_t* sd = 0;
-    _error_occurred = dir->access(_stid, sd, index_lock_mode);
+    _error_occurred = dir->access(t_index, _stid, sd, index_lock_mode);
     if (_error_occurred.is_error())  {
         return;
     }
@@ -276,14 +273,10 @@ scan_index_i::_init(
                 return;
             }
             bool inclusive = (cond == eq || cond == ge || cond == le);
-	    
+
             cvec_t* elem = 0;
 
-	    if(_btcursor->is_backward()) {
-		elem = &(inclusive ? cvec_t::pos_inf : cvec_t::neg_inf);
-	    } else {
-		elem = &(inclusive ? cvec_t::neg_inf : cvec_t::pos_inf);
-	    }
+            elem = &(inclusive ? cvec_t::neg_inf : cvec_t::pos_inf);
 
             _error_occurred = bt->fetch_init(*_btcursor, sd->root(), 
                                             sd->sinfo().nkc, sd->sinfo().kc,
@@ -294,74 +287,13 @@ scan_index_i::_init(
             if (_error_occurred.is_error())  {
                 return;
             }
-	    /*
             if(_btcursor->is_backward()) {
                 // Not fully supported
                 _error_occurred = RC(eNOTIMPLEMENTED);
                 return;
             }
-	    */
         }
         break;
-    case t_mrbtree:
-    case t_uni_mrbtree:
-    case t_mrbtree_l:
-    case t_uni_mrbtree_l:
-    case t_mrbtree_p:
-    case t_uni_mrbtree_p:
-        {
-            _btcursor = new bt_cursor_t(!_skip_nulls);
-            if (! _btcursor) {
-                _error_occurred = RC(eOUTOFMEMORY);
-                return;
-            }
-            bool inclusive = (cond == eq || cond == ge || cond == le);
-
-            cvec_t* elem = 0;
-
-	    if(_btcursor->is_backward()) {
-		elem = &(inclusive ? cvec_t::pos_inf : cvec_t::neg_inf);
-	    } else {
-		elem = &(inclusive ? cvec_t::neg_inf : cvec_t::pos_inf);
-	    }
-
-	    // traverse all the subtrees that covers the region [bound,b2]
-	    vector<lpid_t> roots;
-	    cvec_t* bound_key;
-	    cvec_t* b2_key;
-	    _error_occurred = bt->_scramble_key(bound_key, bound, sd->sinfo().nkc, sd->sinfo().kc);
-	    char* bound_sc = (char*) malloc((*bound_key).size());
-	    (*bound_key).copy_to(bound_sc, (*bound_key).size());
-	    cvec_t b1(bound_sc, (*bound_key).size());
-	    _error_occurred = bt->_scramble_key(b2_key, b2, sd->sinfo().nkc, sd->sinfo().kc);
-
-	    if(&bound == &vec_t::neg_inf && &b2 == &vec_t::pos_inf) {
-		_error_occurred = sd->partitions().getAllPartitions(roots);
-	    } else {
-		_error_occurred = sd->partitions().getPartitions(b1, *b2_key, roots);
-	    }
-	    _error_occurred = bt->mr_fetch_init(*_btcursor, roots, 
-						sd->sinfo().nkc, sd->sinfo().kc,
-						ntype == t_uni_btree,
-						key_lock_level,
-						b1, *elem, 
-						cond, c2, *b2_key, mode,
-                                                bIgnoreLatches);
-	    free(bound_sc);
-	    
-	    if (_error_occurred.is_error())  {
-                return;
-            }
-	    /*
-            if(_btcursor->is_backward()) {
-                // Not fully supported
-                _error_occurred = RC(eNOTIMPLEMENTED);
-                return;
-            }
-	    */
-        }
-        break;
-
     default:
         W_FATAL(eINTERNAL);
    }
@@ -405,12 +337,6 @@ scan_index_i::finish()
     switch (ntype)  {
     case t_btree:
     case t_uni_btree:
-    case t_mrbtree:
-    case t_uni_mrbtree:
-    case t_mrbtree_l:
-    case t_uni_mrbtree_l:
-    case t_mrbtree_p:
-    case t_uni_mrbtree_p:
         if (_btcursor)  {
             delete _btcursor;
             _btcursor = 0;
@@ -465,19 +391,13 @@ scan_index_i::_fetch(
     switch (ntype)  {
     case t_btree:
     case t_uni_btree:
-    case t_mrbtree:
-    case t_uni_mrbtree:
-    case t_mrbtree_l:
-    case t_uni_mrbtree_l:
-    case t_mrbtree_p:
-    case t_uni_mrbtree_p:
         if (skip) {
             /*
              *  Advance cursor.
              */
             do {
                 DBG(<<"");
-                W_DO( bt->fetch(*_btcursor, _bIgnoreLatches) );
+                W_DO( bt->fetch(*_btcursor) );
                 if(_btcursor->eof()) break;
             } while (_skip_nulls && (_btcursor->klen() == 0));
         }
@@ -497,8 +417,14 @@ scan_index_i::_fetch(
     } else {
         w_assert3(_btcursor->key());
         DBG(<<"not eof");
-        if (klen)  *klen = _btcursor->klen();
-        if (elen)  *elen = _btcursor->elen();
+        if (klen)  {
+            *klen = _btcursor->klen();
+            DBG(<<"klen " << *klen);
+        }
+        if (elen)   {
+            *elen = _btcursor->elen();
+            DBG(<<" elen " << *elen);
+        }
 
         bool k_ok = ((key == 0) || key->size() >= (size_t)_btcursor->klen());
         
@@ -580,7 +506,7 @@ void scan_rt_i::_init(nbox_t::sob_cmp_t c, const nbox_t& qbox)
     }
 
     sdesc_t* sd = 0;
-    _error_occurred = dir->access(stid, sd, index_lock_mode);
+    _error_occurred = dir->access(t_index, stid, sd, index_lock_mode);
     if (_error_occurred.is_error())  {
         return;
     }
@@ -664,21 +590,19 @@ scan_rt_i::xct_state_changed(
 
 scan_file_i::scan_file_i(
         const stid_t& stid_, const rid_t& start,
-        concurrency_t cc, bool pre, 
-        lock_mode_t, /*mode TODO: remove.  is documented as ignored*/
-        const bool bIgnoreLatches) 
+         concurrency_t cc, bool pre, 
+         lock_mode_t /*mode TODO: remove.  is documented as ignored*/) 
 : xct_dependent_t(xct()),
   stid(stid_),
   curr_rid(start),
   _eof(false),
   _cc(cc), 
-  _bIgnoreLatches(bIgnoreLatches),
   _do_prefetch(pre),
   _prefetch(0)
 {
     INIT_SCAN_PROLOGUE_RC(scan_file_i::scan_file_i,
-            cc == t_cc_append ? prologue_rc_t::read_write : prologue_rc_t::read_only,
-            0);
+	cc == t_cc_append ? prologue_rc_t::read_write : prologue_rc_t::read_only,
+	0);
 
     /* _init sets error state */
     W_IGNORE(_init(cc == t_cc_append));
@@ -690,19 +614,16 @@ scan_file_i::scan_file_i(
 }
 
 scan_file_i::scan_file_i(const stid_t& stid_, concurrency_t cc, 
-                         bool pre, 
-                         lock_mode_t, /*mode TODO: remove. this documented as ignored*/ 
-                         const bool bIgnoreLatches)
+   bool pre, lock_mode_t /*mode TODO: remove. this documented as ignored*/) 
 : xct_dependent_t(xct()),
   stid(stid_),
   _eof(false),
   _cc(cc),
-  _bIgnoreLatches(bIgnoreLatches),
   _do_prefetch(pre),
   _prefetch(0)
 {
     INIT_SCAN_PROLOGUE_RC(scan_file_i::scan_file_i,
-        cc == t_cc_append?prologue_rc_t::read_write:prologue_rc_t::read_only,  0);
+	cc == t_cc_append?prologue_rc_t::read_write:prologue_rc_t::read_only,  0);
 
     /* _init sets error state */
     W_IGNORE(_init(cc == t_cc_append));
@@ -774,6 +695,8 @@ rc_t scan_file_i::_init(bool for_append)
         break;
 
     case t_cc_append:
+        // someone else can insert or append as long as we're not
+        // on the same page
         mode = IX;
         _page_lock_mode = EX;
         _rec_lock_mode = EX;
@@ -792,7 +715,7 @@ rc_t scan_file_i::_init(bool for_append)
     }
 
     DBGTHRD(<<"scan_file_i calling access for stid " << stid);
-    _error_occurred = dir->access(stid, sd, mode);
+    _error_occurred = dir->access(t_file, stid, sd, mode);
     if (_error_occurred.is_error())  {
         return w_rc_t(_error_occurred);
     }
@@ -801,20 +724,37 @@ rc_t scan_file_i::_init(bool for_append)
         return w_rc_t(_error_occurred);
     }
 
-    // see if we need to figure out the first rid in the file
-    // (ie. it was not specified in the constructor)
+    // We need to figure out the first rid in the file if the
+    // starting point (curr_rid)
+    // was not given as an argument to the constructor.
+    //
+
     if (curr_rid == rid_t::null) {
-        if(for_append) {
-            _error_occurred = fi->last_page(stid, 
-                    curr_rid.pid, NULL/*alloc only*/); 
-        } else {
-            _error_occurred = fi->first_page(stid, 
-                    curr_rid.pid, NULL/*alloc only*/);
-        }
+        do {
+            if(for_append) {
+                _error_occurred = fi->last_file_page(stid, 
+                        curr_rid.pid, NULL/*alloc only*/, _page_lock_mode); 
+            } else {
+                _error_occurred = fi->first_file_page(stid, 
+                        curr_rid.pid, NULL/*alloc only*/, _page_lock_mode);
+            }
+            // GNATS160 Will return error if lock cannot be acquired immediately.
+            // If page is in use by another tx, we might find that the next page
+            // is no longer valid, hence the loop.
+            // NOTE that this might end up locking a page
+            // that is no longer the right one; we retry in
+            // the loop to ensure that we have it right, but
+            // we are left with a spurious lock.
+            if (_error_occurred.is_error())  {
+                if (_error_occurred.err_num()==eLOCKTIMEOUT)  {
+                    W_DO(lm->lock(curr_rid.pid, _page_lock_mode, 
+                                t_long, WAIT_SPECIFIED_BY_XCT));
+                } else {
+                    return w_rc_t(_error_occurred);
+                }
+            }
+        } while(_error_occurred.is_error());
 
-        if (_error_occurred.is_error())  {
-            return w_rc_t(_error_occurred);
-        }
         curr_rid.slot = 0;  // get the header object
 
     } else {
@@ -834,7 +774,12 @@ rc_t scan_file_i::_init(bool for_append)
 
     // remember the next pid
     _next_pid = curr_rid.pid;
-    _error_occurred = fi->next_page(_next_pid, eof, NULL/*alloc only*/);
+    _error_occurred = fi->next_file_page(_next_pid, eof, NULL/*alloc only*/, 
+            _page_lock_mode );
+    // GNATS160 Will return error if lock cannot be acquired immediately: how to resolve?
+    // If page is in use by another tx, we might find that the next page
+    // is no longer valid.
+
     if(for_append) {
         w_assert3(eof);
     } else if (_error_occurred.is_error())  {
@@ -853,7 +798,7 @@ rc_t scan_file_i::_init(bool for_append)
             DBGTHRD(<<" requesting first page: " << curr_rid.pid);
 
             W_COERCE(this->_prefetch->request(curr_rid.pid, 
-		     pin_i::lock_to_latch(_page_lock_mode, _bIgnoreLatches)));
+                        pin_i::lock_to_latch(_page_lock_mode)));
         }
     }
 #if W_DEBUG_LEVEL > 1
@@ -913,8 +858,7 @@ scan_file_i::_next(pin_i*& pin_ptr, smsize_t start, bool& eof)
                         }
                         DBGTHRD(<<" requesting next page: " << _next_pid);
                         W_COERCE(this->_prefetch->request(_next_pid, 
-			         pin_i::lock_to_latch(_page_lock_mode,
-						      _bIgnoreLatches)));
+                            pin_i::lock_to_latch(_page_lock_mode)));
                     }
                 }
             } 
@@ -999,7 +943,11 @@ scan_file_i::_next(pin_i*& pin_ptr, smsize_t start, bool& eof)
 
                 DBGTHRD(<<" locating page after " << _next_pid);
                 bool tmp_eof;
-                _error_occurred = fi->next_page(_next_pid, tmp_eof, NULL/*alloc only*/);
+                _error_occurred = fi->next_file_page(_next_pid, tmp_eof, 
+                        NULL/*alloc only*/, _page_lock_mode);
+    // GNATS160 Will return error if lock cannot be acquired immediately: how to resolve?
+    // If page is in use by another tx, we might find that the next page
+    // is no longer valid.
                 if (_error_occurred.is_error())  {
                     return w_rc_t(_error_occurred);
                 }
@@ -1116,7 +1064,7 @@ append_file_i::append_file_i(const stid_t& stid_)
         _error_occurred = lm->lock(stid, EX, t_long, WAIT_SPECIFIED_BY_XCT);
     if(_error_occurred.is_error()) return;
     sdesc_t *sd;
-    _error_occurred = dir->access(stid, sd, IX); 
+    _error_occurred = dir->access(t_file, stid, sd, IX); 
     // makes a copy - only because the create_rec
     // functions that we want to call require that we
     // have one to reference.

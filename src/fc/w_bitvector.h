@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='W_BASE_H'>
 
- $Id: w_bitvector.h,v 1.1.2.3 2010/03/19 22:17:19 nhall Exp $
+ $Id: w_bitvector.h,v 1.3 2012/01/02 17:02:13 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -120,25 +120,16 @@ public:
     ostream &print(ostream &o) const 
     {
         {
+            int s = num_bits_set();
             const char *sep="";
-            o << "{";
+            o << "set " << s << "/" << num_bits()  << " bits={";
             for(int i=0; i < BITS; i++) 
             {
                 if(is_set(i)) { o << sep << i; sep="."; }
             }
             o << "}";
         }
-        {
-
-            const char *sep="";
-            o << "(~{";
-            for(int i=0; i < BITS; i++) 
-            {
-                if( !is_set(i)) { o << sep << i; sep="."; }
-            }
-            o << "})";
-            return o;
-        }
+        return o;
     }
 
     /// clear all bits
@@ -155,18 +146,26 @@ public:
         return hash == 0;
     }
 
-    int num_bits_set() const {
-        int j=0;
-        for(int i=0; i < BITS; i++) 
-        {
-            if(is_set(i)) j++;
+    /// true if all bits are set - used in unit tests
+    bool is_full() const {
+        Word hash = ~0x0;
+        for(long i=0; i < WORDS; i++) {
+            if(hash & data[i] != hash) {
+                w_assert3( num_bits_set() < BIT_COUNT);
+                return false;
+            }
         }
-        return j;
+        w_assert3( num_bits_set() == BIT_COUNT);
+        return true;
     }
 
-    /// true if all bits are set
-    bool is_full() const {
-        return num_bits_set() == BIT_COUNT;
+    int num_bits_set() const {
+        int j=0;
+        for(int i=0; i < WORDS; i++) 
+        {
+            j+= w_base_t::pop_count(data[i]);
+        }
+        return j;
     }
 
     /// copy operator

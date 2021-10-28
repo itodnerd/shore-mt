@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: stid_t.cpp,v 1.13.2.3 2010/01/28 04:53:23 nhall Exp $
+ $Id: stid_t.cpp,v 1.16 2012/01/02 17:02:10 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -45,6 +45,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include "stid_t.h"
 
 const stid_t stid_t::null;
+const w_hashing::hash2 stid_t::_hash; // used by histo.cpp in sm
 
 ostream& operator<<(ostream& o, const stid_t& stid)
 {

@@ -1,6 +1,6 @@
 # <std-header style='tcl' orig-src='shore'>
 #
-#  $Id: mpw.sub,v 1.2 2010/05/26 01:21:12 nhall Exp $
+#  $Id: mpw.sub,v 1.3 2010/08/23 14:28:23 nhall Exp $
 #
 # SHORE -- Scalable Heterogeneous Object REpository
 #
@@ -114,6 +114,7 @@ if {$fid==0} {
 	sm begin_xct
 	set fid [sm create_file $volid tmp ]
 	sm commit_xct
+	verbose fid=$fid
 }
 
 sm begin_xct

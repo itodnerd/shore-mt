@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='W_WORKAROUND_H'>
 
- $Id: w_workaround.h,v 1.58.2.6 2010/03/19 22:17:21 nhall Exp $
+ $Id: w_workaround.h,v 1.62 2011/09/08 18:10:55 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -77,10 +77,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #define    W_GCC_THIS_VER    W_GCC_VER(__GNUC__,__GNUC_MINOR__)
 #endif
 
-
-/* true if THIS gcc version is <= the specified major,minor prerequisite */
-#define    W_GCC_PREREQ(major,minor)    \
-    (W_GCC_THIS_VER >= W_GCC_VER(major,minor))
 
 #if     W_GCC_THIS_VER < W_GCC_VER(2,5)
 /* XXX all the following tests assume this filter is used */
@@ -247,16 +243,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #define INT64_LITERAL_BUG(x) x
 #endif
 
-/* There is a newer version of the STL out there, which is standard with
-   gcc-2.95.  It requires different template instantiations, but most
-   other use of it is seamless from before.  Specifiying the newer STL
-   can either be enabled explicitly in shore.def, or automgically here
-   for the appropriate gcc versions.  XXX probably needs an updated
-   expression if gcc changes major numbers again. */
-#if defined(__GNUC__) && __GNUC__ == 2 && __GNUC_MINOR__ > 90
-#define W_NEWER_STL
-#endif
-
 /******************************************************************************
  *
  * C string bug
@@ -269,48 +255,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  */
 #define C_STRING_BUG (char *)
 
-
-/******************************************************************************
- *
- * Perl library  bugs
- *
- ******************************************************************************/
-
-/*
- * perl doesn't use const char* anywhere, and "string" is a const char*.
- */
-#define PERL_CVBUG (char *)
-
-/*
- * perl creates variable through macro expansions which aren't always used.
- */
-#define PERL_UNUSED_VAR(x) (void)x
-
-
-/******************************************************************************
- *
- * HP CC bugs
- *
- ******************************************************************************/
-#if defined(Snake) && !defined(__GNUC__)
-
-    /*
-     * HP CC does not like some enums with the high order bit set.
-     */
-#   define HP_CC_BUG_1 1
-
-    /*
-     * HP CC does not implement labels within blocks with destructors
-     */
-#   define HP_CC_BUG_2 1
-
-    /*
-     * HP CC does not support having a nested class as as a
-     * parameter type to a template class
-     */
-#   define HP_CC_BUG_3 1
-
-#endif /* defined(Snake) && !defined(__GNUC__) */
 
 
 /* This is really a library problem; stream.form() and stream.scan()
@@ -347,18 +291,6 @@ extern const char *form(const char *, ...);
 #define    W_FORM2(stream,args)    W_FORM(stream) args
 
 /*
- * Default definitions of macros used everywhere:
- * NB: re: VC++/g++ differences in treatments of sizeof:
- * whereas sizeof(empty class) == 1 in both cases,
- * classes inheriting from an empty class don't get the 1 byte
- * added in by VC++, but in g++, those classes DO get an extra 1(4)
- * bytes(s) added in by the inheritance. 
- */
-#ifndef VCPP_BUG_1
-#define VCPP_BUG_1 
-#endif
-
-/*
  * Try to use the system definition of offsetof, and provide one here
  * if the system's isn't in the standard place.
  */
@@ -380,6 +312,28 @@ extern const char *form(const char *, ...);
    NEW: below
  */
 #define w_offsetof(class,member) offsetof(class,member)
+#endif
+
+/*
+ * This is what appears to be an optimizer bug in gcc44 and possibly
+ * later gcc4x compilers. CRITICAL_SECTIONs sometimes fail to 
+ * release on close-scope because the optimizer fails to leave the
+ * (stack variable) cs._mutex pointer set, 
+ * despite its being initialized before the Acquire.
+ * It looks like the problem has to do with register optimization, because
+ * a workaround is to declare the pointer volatile, which
+ * forces it not to be in a register. Unfortunately.
+ * Unfortunately, this does not seem to be the only problem with
+ * gcc4.x, x>3, so it's best just not to use it.
+ */
+#define GCC4_WORKAROUND_1
+#if defined(__GNUG__)
+#if W_GCC_THIS_VER >= W_GCC_VER(4,4)
+#undef GCC4_WORKAROUND_1 
+#define GCC4_WORKAROUND_1 volatile
+/* define this so we can put more contingent code in places */
+#error  gcc4.4 and above have serious optimizer bugs. Please use 4.1.2 or 3.4.
+#endif
 #endif
 
 /*<std-footer incl-file-exclusion='W_WORKAROUND_H'>  -- do not edit anything below this line -- */

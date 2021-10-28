@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore'>
 
- $Id: rand48.h,v 1.1.2.4 2010/03/19 22:17:16 nhall Exp $
+ $Id: rand48.h,v 1.3 2010/07/07 20:50:12 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -79,14 +79,12 @@ public:
     /// Set the seed
     void     seed(unsigned48_t seed) { _state = _mask(seed); }
     /// Return 48-bit pseudo-random number
-    signed48_t     rand()          { 
-                return signed48_t(_update()); 
-    }
+    signed48_t  rand()          { return signed48_t(_update()); }
     /// Return 64-bit pseudo-random number
     double      drand();
 
     /// Return 48-bit pseudo-random number modulo given maximum
-    signed48_t     randn(signed48_t max)  { return signed48_t(max*drand()); }
+    signed48_t  randn(signed48_t max)  { return signed48_t(max*drand()); }
 
 // private: Must be public for test programs.
     unsigned48_t _update();
@@ -95,6 +93,10 @@ public:
 public:
 /*! Making _state private * makes this a non-pod type, 
  * and we use it for thread-private data.
+ */
+
+/* No constructor: must seed it.  If you get a purify UMR here,
+ * it's because the struct wasn't seeded, which is a programmer error
  */
 
     unsigned48_t _state;

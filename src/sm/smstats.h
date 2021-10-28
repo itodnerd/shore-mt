@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='SMSTATS_H'>
 
- $Id: smstats.h,v 1.34 2010/05/26 01:20:43 nhall Exp $
+ $Id: smstats.h,v 1.36 2010/09/21 14:26:20 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -186,6 +186,7 @@ struct sm_config_info_t {
     u_long max_small_rec;      // maximum number of bytes in a "small"
                 // (ie. on one page) record.  This is
                 // align(header_len)+align(body_len).
+    u_long small_rec_overhead;      // size of rectag_t + sizeof slot_t
     /**\brief Data space available on a page of a large record */
     u_long lg_rec_page_space;    
     /**\brief Size in KB of buffer pool */
@@ -199,12 +200,6 @@ struct sm_config_info_t {
      * \note The storage manager has not been tested with any value but 8.
      */
     u_long pages_per_ext; 
-
-    /**\brief True if multi-threaded transactions are allowed 
-     * \note The storage manager has not been thoroughly
-     * tested with this turned off.
-     */
-    bool   multi_threaded_xct;  
 
     /**\brief True if logging is on.
      * \note The multi-threaded storage manager has not been 

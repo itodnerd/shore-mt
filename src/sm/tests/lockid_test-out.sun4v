@@ -1,9 +1,9 @@
-... dtrace ready
 Sources: 
 	 vol 1000
 	 store s(1000.900)
 	 page p(1000.900.50)
 	 rec r(1000.900.50.6)
+	 kvl k(s(1000.900).61726870.701818499)
 	 extent x(1000.33)
 	 u1 u1(1)
 	 u2 u2(1,2)
@@ -56,6 +56,8 @@ Lock: lspace 4
 	 u2()=900 (user2_t=u2(1000,900))
 	 u3()=50 ( user3_t=u3(1000,900,50))
 	 u4()=393216 ( user4_t=u4(1000,900,50,393216))
+}
+Kvl lock L(k(s(1000.900).61726870.701818499))
 }
 Extent lock L(x(1000.33)[NoPageAllocs])
 Lock: lspace 5

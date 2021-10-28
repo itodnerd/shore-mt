@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: newsort.cpp,v 1.47 2010/06/15 17:30:07 nhall Exp $
+ $Id: newsort.cpp,v 1.57 2010/12/09 15:20:14 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -86,38 +86,8 @@ typedef ssm_sort::run_mgr run_mgr;
 // static
 key_cookie_t key_cookie_t::null(0);
 
-// For debugging
-extern "C" void sortstophere()
-{
-    assert(0);
-}
-
-
-/* XXX only used to verify proper alignment when strict alignment is
-   not enabled.   This should all be rectified, but the strict alignment
-   had different meaning previously. */
-
-/* XXX too many ia32 systems only give you x4 alignment on x8 objects
-   need to look into this further.   Our alignment model may need
-   more tweaking.  And it should take into account machines were we
-   can run 4 byte aligned for 8 byte objects and it works too.  Arggh. */
-
-#define STRICT_INT8_ALIGNMENT
-#define STRICT_F8_ALIGNMENT
-
-#if defined(I386) 
-#define        _ALIGN_F8        0x4
-#define        _ALIGN_IU8        0x4
-#else
-#define        _ALIGN_F8        0x8
-#define        _ALIGN_IU8        0x8
-#endif
-
-#define        ALIGN_MASK_F8        (_ALIGN_F8-1)
-#define        ALIGN_MASK_IU8        (_ALIGN_IU8-1)
-
-
 const int max_keys_handled = 5; // TODO: make more flexible
+
 
 class tape_t;
 
@@ -148,7 +118,7 @@ public:
         }
         void *p =  new double[size_in_dbl];
         if(!p) W_FATAL(fcOUTOFMEMORY);
-        DBG(<<"cpp_char_factory_t.allocfunc(sz=" << l << ") new " << p );
+        DBGTHRD(<<"cpp_char_factory_t.allocfunc(sz=" << l << ") new " << p );
         _nallocs++;
         return (void *)p;
    }
@@ -158,7 +128,7 @@ public:
 #endif
    ) { 
         _nfrees++;
-        DBG(<<"cpp_char_factory_t.freefunc(sz=" << t << ") delete " << p);
+        DBGTHRD(<<"cpp_char_factory_t.freefunc(sz=" << t << ") delete " << p);
         double *d = (double *)p;
         delete[] d;
    }
@@ -252,8 +222,19 @@ private:
     void _create_buf();
 
 public:
+    /* XXX really want alignment to align(_d_scratch) */
+    /* XXXX these should use the align tools */        
+    static smsize_t   _align(smsize_t amt) { /* align to 8 bytes */
+        if(amt & 0x7) { amt &= ~0x7; amt += 0x8; }
+        return amt;
+    }
     static char *   _alignAddr(char *cp) { /* align to 8 bytes */
-        return (char*) align(cp);
+        ptrdiff_t arith = (ptrdiff_t) cp;
+        if (arith & 0x7) {
+                arith &= ~0x7;
+                arith += 0x8;
+        }
+        return (char *) arith;
     }
 
     NORET limited_space(smsize_t buffer_sz) : 
@@ -283,7 +264,7 @@ public:
         _reset_point = _scratch;
     }
     void reset() {
-    DBG(<<"RESET!");
+        DBGTHRD(<<"RESET!");
         _scratch = _reset_point;
         _left = _scratch ? _buffer_sz : 0;
     }
@@ -300,7 +281,7 @@ public:
     char * borrow_buf(smsize_t& how_much_left) {
         char *result = _alignAddr(_scratch);
         int lost_to_alignment = int(result - _scratch);
-        DBG(<<"borrow_buf : lost to alignment " << lost_to_alignment);
+        DBGTHRD(<<"borrow_buf : lost to alignment " << lost_to_alignment);
         how_much_left = _left - lost_to_alignment;
         // Don't update _scratch or _left. 
         // Let keep_buf() do that.
@@ -327,11 +308,10 @@ void  *
 limited_space::allocfunc(smsize_t l) {
     char *p=0;
     w_rc_t rc = get_buf(l, p);
-    DBG(<<"get_buf for sort key in allocfunc returns rc=" << rc);
     if(rc.is_error() && (rc.err_num() == eINSUFFICIENTMEM))  {
         p = 0;
     }
-    DBG(<<"limited_space::allocfunc(sz=" << l << ") gets " << (void *)p);
+    DBGTHRD(<<"limited_space::allocfunc(sz=" << l << ") gets " << (void *)p);
     return (void *)p;
 }
 
@@ -343,31 +323,36 @@ limited_space::freefunc(const void*p, smsize_t l) {
         // get alloc/dealloc in stack order then.
         W_COERCE(rc);
     }
-    // DBG(<<"limited_space::freefunc(sz=" << l << ") gives " << p);
+    // DBGTHRD(<<"limited_space::freefunc(sz=" << l << ") gives " << p);
 }
 
 
 w_rc_t 
 limited_space::give_buf(smsize_t amt, char *where) 
 {
-    // DBG(<<"give buf where=" << (void *)where << " amt=" << amt);
-    amt = align(amt);
+    DBGTHRD(<<"give_buf " << amt << " where " << ::hex
+            << u_long(where) << ::dec);
+    amt = _align(amt);
+    // The assumption here is that you will use the
+    // space in stack order
     if(where + amt != _scratch) {
+        DBGTHRD(<<"give_buf " << amt << " where " << ::hex
+            << u_long(where) << ::dec
+            << " fails");
         return RC(eBADSTART);
     }
     _scratch = where;
     _left += amt;
-    // DBG(<<"give buf new scratch=" << (void*)_scratch);
+    // DBGTHRD(<<"give buf new scratch=" << (void*)_scratch);
     return RCOK;
 }
 
 w_rc_t 
 limited_space::get_buf(smsize_t amt, char *&result) 
 {
-    // DBG(<<"get_buf " << amt);
-    amt = align(amt);
+    amt = _align(amt);
     if(smsize_t((_scratch + amt) - (char *)_d_scratch) > _buffer_sz) {
-        DBG(<<"");
+        DBGTHRD(<<"returning RC(eINSUFFICIENTMEM)");
         return RC(eINSUFFICIENTMEM);
     }
     result = _scratch;
@@ -376,22 +361,24 @@ limited_space::get_buf(smsize_t amt, char *&result)
     if(_buffer_sz - _left > _buf_hiwat) 
             _buf_hiwat = (_buffer_sz - _left);
     w_assert3(_alignAddr(_scratch) == _scratch);
+    DBGTHRD(<<"get_buf " << amt << " returns " << ::hex
+            << u_long(result) << ::dec);
     return RCOK;
 }
 
 w_rc_t 
 limited_space::keep_buf(smsize_t amt, const char * W_IFDEBUG3(b)) 
 {
-    DBG(<<"enter keep_buf: amt=" << amt << " _scratch = " << (void*)_scratch);
+    DBGTHRD(<<"enter keep_buf: amt=" << amt << " _scratch = " << (void*)_scratch);
     char *newscratch = _alignAddr(_scratch);
     w_assert3(newscratch == b);
 
     smsize_t lost_to_alignment = smsize_t(newscratch - _scratch);
     
-    amt = align(amt);
+    amt = _align(amt);
 
     if(smsize_t((newscratch + amt) - (char *)_d_scratch) > _buffer_sz) {
-        DBG(<<"");
+        DBGTHRD(<<"");
         return RC(eINSUFFICIENTMEM);
     }
     _scratch = newscratch + amt;
@@ -402,7 +389,7 @@ limited_space::keep_buf(smsize_t amt, const char * W_IFDEBUG3(b))
             _buf_hiwat = (_buffer_sz - _left);
     w_assert3(_alignAddr(_scratch) == _scratch);
 
-    DBG(<<" leave keep_buf: amt=" << amt << " new _scratch = " << (void*)_scratch);
+    DBGTHRD(<<" leave keep_buf: amt=" << amt << " new _scratch = " << (void*)_scratch);
     return RCOK;
 }
 
@@ -414,11 +401,11 @@ limited_space::_create_buf()
     /*
      * Create buffer for scratch use.  
      */
-    DBG(<<"new" << _buffer_sz / sizeof(double));
+    DBGTHRD(<<"new" << _buffer_sz / sizeof(double));
     _d_scratch = new double[_buffer_sz / sizeof(double)];
     record_malloc((_buffer_sz / sizeof(double))*sizeof(double));
     if(!_d_scratch) {
-        DBG(<<"");
+        DBGTHRD(<<"");
         W_FATAL(eOUTOFMEMORY);
     }
     _scratch = (char *)_d_scratch;
@@ -468,21 +455,25 @@ public:
     NORET sm_skey_t() : skey_t() {}
 
     NORET sm_skey_t(sm_object_t&o, smsize_t off, smsize_t l, bool h) 
-            : skey_t(o, off, l, h) { }
+            : skey_t(o, off, l, h) { 
+                DBGTHRD(<<"constructed sm_skey_t off " << off << " size " << l);
+            }
 
     smsize_t offset() const { return _offset; }
-    void    construct(sm_object_t& o, smsize_t off, smsize_t l, bool h) {
-            _construct(&o, off, l, h);
-        }
-    void          construct(void *buf, smsize_t off, smsize_t l, factory_t* f) {
-            _construct(buf, off, l, f);
-        }
-    void    replace(const skey_t& k) { _replace(k); }
-    void    replace_relative_to_obj(const object_t &o, const skey_t& k) { 
-            _replace_relative_to_obj(o, k); 
-    }
-    void    invalidate() { _invalidate(); }
-    bool    is_in_large_obj() const { return  is_in_obj() && 
+    void     construct(sm_object_t& o, smsize_t off, smsize_t l, bool h) {
+                DBGTHRD(<<"constructed sm_skey_t off " << off << " size " << l);
+                _construct(&o, off, l, h);
+             }
+    void     construct(void *buf, smsize_t off, smsize_t l, factory_t* f) {
+                DBGTHRD(<<"constructed sm_skey_t with buf " << off << " size " << l);
+                _construct(buf, off, l, f);
+             }
+    void     replace(const skey_t& k) { _replace(k); }
+    void     replace_relative_to_obj(const object_t &o, const skey_t& k) { 
+                _replace_relative_to_obj(o, k); 
+             }
+    void     invalidate() { _invalidate(); }
+    bool     is_in_large_obj() const { return  is_in_obj() && 
                 (!is_in_hdr()) &&
                 _obj->is_valid() && _obj->is_in_buffer_pool()
                 && (_obj->contig_body_size() != _obj->body_size());
@@ -503,7 +494,7 @@ private:
     int         _levels;
     int*        _f;
     int*        _p; // penultimate level
-    int                _total;
+    int         _total;
 
     void _swap(int*& a, int*& b) {
         int *tmp = a;
@@ -556,15 +547,15 @@ NORET
 fib_t::fib_t(int order) : _order(order), _f(0), _p(0) 
 {
     w_assert1(order >= 2);
-    DBG(<<"new" << sizeof(int) * order);
+    DBGTHRD(<<"new" << sizeof(int) * order);
     _f = new int[order];
     // NB: record_malloc is below 
-    if(!_f) { DBG(<<""); W_FATAL(ss_m::eOUTOFMEMORY); }
+    if(!_f) { DBGTHRD(<<""); W_FATAL(ss_m::eOUTOFMEMORY); }
 
-    DBG(<<"new" << sizeof(int) * order);
+    DBGTHRD(<<"new" << sizeof(int) * order);
     _p = new int[order];
     // NB: record_malloc is below 
-    if(!_p) { DBG(<<""); W_FATAL(ss_m::eOUTOFMEMORY); }
+    if(!_p) { DBGTHRD(<<""); W_FATAL(ss_m::eOUTOFMEMORY); }
 
     for(int j=0; j<order; j++) { _p[j]= -1; }
     _compute_level(0, _p, _f); // compute into _f
@@ -646,6 +637,8 @@ class run_t
     slotid_t         _first_slot;
     slotid_t         _last_slot;
 public:
+    NORET            run_t() : _first_page(0), _last_page(0),
+                               _first_slot(0), _last_slot(0) {}
     shpid_t          first_page() const { return _first_page; }
     shpid_t          last_page() const { return _last_page; }
     slotid_t         first_slot() const { return _first_slot; }
@@ -672,7 +665,7 @@ public:
         return _first_slot == 0;
     }
     w_rc_t next(file_p& fp) {
-        DBG(<<" run_t::next: ENTER first=" 
+        DBGTHRD(<<" run_t::next: ENTER first=" 
                         << first_page() << "." << first_slot()
            << " last= " << last_page() << "." << last_slot() );
 
@@ -691,15 +684,15 @@ public:
                 bool eof;
                 lpid_t pid = fp.pid();
                 w_assert1(pid.page == _first_page);
-                W_DO(ss_m::fi->next_page(pid, eof, NULL /*only allocated pages*/));
-                DBG(<<" run_t::next page after " 
+                W_DO(ss_m::fi->next_file_page(pid, eof, NULL /*only allocated pages*/, lock_base_t::NL));
+                DBGTHRD(<<" run_t::next page after " 
                     << _first_page << " is " << pid);
                 INC_STAT_SORT(sort_page_fixes);
                 _first_page = pid.page;
                 _first_slot = (eof?  0 : 1);
             }
         }
-        DBG(<<" run_t::next is " << _first_page << "." << _first_slot);
+        DBGTHRD(<<" run_t::next is " << _first_page << "." << _first_slot);
         return RCOK;
     }
 
@@ -725,9 +718,9 @@ ostream & operator<< (ostream &o, const run_t& r)
 class phase_mgr : public smlevel_top
 {
     const fib_t* _fib;
-    int         _order;        // number of "tapes" including output tape
+    int         _order; // number of "tapes" including output tape
     int         _level; // number of passes with fixed-size runs
-    int*        _f;        // distribution of runs to tapes
+    int*        _f;     // distribution of runs to tapes
     int         _total; // total # runs in the whole mess
     int         _ototal; // original total # runs in the whole mess
     int         _high;
@@ -772,10 +765,11 @@ public:
         _high(0), 
         _low(0), _way(0), _target(_order)
         {
-            DBG(<<"new" << sizeof(int) * (_order+1));
+            DBGTHRD(<<" creating phase_mgr with target " <<  _target);
+            DBGTHRD(<<" new " << sizeof(int) * (_order+1));
             _f = new int[_order+1];
             // NB: record_malloc is done below
-            if(!_f) { DBG(<<""); W_FATAL(eOUTOFMEMORY); }
+            if(!_f) { DBGTHRD(<<""); W_FATAL(eOUTOFMEMORY); }
 
             for(int i=0; i< _order; i++) {
                 // Start by distributing real runs
@@ -814,7 +808,7 @@ public:
 
     void finish_phase() 
     {
-        DBG(<<"finish_phase");
+        DBGTHRD(<<"finish_phase");
         int old_target = _target;
         w_assert3(_f[old_target] == 0);
         _target = -1;
@@ -878,7 +872,7 @@ private:
         /*
          * Minimal idenfication info for each original record 
          */
-        ordinal_number_t        _ordinal; // 4-8 bytes - to make it a
+        ordinal_number_t       _ordinal; // 4-8 bytes - to make it a
                                           // stable sort
         shpid_t                _page;    //4 bytes
         slotid_t               _slot;    //2 bytes
@@ -950,79 +944,80 @@ private:
                 _lgmeta(other._lgmeta),
                 _ikeysize(other._ikeysize)
             {
-                        W_FATAL_MSG(fcINTERNAL, << "shouldn't use copy constructor");
-                        for(int i = 0; i < max_keys_handled*2; i++) {
-                                _lenoff[i] = other._lenoff[i];
-                        }
+                W_FATAL_MSG(fcINTERNAL, << "shouldn't use copy constructor");
+                for(int i = 0; i < max_keys_handled*2; i++) {
+                        _lenoff[i] = other._lenoff[i];
+                }
             }
 
     } __persistent_part;
 
 public:
     ordinal_number_t ordinal() const { return __persistent_part._ordinal; }
-    void             set_ordinal();
-    static void      clr_ordinal();
+    void         set_ordinal();
+    static void  clr_ordinal();
 
-    shpid_t          page() const  { return __persistent_part._page; }
-    slotid_t         slot() const  { return __persistent_part._slot; }
-    int              nkeys() const { return int(__persistent_part._nkeys); }
-    smsize_t         hdrsize() const { return smsize_t(__persistent_part._hdrsize); }
-    smsize_t         bodysize() const { return smsize_t(__persistent_part._bodysize); }
-    smsize_t         lgmetasize() const { return smsize_t(__persistent_part._lgmeta); }
-    smsize_t         ikeysize() const { return smsize_t(__persistent_part._ikeysize); }
+    shpid_t      page() const  { return __persistent_part._page; }
+    slotid_t     slot() const  { return __persistent_part._slot; }
+    int          nkeys() const { return int(__persistent_part._nkeys); }
+    smsize_t     hdrsize() const { return smsize_t(__persistent_part._hdrsize); }
+    smsize_t     bodysize() const { return smsize_t(__persistent_part._bodysize); }
+    smsize_t     lgmetasize() const { return smsize_t(__persistent_part._lgmeta); }
+    smsize_t     ikeysize() const { return smsize_t(__persistent_part._ikeysize); }
 
     void         set_hdrsize(smsize_t s) { __persistent_part._hdrsize = s; }
     void         set_bodysize(smsize_t s) { __persistent_part._bodysize = s; }
     void         set_lgmetasize(smsize_t s) { __persistent_part._lgmeta = s; }
     void         set_ikeysize(smsize_t s) { __persistent_part._ikeysize = s; }
     // size of stuff written in a meta_record with nk keys
-    smsize_t        persistent_size() const {
-        return (sizeof(__persistent_part) - 
-                ((max_keys_handled - __persistent_part._nkeys)*sizeof(smsize_t)*2));
-    }
+    smsize_t     persistent_size() const {
+                    return (sizeof(__persistent_part) - 
+                    ((max_keys_handled - 
+                      __persistent_part._nkeys)*sizeof(smsize_t)*2));
+                    }
 
-    smsize_t&         __len(int k) { return __persistent_part._lenoff[k<<1]; }
-    smsize_t&         __off(int k) { return __persistent_part._lenoff[(k<<1)+1]; }
-    const smsize_t&         __const_len(int k) const{ 
+    smsize_t&    __len(int k) { return __persistent_part._lenoff[k<<1]; }
+    smsize_t&    __off(int k) { return __persistent_part._lenoff[(k<<1)+1]; }
+    const smsize_t& __const_len(int k) const{ 
                         return __persistent_part._lenoff[k<<1]; }
-    const smsize_t&         __const_off(int k) const{ 
+    const smsize_t& __const_off(int k) const{ 
                         return __persistent_part._lenoff[(k<<1)+1]; }
 
-    bool is_dup() const { return __persistent_part._booleans & 
-                        _persistent::_is_dup; }
-    void mark_dup() { __persistent_part._booleans |= 
-                        _persistent::_is_dup; }
-    void unmark_dup() { __persistent_part._booleans &= ~
-                        _persistent::_is_dup; }
+    bool        is_dup() const { return __persistent_part._booleans & 
+                                    _persistent::_is_dup; }
+    void        mark_dup() { __persistent_part._booleans |= 
+                                    _persistent::_is_dup; }
+    void        unmark_dup() { __persistent_part._booleans &= ~
+                                    _persistent::_is_dup; }
 
-    bool pieces(int k) const { return 
+    bool        pieces(int k) const { return 
                         (__persistent_part._booleans & 
                         ( _persistent::_must_compare_in_pieces<<k)) ?
                                 true:false; 
                 }
-    void mark_pieces(int k) { 
+    void        mark_pieces(int k) { 
                         __persistent_part._booleans |= 
                                 ( _persistent::_must_compare_in_pieces << k); 
                 }
-    void unmark_pieces(int k) { 
+    void        unmark_pieces(int k) { 
                         __persistent_part._booleans &= 
                                 ~(_persistent::_must_compare_in_pieces<<k); 
                 }
 
-    void set(file_p &_fp, slotid_t slot) {
-            __persistent_part._page = _fp.pid().page;
-            __persistent_part._slot = slot;
-    }
-    void set_nkey(int nk) { __persistent_part._nkeys = nk; }
+    void        set(file_p &_fp, slotid_t slot) {
+                    __persistent_part._page = _fp.pid().page;
+                    __persistent_part._slot = slot;
+                }
+    void        set_nkey(int nk) { __persistent_part._nkeys = nk; }
 
-    void unmarshal_sortkeys() {
-        for(int k=0; k < nkeys(); k++) {
-            const sm_skey_t& sk = sort_key(k);
-            __len(k) = sk.size();
-            __off(k) = sk.offset(); 
-        }
-    }
-    void marshal_sortkeys(factory_t& fact);
+    void        unmarshal_sortkeys() {
+                    for(int k=0; k < nkeys(); k++) {
+                        const sm_skey_t& sk = sort_key(k);
+                        __len(k) = sk.size();
+                        __off(k) = sk.offset(); 
+                    }
+                }
+    void        marshal_sortkeys(factory_t& fact);
     //*********************************************************
     // END persistent part
     //*********************************************************
@@ -1047,11 +1042,11 @@ public:
     NORET meta_header_t() :
             __persistent_part(), 
             _whole_object()   
-        {
-            w_assert1(unsigned(max_keys_handled) < (sizeof(
-                        __persistent_part._booleans)*8)-1);
+    {
+        w_assert1(unsigned(max_keys_handled) < (sizeof(
+                    __persistent_part._booleans)*8)-1);
         for(int i = 0; i < max_keys_handled; i++) {
-#if W_DEBUG_LEVEL > 1
+#if W_DEBUG_LEVEL > 2
         {
             /* Make max_keys_handled bits fit into
              * the space given in booleans_t. This is a 
@@ -1077,7 +1072,7 @@ private:
 
 public:
     void  freespace() {
-        // DBG(<<"meta_header_t::freespace: ordinal=" << ordinal());
+        DBGTHRD(<<"meta_header_t::freespace: ordinal=" << ordinal());
         /*
         // Free space in opposite order of
         // that allocated. Gets 
@@ -1087,16 +1082,16 @@ public:
             index key
             large object metadata
         */
-        // DBG(<<"freespace lgmeta");
+        // DBGTHRD(<<"freespace lgmeta");
         lgmetadata_non_const().freespace();
-        // DBG(<<"freespace index key");
+        // DBGTHRD(<<"freespace index key");
         index_key_non_const().freespace();
         for(int k=nkeys()-1; k >=0; k--) {
-            // DBG(<<"freespace sort key " << k);
+            // DBGTHRD(<<"freespace sort key " << k);
             sort_key_non_const(k).freespace();
             unmark_pieces(k);
         }
-        // DBG(<<"freespace whole obj");
+        // DBGTHRD(<<"freespace whole obj");
         whole_object_non_const().freespace();
     }
 
@@ -1138,9 +1133,37 @@ public:
                                 store, __persistent_part._slot); } 
 
 
-    void move_sort_keys(meta_header_t& other);
+    void      move_sort_keys(meta_header_t& other);
+    W_IFTRACE(void      dump(w_ostrstream &o) const ;)
 private:
 }; /* class meta_header_t */
+
+W_IFTRACE(
+void      meta_header_t::dump(w_ostrstream &o) const 
+{
+    // o << "whole object: " << _whole_object << endl;
+    // if(ikeysize() > 0) {
+        // o << "index key: " << _index_key << endl;
+    // }
+    // if(lgmetasize() > 0) {
+        // o << "lgmetadata: " << _lgmetadata << endl;
+    // }
+    for(int i=0; i < nkeys(); i++) {
+        o << "sort key " << i << " : size"
+            << _sort_key[i].size()
+            << " is valid " <<_sort_key[i].is_valid()
+            << " is in_obj " <<_sort_key[i].is_in_obj()
+            << " is in_hdr " <<_sort_key[i].is_in_hdr()
+            << " buf at " << ::hex << u_long(_sort_key[i].ptr(0)) << ::dec
+            ;
+
+        static char buf[1000]; // just a guess
+        bzero(buf, sizeof(buf));
+        vec_t junk(buf, sizeof(buf));
+        _sort_key[i].copy_out(junk);
+        o << junk << endl;
+    }
+})
 
 void 
 meta_header_t::marshal_sortkeys(
@@ -1168,12 +1191,12 @@ meta_header_t::marshal_sortkeys(
             char *buffer = 0;
             factory_t *f = &fact;
             if(__const_len(k) > 0) {
-                DBG(<<"allocfunc for sort key " << k
+                DBGTHRD(<<"allocfunc for sort key " << k
                     <<" ordinal=" << ordinal() );
                 buffer = (char *)fact.allocfunc(__const_len(k));
-                DBG(<<"allocfunc failed for key " << k );
+                DBGTHRD(<<"allocfunc failed for key " << k );
                 if(buffer==0) {
-                    DBG(<<"different allocfunc for sort key " << k
+                    DBGTHRD(<<"different allocfunc for sort key " << k
                             <<" ordinal=" << ordinal() );
                     f = factory_t::cpp_vector;
                     buffer = (char *)f->allocfunc(__const_len(k));
@@ -1192,7 +1215,8 @@ void
 meta_header_t::move_sort_keys(meta_header_t& other) 
 {
     // clobbers other.sort_key(i) for each i
-    DBG(<<"move_sort_keys");
+    DBGTHRD(<<"move_sort_keys from ordinal " << other.ordinal()
+            << " to " << ordinal());
     other.assert_consistent();
 
     assert_consistent();
@@ -1206,7 +1230,7 @@ meta_header_t::move_sort_keys(meta_header_t& other)
     set_nkey(other.nkeys());
     for(int i=0; i<nkeys(); i++) {
         sm_skey_t& k = sort_key_non_const(i);
-        DBG(<<"move sort key " << i);
+        DBGTHRD(<<"move sort key " << i);
         // Must be careful here: keys must be made
         // to point to THIS->whole_object() rather than
         // OTHER->whole_object().
@@ -1283,7 +1307,7 @@ public:
         _lgpage.unfix();
         W_COERCE(_rewind(false));
 
-        DBG(<<"~tape "<<_tape_number);
+        DBGTHRD(<<"~tape "<<_tape_number);
 
         record_free(sizeof(run_t)* _maxruns);
         delete[] _list;
@@ -1385,7 +1409,7 @@ public:
                         return sizeof(tape_t) + (sizeof(run_t)*_maxruns);
                      }
 
-    void             init_vid(vid_t v);
+    void             init_vid(vid_t v, int tn);
     void             alloc_runs(int m);
 
     file_p&          metafp() { return _metafp; }
@@ -1396,14 +1420,15 @@ public:
                         _vol = f.vol;
                      }
     snum_t           get_store()const { return _store; }
+    vid_t            get_vol()  const { return _vol; }
     void             add_dummy_run() {
                         _list[last_run()].set_first(0,0);
                         // _list[last_run()].set_last(0,0);
-                        DBG(<<"ADD DUMMY RUN" << _tape_number);
+                        DBGTHRD(<<"ADD DUMMY RUN" << _tape_number);
                         _last_run++; // is really next_run
                      }
     void             add_run_first(const shpid_t& p, const slotid_t& s) {
-                        DBG(<<"START WRITING RUN " << last_run()
+                        DBGTHRD(<<"START WRITING RUN " << last_run()
                         << " on tape  " << _tape_number
                         << " store " << _store 
                         );
@@ -1411,7 +1436,7 @@ public:
                     }
     void             add_run_last(const shpid_t& p, const slotid_t& s) {
                         _list[last_run()].set_last(p,s);
-                        DBG(<<"FINISH WRITING RUN " << last_run() 
+                        DBGTHRD(<<"FINISH WRITING RUN " << last_run() 
                             << " on tape  " << _tape_number
                             << " store " << _store 
                             << " with now " << _count_put << " records" 
@@ -1420,7 +1445,7 @@ public:
                     }
 
     void             completed_run() {
-                        DBG(<<"COMPLETED (READING) RUN " << first_run()
+                        DBGTHRD(<<"COMPLETED (READING) RUN " << first_run()
                         << " on tape " << _tape_number 
                         << " store " << _store 
                         << " with " << _count_put << " records" 
@@ -1443,13 +1468,14 @@ public:
 
     friend ostream & operator<< (ostream &o,  const tape_t& t) ;
 
-    void            check_tape_file(bool printall) const;
+    void            check_tape_file(bool printall, int line) const;
 };
 
 ostream & operator<< (ostream &o, const tape_t& t)  
 {
-    o << t._tape_number
-        <<" store "  << t._store
+    o   << "tape# " << t._tape_number
+        <<" vol " << t._vol
+        <<" store " << t._store
         <<" puts "  << t._count_put
         <<" gets "  << t._count_get
         <<" curr_run"  << t._first_run
@@ -1464,9 +1490,18 @@ ostream & operator<< (ostream &o, const tape_t& t)
     return o;
 }
 
-void  tape_t::check_tape_file(bool W_IFDEBUG3(printall)) const
+void  tape_t::check_tape_file(
+#if W_DEBUG_LEVEL > 2
+        bool printall,
+        int W_IFTRACE(line)
+#else
+        bool,
+        int
+#endif
+        ) const
 {
 #if W_DEBUG_LEVEL > 2
+    if(_store) {
     // Read the entire file and verify that
     // the runs actually span the entire file, that
     // all the objects are accounted for.
@@ -1481,15 +1516,17 @@ void  tape_t::check_tape_file(bool W_IFDEBUG3(printall)) const
     slotid_t slot=0;
     slotid_t last_slot=0;
 
+    DBGTHRD(<<"check_tape_file " << line << " fid=" << fid);
+
     // There's always a first page, btw.
     bool is_first=true;
     bool eof=false;
     int  numrecords=0;
     if(printall) {
-        DBG(<< endl <<"START check_tape_file " << _tape_number);
+        DBGTHRD(<< endl <<"START check_tape_file " << _tape_number);
     }
 
-    W_COERCE( fi->first_page(fid, pid, NULL /* allocated only */) );
+    W_COERCE( fi->first_file_page(fid, pid, NULL /* allocated only */, NL) );
     while (! eof)  {
         w_assert1(pid.page != 0);
         W_COERCE(page.fix(pid, LATCH_SH));
@@ -1516,7 +1553,7 @@ void  tape_t::check_tape_file(bool W_IFDEBUG3(printall)) const
         last_rid = rid_t(pid, last_slot);
 
         if(printall) {
-            DBG(<<"check_tape_file: page " << pid
+            DBGTHRD(<<"check_tape_file: page " << pid
                     << " first valid slot (so far) " << first_rid
                     << " last valid slot (so far) " << last_rid
                     << " cumu #recs" << numrecords
@@ -1524,16 +1561,17 @@ void  tape_t::check_tape_file(bool W_IFDEBUG3(printall)) const
         }
 
         page.unfix();
-        W_COERCE(fi->next_page(pid, eof, NULL /* allocated only*/));
+        W_COERCE(fi->next_file_page(pid, eof, NULL /* allocated only*/, NL));
     }
 
     // check info about last slot, first slot against
     // info in the first, last run_t
     // First, must find first non-dummy run
     int f = 0;
-    while (_list[f].first_page() == 0) f++;
+    while ((f < _maxruns) && (_list[f].first_page() == 0)) f++;
     
     stid_t s(_vol, _store);
+    if(f < _maxruns)
     {
         run_t &R = _list[f];
         lpid_t p(s, R.first_page());
@@ -1541,7 +1579,7 @@ void  tape_t::check_tape_file(bool W_IFDEBUG3(printall)) const
         if(rid != first_rid) {
             bad++;
             if(printall) {
-                DBG( << "BOGUS TAPE: found first_rid  " << first_rid
+                DBGTHRD( << "BOGUS TAPE: found first_rid  " << first_rid
                     << " tape: " << *this);
             }
         }
@@ -1554,7 +1592,7 @@ void  tape_t::check_tape_file(bool W_IFDEBUG3(printall)) const
         if(rid != last_rid) {
             bad++;
             if(printall) {
-                DBG( << "BOGUS TAPE: found last_rid  " << last_rid
+                DBGTHRD( << "BOGUS TAPE: found last_rid  " << last_rid
                     << " tape: " << *this);
             }
         }
@@ -1563,25 +1601,33 @@ void  tape_t::check_tape_file(bool W_IFDEBUG3(printall)) const
     if(numrecords != count_put()) {
         bad++;
         if(printall) {
-            DBG( << "BOGUS TAPE: found " << numrecords 
+            DBGTHRD( << "BOGUS TAPE: found " << numrecords 
             << " records, but count_put() is " << count_put());
         }
     }
 
     // re-do and print all the info.
-    if(bad>0 && !printall) check_tape_file(true);
+    if(bad>0 && !printall) check_tape_file(true, __LINE__);
+    }
+    else
+    {
+        DBGTHRD(<<"tape is not a file");
+    }
     if(printall) {
-        DBG(<<"END check_tape_file " << _tape_number << endl << endl);
+        DBGTHRD(<<"END check_tape_file " << _tape_number << endl << endl);
     }
 #endif
 }
 
-class ssm_sort::run_mgr : public smlevel_top, xct_dependent_t 
+class ssm_sort::run_mgr : public smlevel_top, private xct_dependent_t 
 {
 public:
     /* Required for Heap */
     bool gt(const tape_t *, const tape_t *) const;
 
+    typedef int (* cmpfunc_t) (const run_mgr *r,
+                               const meta_header_t *,
+                               const meta_header_t *) ;
 private:
     /****************** data members **************************/
     limited_space &    _scratch_space;
@@ -1596,7 +1642,11 @@ private:
     tape_t*            _tapes;
     phase_mgr*         _phase;
 
-    sort_keys_t &info;
+    sort_keys_t        &_info;
+    cmpfunc_t          _key_cmpfunc; // determines which _KeyCmp* to call
+    // value is set once at beginning (based on stable sort or sort-for-index)
+    // rather than in each context (QuickSort, merge, etc)
+
     meta_header_t** rec_list;        // used only in qsort part
     meta_header_t* rec_first;        // used in qsort & merge
     meta_header_t* rec_curr;        // used only in qsort part
@@ -1670,8 +1720,16 @@ private:
     /* 
      * Used in both phases:
      */
-    CF             _keycmp(int i) const { return info.keycmp(i); }
-    int            _KeyCmp(const meta_header_t *k1, const meta_header_t* k2) const;
+    CF             _keycmp(int i) const { return _info.keycmp(i); }
+
+    // compare keys, no duplicate resolution
+    int            _KeyCmpND(const meta_header_t *k1, const meta_header_t* k2) const;
+    // compare keys, no duplicate resolution, for stable sort
+    static int     _KeyCmpSt(const run_mgr *r,
+                     const meta_header_t *k1, const meta_header_t* k2) ;
+    // compare keys, no duplicate resolution, for indexes
+    static int     _KeyCmpIdx(const run_mgr *r,
+                     const meta_header_t *k1, const meta_header_t* k2) ;
 
 
     /*
@@ -1695,7 +1753,7 @@ private:
     void        _clear_meta_buffers(bool);
 public:
     NORET ~run_mgr() {
-        DBG(<<"_NTAPES");
+        DBGTHRD(<<"_NTAPES" << _NTAPES);
         if(_NTAPES) {
             record_free(_NTAPES * _tapes[0].size_in_bytes()); 
         }
@@ -1706,7 +1764,7 @@ public:
         delete _phase;
         _phase = 0;
 
-        DBG(<<" ~run_mgr");
+        DBGTHRD(<<" ~run_mgr");
         _clear_meta_buffers(true);
     }
 
@@ -1722,7 +1780,8 @@ public:
         w_rc_t&             result
         );
 
-    int         nkeys() const { return info.nkeys(); }
+    int           nkeys() const { return _info.nkeys(); }
+    const sort_keys_t&       info() const { return  _info; }
 
                 // Called in first (quicksort) phase only
     w_rc_t         put_rec(file_p &, slotid_t );
@@ -1786,7 +1845,7 @@ run_mgr::run_mgr(
     int         _ntapes,  // max # runs to be merged at once
     tape_t*     _tapeslist,
     smsize_t    _min_rec_sz, 
-    sort_keys_t &_info, 
+    sort_keys_t &_infk, 
     w_rc_t        &result
     )
     :  
@@ -1800,7 +1859,7 @@ run_mgr::run_mgr(
     _M(_run_size),
     _tapes(_tapeslist),
     _phase(0),
-    info(_info), 
+    _info(_infk), 
     rec_list(0), rec_first(0), rec_curr(0), rec_last(0),
     _recompute(false),
     _meta_malloced(false),
@@ -1821,11 +1880,12 @@ run_mgr::run_mgr(
 #endif
             file_p::choose_rec_implementation(0,/*est hdr len */
                 _min_rec_sz,  /* est data len */
-                space_needed // output
+                space_needed, // output
+                NULL // no page fixed
                 );
         _numslots = int(file_p::data_sz) / align(space_needed);
         w_assert3(_numslots > 0);
-        DBG(    <<"_min_rec_sz= " << _min_rec_sz
+        DBGTHRD(    <<"_min_rec_sz= " << _min_rec_sz
                 << " space_needed= " << space_needed
                 << " _numslots= " << _numslots
                 << " kind= " << t
@@ -1836,25 +1896,25 @@ run_mgr::run_mgr(
     record_malloc(sizeof(*this));
 
     if(_NTAPES > 0) {
-        DBG(<<"new fib_t" << sizeof(fib_t));
+        DBGTHRD(<<" new fib_t " << sizeof(fib_t));
         int order = _NTAPES-1;
         fib_t *fib = new fib_t(order); // input only
         // record_malloc is done in constructor
         if(!fib) {
-            DBG(<<"");
+            DBGTHRD(<<"");
             result = RC(eOUTOFMEMORY);
             return;
         }
 
         fib->compute(_NRUNS);
-        DBG(<<"fib for goal " << _NRUNS);
+        DBGTHRD(<<" fib for goal " << _NRUNS);
         fib->compute_dummies(_NRUNS);
 
-        DBG(<<"new phase_mgr" << sizeof(phase_mgr));
+        DBGTHRD(<<"new phase_mgr" << sizeof(phase_mgr));
         _phase = new phase_mgr(fib);
         // record_malloc is done in constructor
         if(!_phase) {
-            DBG(<<"");
+            DBGTHRD(<<"");
             result = RC(eOUTOFMEMORY);
             return;
         }
@@ -1872,7 +1932,7 @@ run_mgr::run_mgr(
         int j;
         int low=0;
         for (j=0; j< order; j++) {
-            DBG(<<" alloc num=" << fib->num(j) 
+            DBGTHRD(<<" alloc num=" << fib->num(j) 
                 << " dummies=" << fib->dummies(j)
                 << " max # runs for tape " << j );
             _tapes[j].alloc_runs(fib->num(j));
@@ -1889,7 +1949,7 @@ run_mgr::run_mgr(
         // The first target tape needs enough space for N runs, where
         // N varies from  fib->low() --> 0
         w_assert3(j == order);
-        DBG(<<" alloc " << low  << " max # runs for tape " << j );
+        DBGTHRD(<<" alloc " << low  << " max # runs for tape " << j );
         _tapes[j].alloc_runs(low); 
     }
 
@@ -1898,6 +1958,7 @@ run_mgr::run_mgr(
      * needed for the number of keys used 
      * but then the compiler couldn't do our arithmetic on rec_curr, etc
      */
+
     rec_first = new meta_header_t[_numslots];
     if(!rec_first) {
         result = RC(eOUTOFMEMORY);
@@ -1917,20 +1978,26 @@ run_mgr::run_mgr(
     record_malloc(_numslots * sizeof(meta_header_t *));
 
     rec_curr = rec_first;
-    DBG(<<" rec_curr is now " << rec_curr);
+    DBGTHRD(<<" rec_curr is now " << rec_curr);
     rec_last = rec_first + _numslots - 1; // last usable one
     // but that's based on an accurate min_rec_size given
-    DBG(<<" rec_last is now " << rec_last << " based on _numslots " 
+    DBGTHRD(<<" rec_last is now " << rec_last << " based on _numslots " 
             << _numslots);
+
+    // Determine which key comparison function we need to use:
+    // Default is stable sort, since it's not much more expensive
+    // than non-stable, and not worth the effort to test for that case.
+    _key_cmpfunc = (info().is_for_index()) ? _KeyCmpIdx : _KeyCmpSt;
 
     _scratch_space.set_reset_point();
     register_me();
+
 }
 
 void
 run_mgr::_clear_meta_buffers(bool deletethem) 
 {
-    DBG(<<"_clear_meta_buffers");
+    DBGTHRD(<<"_clear_meta_buffers");
     if(rec_first) {
         for(meta_header_t *m=rec_last;m>=rec_first;m--) {
             m->unmark_dup();
@@ -1940,7 +2007,7 @@ run_mgr::_clear_meta_buffers(bool deletethem)
             delete[] rec_first;
             rec_first = 0;
             rec_last = 0;
-            DBG(<<" rec_last is now " << rec_last );
+            DBGTHRD(<<" rec_last is now " << rec_last );
 
             record_free(sizeof(meta_header_t) * _numslots);
 
@@ -1961,8 +2028,14 @@ run_mgr::_clear_meta_buffers(bool deletethem)
 w_rc_t 
 run_mgr::insert(RunHeap* runheap, tape_t* r, int/*not used*/)  const
 {
-    DBG(<<"insert tape " << r->_tape_number);
+    DBGTHRD(<<"insert tape " << r->_tape_number);
     if(_aborted) return RC(eABORTED);
+
+    W_IFDEBUG(
+    const meta_header_t *tm = r->meta();
+    // We should not be inserting duplicates.
+    w_assert1(!tm->is_dup());
+    )
 
     runheap->AddElement(r); 
     w_assert2(runheap->NumElements() > 0);
@@ -2007,7 +2080,7 @@ static inline smsize_t rec_size(const record_t* rec)
 w_rc_t 
 run_mgr::put_rec(file_p &fp, slotid_t slot)
 {
-    FUNC(run_mgr::put);
+    FUNC(run_mgr::put_rec);
     /*
      * Check for aborted xct
      */
@@ -2016,8 +2089,8 @@ run_mgr::put_rec(file_p &fp, slotid_t slot)
     /*
      * A sanity check
      */
-    int nkeys = info.nkeys();
-    if(info.is_for_index()) {
+    int nkeys = info().nkeys();
+    if(info().is_for_index()) {
         if(nkeys > 1) {
             return RC(eBADARGUMENT);
         }
@@ -2028,7 +2101,7 @@ run_mgr::put_rec(file_p &fp, slotid_t slot)
     W_DO(fp.get_rec(slot, rec));
     rid_t        rid(fp.pid(), slot);
 
-    DBG(<<"put_rec: rid " << rid);
+    DBGTHRD(<<"put_rec: rid " << rid);
     if(rec_curr > rec_last) {
 #if W_DEBUG_LEVEL > 0
         {
@@ -2055,12 +2128,11 @@ run_mgr::put_rec(file_p &fp, slotid_t slot)
 
             fprintf(stderr,  "%s\n", s.c_str());
         }
-        sortstophere();
 #endif
         return RC(eINTERNAL);
     }
 
-    rec_curr->set_nkey(info.nkeys());
+    rec_curr->set_nkey(info().nkeys());
     rec_curr->set_ordinal();
 
     sm_object_t& object = rec_curr->whole_object_non_const();
@@ -2073,14 +2145,15 @@ run_mgr::put_rec(file_p &fp, slotid_t slot)
          * set up whole_object() to point to disk or to marshalled 
          * stuff.
          */
-        MOF marshal = info.marshal_func();
+        MOF marshal = info().marshal_func();
         if(marshal != sort_keys_t::noMOF) {
-            DBG(<<"MOF " << rid);
+            DBGTHRD(<<"MOF " << rid << " marshal " << ::hex << u_long(marshal)
+                    << ::dec);
             // statically allocated: factory_t::none
             sm_object_t newobject;
 
             callback_prologue();
-            W_DO( (*marshal)(rid, object, info.marshal_cookie(), &newobject) );
+            W_DO( (*marshal)(rid, object, info().marshal_cookie(), &newobject) );
             callback_epilogue();
             INC_STAT_SORT(sort_mof_cnt);
 
@@ -2097,8 +2170,8 @@ run_mgr::put_rec(file_p &fp, slotid_t slot)
      */
 
     for(int k=0; k<nkeys; k++) {
-        DBG(<<"inspecting key " << k);
-        CSKF create_sort_key = info.keycreate(k);
+        // DBGTHRD(<<"put_rec inspecting key " << k);
+        CSKF create_sort_key = info().keycreate(k);
 
         /*
          * CSKF CALLBACK for SORT KEYS
@@ -2109,7 +2182,7 @@ run_mgr::put_rec(file_p &fp, slotid_t slot)
 
         if(create_sort_key!= sort_keys_t::noCSKF) {
             INC_STAT_SORT(sort_getinfo_cnt);
-            DBG(<<"CSKF " << rid);
+            DBGTHRD(<<"calling CSKF " << rid);
             // statically allocated: factory_t::none
             skey_t         newkey;
 
@@ -2119,7 +2192,7 @@ run_mgr::put_rec(file_p &fp, slotid_t slot)
             W_DO( (*create_sort_key)(
                     rid,
                     object,
-                    info.cookie(k),
+                    info().cookie(k),
                     _scratch_space,  // to populate newkey if not from object
                     &newkey) );
             callback_epilogue();
@@ -2131,36 +2204,38 @@ run_mgr::put_rec(file_p &fp, slotid_t slot)
 
         } else {
             // noCSKF. Is fixed.
-            w_assert3(info.is_fixed(k));
+            w_assert3(info().is_fixed(k));
+            // had better not be derived, since that requires a CSKF
 
             // Get sort key either from pinned record or
             // from marshalled object.
 
-            if(info.in_hdr(k)) {
-                if(object.hdr_size() < info.offset(k)+ info.length(k)) {
+            if(info().in_hdr(k)) {
+                if(object.hdr_size() < info().offset(k)+ info().length(k)) {
                     return RC(eBADLENGTH);
                 }
-                if(object.hdr_size() < info.offset(k)) {
+                if(object.hdr_size() < info().offset(k)) {
                     return RC(eBADSTART);
                 }
             } else {
-                if(object.body_size() < info.offset(k)) {
+                if(object.body_size() < info().offset(k)) {
                     // might be large object
-                    if(rec->body_size() < info.offset(k)) {
+                    if(rec->body_size() < info().offset(k)) {
                         return RC(eBADSTART);
-                    } else if(rec->body_size() < info.offset(k) + info.length(k)) {
+                    } else if(rec->body_size() < info().offset(k) + info().length(k)) {
                         return RC(eBADLENGTH);
                     }
                 }
             }
             // copy location info directly
-            key_location_t& tmp = info.get_location(k);
+            key_location_t& tmp = _info.get_location(k);
 
             key.construct(
                 object, tmp._off, tmp._length,
-                info.in_hdr(k));
+                info().in_hdr(k));
         }
         w_assert3(key.is_valid());
+        DBGTHRD(<<"after CSKF " << rid << " key.is_in_obj() " << key.is_in_obj());
 
         if(key.is_in_obj()) {
             bool must_compare_in_pieces=false;
@@ -2170,7 +2245,7 @@ run_mgr::put_rec(file_p &fp, slotid_t slot)
              * Else, see if we need to make a copy of it.
              */
             if(key.size() > 0)  {
-                DBG(<<"sort key in buffer pool, size is " << key.size());
+                DBGTHRD(<<"sort key in buffer pool, size is " << key.size());
                 W_DO(_prepare_key(rec_curr->whole_object_non_const(), 
                         k, fp, 
                         *rec, 
@@ -2178,12 +2253,13 @@ run_mgr::put_rec(file_p &fp, slotid_t slot)
             }
 
             if(must_compare_in_pieces) {
+                DBGTHRD(<<"put_rec: setting recompute ");
                 _recompute = true;
                 rec_curr->mark_pieces(k);
             }
-            DBG(<<"sort key in BP, size is " << key.size());
+            DBGTHRD(<<"sort key in BP, size is " << key.size());
         } else {
-            DBG(<<"sort key in mem, size is " << key.size());
+            DBGTHRD(<<"sort key in mem, size is " << key.size());
         }
     } // for each of the keys
 
@@ -2191,8 +2267,8 @@ run_mgr::put_rec(file_p &fp, slotid_t slot)
      * Grab the index key for output.  Do it now so that
      * we don't re-pin the original object at the end.
      */
-    if(info.is_for_index() )  {
-        DBG(<<" is_for_index");
+    if(info().is_for_index() )  {
+        DBGTHRD(<<" is_for_index");
         w_assert3(nkeys == 1);
         /* 
          * CSKF CALLBACK for INDEX KEY
@@ -2208,15 +2284,15 @@ run_mgr::put_rec(file_p &fp, slotid_t slot)
          */
         const sm_skey_t& sortkey = rec_curr->sort_key(0); 
         smsize_t        ikeysize=sortkey.size();
-        DBG(<<"sortkey(0).size is " << ikeysize);
+        DBGTHRD(<<"sortkey(0).size is " << ikeysize);
 
-        CSKF lex_ikey = info.lexify_index_key();
+        CSKF lex_ikey = info().lexify_index_key();
 
         if((ikeysize > 0) &&
            // non-null real key
             (lex_ikey != sort_keys_t::noCSKF)) {
 
-            DBG(<<" lexify " << rid);
+            DBGTHRD(<<" lexify " << rid);
 
             INC_STAT_SORT(sort_lexindx_cnt); 
 
@@ -2228,7 +2304,7 @@ run_mgr::put_rec(file_p &fp, slotid_t slot)
             callback_prologue();
             W_DO( (*lex_ikey)(rid,
                 object, 
-                info.lexify_index_key_cookie(), 
+                info().lexify_index_key_cookie(), 
                 _scratch_space, // to populate indexkey if not from object
                 &indexkey) );
             callback_epilogue();
@@ -2242,14 +2318,18 @@ run_mgr::put_rec(file_p &fp, slotid_t slot)
         rec_curr->set_ikeysize(ikeysize);
     }
 
+    DBGTHRD(<< "Rid " << rid 
+            << " is_large " << rec->is_large()
+            << " deep copy " << info().deep_copy()
+            );
 
     /* 
      * Save metadata for large object if needed.
      * It's needed if 
      *   output is a copy of the file
      */
-    if(info.is_for_file() && rec->is_large() && !info.deep_copy()) {
-        DBG(<<" is_for_file, large, !deep_copy");
+    if(info().is_for_file() && rec->is_large() && !info().deep_copy()) {
+        DBGTHRD(<<" is_for_file, large, !deep_copy");
         char *                buffer = 0;
         smsize_t         length = rec_size(rec);
 
@@ -2264,7 +2344,7 @@ run_mgr::put_rec(file_p &fp, slotid_t slot)
          * part to free.
          */
         smsize_t needed = length + sizeof(rectag_t);
-        DBG(<<"get_buf for sort key ordinal=" << rec_curr->ordinal());
+        DBGTHRD(<<"get_buf for sort key ordinal=" << rec_curr->ordinal());
         W_DO(_scratch_space.get_buf(needed, buffer));
         w_assert3(buffer);
 
@@ -2278,15 +2358,15 @@ run_mgr::put_rec(file_p &fp, slotid_t slot)
         // put into persistent area length of body proper
         // since the size of the rectag_t is a compile-time constant.
         rec_curr->set_lgmetasize(needed);
-        DBG(<<" lgmetasize= " << needed);
+        DBGTHRD(<<" lgmetasize= " << needed);
     } else {
         // wipe out any such size from prior use of meta_header_t
         // but keep the buffer around for future use.
         rec_curr->set_lgmetasize(0);
-        DBG(<<" lgmetasize= " << 0);
+        DBGTHRD(<<" lgmetasize= " << 0);
     }
 
-    DBG(<<"rec_curr->set(fp,slot), slot= " << slot);
+    DBGTHRD(<<"rec_curr->set(fp,slot), slot= " << slot);
 
     rec_curr->set(fp, slot);
 #if W_DEBUG_LEVEL > 2
@@ -2303,13 +2383,13 @@ run_mgr::put_rec(file_p &fp, slotid_t slot)
     rec_curr->assert_consistent();
 
     rec_curr++;
-    DBG(<<" rec_curr is now " << rec_curr);
+    DBGTHRD(<<" rec_curr is now " << rec_curr);
 
 #if W_DEBUG_LEVEL > 2
     {
                 // << " key(0)=" << (void*)(m->sort_key(0).ptr(0)) 
         meta_header_t* m= rec_curr - 1;
-        DBG(<<"end put: orig rec=" << 
+        DBGTHRD(<<"end put: orig rec=" << 
                 m->shrid(_ifid.store)
                 << " len(0)=" << m->sort_key(0).size() 
                 << " in_obj(0)=" << 
@@ -2317,14 +2397,14 @@ run_mgr::put_rec(file_p &fp, slotid_t slot)
                 << " offset(0)=" << m->sort_key(0).offset() 
                 << " pieces(0)=" << m->pieces(0) 
                 );
-        if( (m->lgmetasize() > 0) && !info.deep_copy()) {
+        if( (m->lgmetasize() > 0) && !info().deep_copy()) {
             const rectag_t *rectag =(const rectag_t *)(m->lgmetadata().ptr(0));
             w_assert3(rectag);
             w_assert3((rectag->flags & t_small) == 0);
         }
     }
 #endif 
-    DBG(<<"end put_rec fp.pid=" << fp.pid() << " slot " << slot);
+    DBGTHRD(<<"end put_rec fp.pid=" << fp.pid() << " slot " << slot);
     return RCOK;
 }
 
@@ -2334,14 +2414,14 @@ run_mgr::prologue()
 {
     // Reset key list ptr
     rec_curr = rec_first;
-    DBG(<<" rec_curr is now rec_first: " << rec_curr);
+    DBGTHRD(<<" rec_curr is now rec_first: " << rec_curr);
 }
 
 
 void
 run_mgr::epilogue()
 {
-    DBG(<<"run_mgr::epilogue");
+    DBGTHRD(<<"run_mgr::epilogue");
     _clear_meta_buffers(false);
     _scratch_space.reset(); // free all the key space
 
@@ -2350,13 +2430,13 @@ run_mgr::epilogue()
 tape_t* 
 run_mgr::_next_tape() 
 {
-    DBG(<<"next_tape: next run is " << _next_run);
+    DBGTHRD(<<"next_tape: next run is " << _next_run);
     // keep track of current run during sort phase
     // Called in each flush to determine where to write
     // the run.
     int j= ++_next_run;
     for(int i=0; i<_phase->order(); i++) {
-        DBG(<<"j = " << j << ", subtracting " << _phase->num(i));
+        DBGTHRD(<<"j = " << j << ", subtracting " << _phase->num(i));
         j -= _phase->num(i);
         if(j <= 0) {
             tape_t *result = &_tapes[i];
@@ -2364,7 +2444,7 @@ run_mgr::_next_tape()
                 W_COERCE(result->prime_tape_for_output());
             }
             result->_checksd();
-            DBG(<<"Found result tape " << i << " is fixed " <<
+            DBGTHRD(<<"Found result tape " << i << " is fixed " <<
                     result->metafp().is_fixed());
             return result;
         }
@@ -2388,14 +2468,14 @@ run_mgr::_output_metarec(
     w_auto_delete_array_t<char>         autodeltmp;
     if(_aborted) return RC(eABORTED);
 
-    DBG(<<"tape #" << t->_tape_number
+    DBGTHRD(<<"tape #" << t->_tape_number
             << " page-is-fixed=" << t->metafp().is_fixed());
     m->assert_consistent();
 
     w_assert3(t->primed_for_output());
 
 
-    DBG(<<"tape #" << t->_tape_number
+    DBGTHRD(<<"tape #" << t->_tape_number
             << " page-is-fixed=" << t->metafp().is_fixed());
     {
         // copy info to the persistent part.
@@ -2452,13 +2532,13 @@ run_mgr::_output_metarec(
             }
        }
     }
-    DBG(<<" sort keys fill " 
+    DBGTHRD(<<"_output_metarec sort keys fill " 
         << body_parts << " body parts " 
-        << body_len << " bytes of body"
+        << body_len << " bytes of body : " << data
         );
-    if(info.is_for_index()) {
+    if(info().is_for_index()) {
         w_assert3(nkeys() == 1);
-        DBG(<<"is_for_index: key size "  << m->ikeysize());
+        DBGTHRD(<<"is_for_index: index key size "  << m->ikeysize());
         if(m->ikeysize() > 0) {
             const sm_skey_t &ikey = m->index_key();
             body_parts++;
@@ -2478,19 +2558,19 @@ run_mgr::_output_metarec(
             } else {
                 data.put(ikey.ptr(0), ikey.size());
             }
-            DBG(<<" including index key, " 
+            DBGTHRD(<<" including index key, " 
                 << body_parts << " body parts " 
                 << body_len << " bytes of body"
                 );
         }
     } else {
         // for file
-        DBG(<<"is_for_file: lgmetasize="  
+        DBGTHRD(<<"is_for_file: lgmetasize="  
                 << m->lgmetasize()
                 << " lgmetadata.size()="
                 << m->lgmetadata().size());
 
-        if( (m->lgmetasize() > 0) && !info.deep_copy()) {
+        if( (m->lgmetasize() > 0) && !info().deep_copy()) {
             // write object metadata 
             // what's copied into lgmetadata() is both rectag_t
             // AND lgdata
@@ -2505,22 +2585,24 @@ run_mgr::_output_metarec(
             body_len +=  m->lgmetadata().size();
         }
 
-        if(info.carry_obj()) {
+        if(info().carry_obj()) {
+            DBGTHRD(<<" carry object ");
             sm_object_t &object = m->whole_object_non_const();
             {
                 /* UMOF CALLBACK */
                 /* Prepare the object for writing to disk */
                 lpid_t anon(ifid(), m->shpid());
                 rid_t  rid(anon, m->slotid());
-                UMOF unmarshal = info.unmarshal_func();
+                UMOF unmarshal = info().unmarshal_func();
                 if(unmarshal != sort_keys_t::noUMOF) {
+                    DBGTHRD(<<"unmarshal");
                     // statically allocated. factory_t::none
                     sm_object_t newobject;
                     callback_prologue();
                     W_DO( (*unmarshal)(
                                 rid, 
                                 object, 
-                                info.marshal_cookie(), 
+                                info().marshal_cookie(), 
                                 &newobject) );
                     w_assert3( !object.is_in_buffer_pool());
                     callback_epilogue();
@@ -2530,12 +2612,17 @@ run_mgr::_output_metarec(
                 }
             }
             if( object.hdr_size()> 0) {
+                DBGTHRD(<<"putting original object's header into tmp's body ("
+                        << object.hdr_size() << " bytes)"
+                        );
                 data.put(object.hdr(0), object.hdr_size());
                 body_parts++;
                 body_len +=  object.hdr_size();
                 m->set_hdrsize(object.hdr_size());
             }
             if(object.body_size() > 0) {
+                DBGTHRD(<<"putting original object's body into tmp's body ("
+                        << object.body_size() << " bytes)");
                 if(object.body_size() > object.contig_body_size()) {
                     carry_large_object = true;
                 } else {
@@ -2550,9 +2637,12 @@ run_mgr::_output_metarec(
                     }
                     m->set_bodysize(object.body_size());
                 }
+            } else {
+                m->set_bodysize(0);
+                DBGTHRD(<<"no original body to add to tmp ");
             }
 
-            DBG(<<" including whole object, " 
+            DBGTHRD(<<" including whole object, " 
                 << body_parts << " body parts " 
                 << body_len << " bytes of body"
                 );
@@ -2563,7 +2653,7 @@ run_mgr::_output_metarec(
     // calling this funcion.
     t->_checksd();
 
-    DBG(<<"tape #" << t->_tape_number
+    DBGTHRD(<<"tape #" << t->_tape_number
             << " page-is-fixed=" << t->metafp().is_fixed());
 
     smsize_t size_hint = hdr.size() + data.size();
@@ -2572,13 +2662,26 @@ run_mgr::_output_metarec(
         size_hint, hdr, data, 
         *(t->sdesc()), result_rid) );
 
-    DBG(<<"Created tmp (OUTPUT METAREC) rec " << result_rid
+    DBGTHRD(<<"Created tmp (OUTPUT METAREC) rec " << result_rid
         << " for original record " << m->shrid(_ifid.store)
-        << " hdr.size() == " << hdr.size()
-        << " data.size() == " << data.size()
+        << " tmp.hdr.size() == " << hdr.size()
+        << " tmp.data.size() == " << data.size()
         << " page is fixed == " 
         << (const char *)(t->metafp().is_fixed() ? "yes" : "no")
         ); 
+    DBGTHRD(<<"OUTPUT METAREC is: " 
+        << " lgmeta_length " << m->lgmetasize()
+        << " meta hdrsize " << m->hdrsize()
+        << " meta bodysize " << m->bodysize()
+        << " ordinal " << m->ordinal()
+       );
+
+    W_IFTRACE( {
+        w_ostrstream out;
+        m->dump(out);
+        DBGTHRD(<<"meta for this tmp is " << out.c_str());
+    })
+
     /*  Handle special case for carrying large object */
     if(carry_large_object) {
         W_FATAL(eNOTIMPLEMENTED); // yet
@@ -2606,6 +2709,7 @@ check_reclist_for_duplicates(meta_header_t * W_IFDEBUG2(l)[],
 w_rc_t 
 run_mgr::flush_run(bool flush_to_tmpfile)
 {   
+    DBGTHRD(<<"flush run ");
     me()->get___metarecs()=0;
     if(_aborted) return RC(eABORTED);
     {
@@ -2624,18 +2728,20 @@ run_mgr::flush_run(bool flush_to_tmpfile)
             rec_list[i++] = m;
         }
         nelements = i;
+        w_assert1(nelements == (rec_curr - rec_first));
     }
-    w_assert1(nelements == (rec_curr - rec_first));
     if(_aborted) return RC(eABORTED);
+    // Make sure we have no duplication of meta_header_t
     check_reclist_for_duplicates(rec_list, nelements);
-    DBG(<<"flush_run nelements=" << nelements 
+    DBGTHRD(<<"flush_run nelements=" << nelements 
             << " flush_to_tmpfile=" << flush_to_tmpfile);
+
     _QuickSort( rec_list, nelements );
     check_reclist_for_duplicates(rec_list, nelements);
 
     if(flush_to_tmpfile) {
         tape_t *t = _next_tape();
-        DBG(<<"flush to tmpfile on tape #" << t - _tapes);
+        DBGTHRD(<<"flush to tmpfile on tape #" << t - _tapes);
         /* Write the run to the (next) temp file, 
          * and remember the rid of the first item in the run.
          *
@@ -2658,29 +2764,37 @@ run_mgr::flush_run(bool flush_to_tmpfile)
         int num_recs_elim=0;
         for(i=0; i < nelements; i++) {
             meta_header_t *m = rec_list[i];
+            DBGTHRD(<<"flush_run inspecting " << m->shrid(_ifid.store)
+                    << " is_dup " << m->is_dup()
+                    << " info().is_unique() " << info().is_unique()
+                    );
 
             if(m->is_dup()) {
-                if(info.is_unique() ||
-                  (info.null_unique() && m->is_null())) {
+                // should be the case here:
+                w_assert0( info().is_unique() ||
+                  (info().null_unique() && m->is_null())); 
+
+                if(info().is_unique() ||
+                  (info().null_unique() && m->is_null())) {
                     num_recs_elim++;
-                    DBG(<<"skip: ELIM eliminating orig rid= " << m->shrid(_ifid.store));
+                    DBGTHRD(<<"skip(flush run): ELIM eliminating orig rid= " << m->shrid(_ifid.store));
                     INC_STAT_SORT(sort_duplicates);
                     continue; // skip
                 }
             }
 
-            DBG(<<"**** about to output metarec to tape " << t->_tape_number
+            DBGTHRD(<<"**** about to output metarec to tape " << t->_tape_number
                     << " with page-is-fixed=" << t->metafp().is_fixed());
             rc = _output_metarec(m, t, rid);
             if(rc.is_error()) {
-                DBG(<<"******************* got error from output_metarec");
+                DBGTHRD(<<"******************* got error from output_metarec");
                 break; // out of loop so we can freespace
             }
             num_recs_output++;
 
             if(is_first) {
                 /* Remember the id of the first record in the run */
-                DBG(<<" first record of this run is " << rid 
+                DBGTHRD(<<" first record of this run is " << rid 
                         << " from ordinal " << m->ordinal());
                 t->add_run_first(rid.pid.page, rid.slot);
                 is_first = false;
@@ -2688,7 +2802,7 @@ run_mgr::flush_run(bool flush_to_tmpfile)
         }
         for(i= nelements-1; i>=0; i--) {
             meta_header_t *m = rec_list[i];
-            // DBG(<<"freespace i" << i);
+            // DBGTHRD(<<"freespace i" << i);
             m->freespace(); // TODO: consider saving the space
         }
 
@@ -2701,11 +2815,11 @@ run_mgr::flush_run(bool flush_to_tmpfile)
         // must be at least one.
         // rid could be first and last, though.
         
-        DBG(<<" last record of this run is " << rid );
+        DBGTHRD(<<" last record of this run is " << rid );
         t->add_run_last(rid.pid.page, rid.slot);
         t->release_page(t->metafp());
     }
-    DBG(<<" this run: have output " << me()->get___metarecs() << " metarecs");
+    DBGTHRD(<<" this run: have output " << me()->get___metarecs() << " metarecs");
     return RCOK;
 }
 
@@ -2723,7 +2837,7 @@ run_mgr::_QuickSort(
     int              cnt
 )
 {
-    DBG(<<"_QuickSort " << cnt);
+    DBGTHRD(<<"_QuickSort " << cnt << " items");
     /*
      * NB: Presently won't work for long longs, given standard 
      * comparison functions, since it uses 
@@ -2747,10 +2861,10 @@ run_mgr::_QuickSort(
         int l, r;
     };
 
-    DBG(<<"new stack" << sizeof(qs_stack_item) * MAXSTACKDEPTH);
+    DBGTHRD(<<"new stack" << sizeof(qs_stack_item) * MAXSTACKDEPTH);
     qs_stack_item *stack = new qs_stack_item[MAXSTACKDEPTH];
     if (!stack) {
-        DBG(<<"");
+        DBGTHRD(<<"");
         W_FATAL(eOUTOFMEMORY);
     }
     record_malloc(MAXSTACKDEPTH * sizeof(qs_stack_item));
@@ -2771,7 +2885,7 @@ run_mgr::_QuickSort(
         }
         randx = (randx * 1103515245 + 12345) & 0x7fffffff;
         randx %= (r-l); // modulo difference
-        DBG(<<"randx=" << randx << " modulus(r-l)=" << (r-l));
+        DBGTHRD(<<"randx=" << randx << " modulus(r-l)=" << (r-l));
 
         pivoti = l+randx;
         if(pivoti==r) pivoti--; // avoid pivot pt at either end
@@ -2780,13 +2894,17 @@ run_mgr::_QuickSort(
         pivot = a[pivoti];
         for (i = l, j = r; i <= j; )  {
             // if(a[i] == pivot) w_assert3(i == pivoti);
-            while ((i != pivoti) && (_KeyCmp(a[i], pivot) < 0)) i++;
+            while ((i != pivoti) && 
+                    ((*_key_cmpfunc)(this, a[i], pivot) < 0)) i++ ;
 
             // if(a[j] == pivot) w_assert3(j == pivoti);
-            while ((pivoti != j) && (_KeyCmp(pivot, a[j]) < 0)) j--;
+            while ((pivoti != j) && 
+                    ((*_key_cmpfunc)(this, pivot, a[j]) < 0)) j--;
 
             if (i < j) { tmp=a[i]; a[i]=a[j]; a[j]=tmp; }
             if (i <= j) i++, j--;
+            // We could have swapped with a[pivoti]; must update pivot
+            pivot = a[pivoti];
         }
 
         if (j - l < r - i) {
@@ -2809,18 +2927,21 @@ run_mgr::_QuickSort(
     }
     for (i = 1; i < cnt; a[j+1] = pivot, i++)
         for (j = i - 1, pivot = a[i];
-             j >= 0 && (_KeyCmp(pivot, a[j]) < 0);
+             j >= 0 && ((*_key_cmpfunc)(this, pivot, a[j]) < 0);
              a[j+1] = a[j], j--) /* empty for*/ ;
 
     delete [] stack;
     record_free(MAXSTACKDEPTH * sizeof(qs_stack_item));
 
 #if W_DEBUG_LEVEL > 1
-    DBG(<<"_QuickSort verifying");
-    for(int i=0; i < cnt-1; i++) {
-        w_assert2(_KeyCmp(a[i], a[i+1]) <= 0);
+    DBGTHRD(<<"_QuickSort verifying");
+    for(int k=0; k < cnt-1; k++) {
+        DBGTHRD(<<"a[" << k << "] = " << a[k]->page() << "." << a[k]->slot());
+        DBGTHRD(<<"a[" << k+1 << "] = " << a[k+1]->page() << "." << a[k+1]->slot());
+        int x = (*_key_cmpfunc)(this, a[k], a[k+1]) ;
+        w_assert2(x <= 0);
     }
-    DBG(<<"_QuickSort verify DONE");
+    DBGTHRD(<<"_QuickSort verify DONE");
 #endif
     return;
 
@@ -2829,11 +2950,12 @@ error:
     record_free(MAXSTACKDEPTH * sizeof(qs_stack_item));
     // not likely 
     cerr << "_QuickSort: stack too small" <<endl;
-    DBG(<<"");
+    DBGTHRD(<<"");
     W_FATAL(eOUTOFMEMORY);
 }
 
-#define PRINT_KEYCMP 0
+#undef PRINT_KEYCMP   /* desperate debugging measure */
+#undef PRINT_KEYCMP2   /* desperate debugging measure */
 /*
  * Class blob - deals with pinning and pin state of an object. 
  *
@@ -2935,6 +3057,8 @@ private:
         
 };
 
+#define PRINT_BLOB 0 /* desperate debugging measure */
+
 inline void 
 blob::prime(const sm_skey_t &key) 
 {
@@ -2942,6 +3066,15 @@ blob::prime(const sm_skey_t &key)
     // For our purposes, if key len is 0, treat as _in_large_object==false
     if(key.size() == key.contig_length()) _in_large_object = false;
     else _in_large_object = true;
+#if PRINT_BLOB
+    DBGTHRD(<<"blob::prime _in_large_object " << _in_large_object 
+            << " key.offset " << key.offset()
+            << " key.size " << key.size()
+            << " key.contig_length " << key.contig_length()
+            << " key.ptr(0) " << ::hex << u_long(key.ptr(0)) << ::dec
+            << " key.is_in_obj " << key.is_in_obj()
+            );
+#endif
 
     w_rc_t rc;
     if(_in_large_object) {
@@ -2949,8 +3082,8 @@ blob::prime(const sm_skey_t &key)
         rc = _p1.pin(_rid1, key.offset(), SH);
         callback_epilogue();
         if(rc.is_error()) {
-                W_FATAL_MSG(fcINTERNAL, << "Cannot pin " << _rid1
-                    << " at offset " << key.offset() << endl << " rc=" << rc);
+            W_FATAL_MSG(fcINTERNAL, << "Cannot pin " << _rid1
+                << " at offset " << key.offset() << endl << " rc=" << rc);
         }
         INC_STAT_SORT(sort_rec_pins);
         _last1 = _len1 + key.offset();
@@ -2963,6 +3096,7 @@ blob::prime(const sm_skey_t &key)
         // _len1 = key.size() is length of key
         _last1 = _len1 + 0; // offset into buffer is 0
         _s1 = 0;         // offset
+        w_assert1(_key1);
     }
 }
 
@@ -2977,20 +3111,21 @@ blob::next(const char *&key1, smsize_t& l)
     } else 
 #endif 
     if(_in_large_object) {
+        // DBGTHRD(<<"blob::next _in_large_object ");
         _ps1 = _s1 - _p1.start_byte();
         _pl1 = _p1.length() - _ps1;
         if(_pl1 == 0) {
             //pin next page
             bool eof;
-            DBG(<<"Getting next page of record " << _p1.rid());
+            // DBGTHRD(<<"blob::next Getting next page of record " << _p1.rid());
             callback_prologue();
             rc = _p1.next_bytes(eof);
             callback_epilogue();
             if(rc.is_error()) {
-                        W_FATAL_MSG(fcINTERNAL,
-                        << "Cannot get next_bytes " << _rid1
-                        << endl
-                        << " rc= " <<rc);
+                W_FATAL_MSG(fcINTERNAL,
+                << "Cannot get next_bytes " << _rid1
+                << endl
+                << " rc= " <<rc);
             }
             INC_STAT_SORT(sort_rec_pins);
             _ps1 = _s1 - _p1.start_byte();
@@ -2998,19 +3133,30 @@ blob::next(const char *&key1, smsize_t& l)
         }
         _pl1 = (_len1 < _pl1)? _len1 : _pl1; // min
         key1 = _p1.body() + _ps1;
+        w_assert1(key1);
         l = _pl1;
 
-        DBG( <<"RID: rid " << _rid1 );
-        DBG( <<"  START BYTES: "  << _s1);
-        DBG( <<"  #PINNED BYTES left: " << _pl1 );
-        DBG( <<"  START BYTES in pg: " << _ps1);
+#if PRINT_BLOB
+        DBGTHRD( <<"blob::next RID: rid " << _rid1 
+         <<"  START BYTES: "  << _s1
+         <<"  #PINNED BYTES left: " << _pl1
+         <<"  START BYTES in pg: " << _ps1);
+#endif
     } else {
-        DBG( <<"RID: rid " << _rid1 );
-        DBG( <<"  START BYTES: "  << _s1);
-        DBG( <<"  BYTES left: " << _len1);
         key1 = _key1 + _s1;
         l = _len1;
+#if PRINT_BLOB
+        DBGTHRD( << "blob::next not in_large_object RID: rid " << _rid1 
+         <<"  START BYTES: "  << _s1
+         <<"  BYTES left: " << _len1
+         <<"  key location : " 
+         << ::hex << u_long(key1) 
+         << "( " << u_long(_key1) << ","
+         <<  u_long(_s1) << ::dec << ")"
+         );
+#endif
     }
+    w_assert1(key1);
 }
 /*************************************************************************/
 
@@ -3022,19 +3168,17 @@ void
 tape_t::alloc_runs(int m)
 {
     _maxruns = m;
-    DBG(<<"new" << sizeof(run_t) * (_maxruns));
+    DBGTHRD(<<"new" << sizeof(run_t) * (_maxruns));
     _list = new run_t[_maxruns];
     record_malloc(sizeof(run_t)* _maxruns);
-    if(!_list) { DBG(<<""); W_FATAL(eOUTOFMEMORY); }
+    if(!_list) { DBGTHRD(<<""); W_FATAL(eOUTOFMEMORY); }
 }
 
 void         
-tape_t::init_vid( vid_t v) 
+tape_t::init_vid( vid_t v, int tn) 
 {
-    DBG(<<" init_vid " << v);
-#ifdef W_TRACE
-    _tape_number = GET_TSTAT_SORT(sort_files_created);
-#endif /* W_TRACE */
+    DBGTHRD(<<" init_vid " << v << " tape #" << tn);
+    _tape_number = tn;
     INC_STAT_SORT(sort_files_created);
     _vol = v;
 }
@@ -3042,9 +3186,10 @@ tape_t::init_vid( vid_t v)
 w_rc_t 
 tape_t::_rewind(bool create_new)
 {
+    DBGTHRD(<<" _rewind tape #" <<  _tape_number);
     vid_t        v = _vol;
     if(_store != 0) {
-        DBG(<<" destroying tmp file " << tmp_fid());
+        DBGTHRD(<<" destroying tmp file " << tmp_fid());
         W_DO( SSM->_destroy_file(tmp_fid()));
         // _destroy_file removes the store descriptor
     }
@@ -3061,9 +3206,9 @@ tape_t::_create_tmpfile(vid_t v)
 {
     stid_t        tmpfid;
     W_DO( SSM->_create_file(v, tmpfid, t_temporary) );
-    DBG(<<" created tmp file " << tmpfid);
+    DBGTHRD(<<" _create_tmpfile " << tmpfid << " for tape # " << _tape_number);
     w_assert3(_sd == 0);
-    W_DO( dir->access(tmpfid, _sd, NL) );
+    W_DO( dir->access(t_file, tmpfid, _sd, NL) );
     set_store(tmpfid);
     return  RCOK;
 }
@@ -3071,7 +3216,7 @@ tape_t::_create_tmpfile(vid_t v)
 w_rc_t 
 tape_t::prime_tape_for_output()
 {
-    DBG(<<"PRIME_TAPE_FOR_OUTPUT "  << _tape_number );
+    DBGTHRD(<<"PRIME_TAPE_FOR_OUTPUT "  << _tape_number );
     w_assert2( ! metafp().is_fixed());
     w_assert1(is_empty());
 
@@ -3093,19 +3238,21 @@ tape_t::prime_tape_for_output()
     // Make sure it has a fid and sdescriptor
     w_assert1(_store != 0);
     w_assert1(_sd != 0);
+    DBGTHRD(<<"tape number "  << _tape_number
+            <<" now is store " << _store);
 
     // _meta can be null
     _primed_for_output = true;
     _primed_for_input = false;
     w_assert2( ! metafp().is_fixed());
-    W_IFDEBUG3(check_tape_file(false));
+    W_IFDEBUG3(check_tape_file(false, __LINE__));
     return RCOK;
 }
 
 void 
 tape_t::prime_tape_for_input()
 {
-    DBG(<<"PRIME_TAPE_FOR_INPUT "  << *this );
+    DBGTHRD(<<"PRIME_TAPE_FOR_INPUT "  << *this );
     w_assert3( ! metafp().is_fixed());
     // could have dummy runs
     // w_assert1(!curr_run_empty());
@@ -3114,7 +3261,7 @@ tape_t::prime_tape_for_input()
     // will be -1.  If we've been reading from it,
     // leave _first_run alone; continue where we left off.
     if(_first_run < 0) _first_run = 0;
-    W_IFDEBUG3(check_tape_file(false));
+    W_IFDEBUG3(check_tape_file(false, __LINE__));
     clr_count_get();
 }
 
@@ -3123,7 +3270,7 @@ tape_t::prepare_tape_buffer(meta_header_t *m)
 {
     w_assert3( ! metafp().is_fixed());
     _meta = m; // one in the list rec_first[]
-    DBG(<<"PREPARE tape " << _tape_number << "  with meta_header struct");
+    DBGTHRD(<<"PREPARE tape " << _tape_number << "  with meta_header struct");
 #if W_DEBUG_LEVEL > 2
     m->assert_nobuffers();
 #endif
@@ -3160,7 +3307,7 @@ tape_t::prime_record(
         factory_t &fact // called with _scratch_space, preferred factory
         )
 {
-    DBG(<<"PRIME_RECORD_FOR_INPUT "  << *this);
+    DBGTHRD(<<"PRIME_RECORD_FOR_INPUT " << *this << " { ");
 
     // We're done with old orig fp now.
     release_page(origfp());
@@ -3171,7 +3318,7 @@ tape_t::prime_record(
 
     // Read in this meta-record
     rid_t        _rid = meta_rid();
-    DBG(<<" prime_record reading in meta_rid() " << _rid);
+    DBGTHRD(<<" prime_record reading in meta_rid() " << _rid);
     lpid_t        old_pid;
     
     if(metafp().is_fixed()) {
@@ -3179,7 +3326,7 @@ tape_t::prime_record(
     }
 
     if(old_pid.page != _rid.pid.page) {
-        DBG(<<"Fixing metafp() with page " << _rid.pid);
+        DBGTHRD(<<"Fixing metafp() with page " << _rid.pid);
         W_DO(metafp().fix(_rid.pid, LATCH_SH));
         w_assert1(metafp().tag() == page_p::t_file_p);
         INC_STAT_SORT(sort_page_fixes_2);
@@ -3194,7 +3341,7 @@ tape_t::prime_record(
     record_t*        rec;
     slotid_t         slot = _rid.slot;
 
-    DBG(<<" prime_record getting rec " << metafp().pid() << "." << slot );
+    DBGTHRD(<<" prime_record getting rec " << metafp().pid() << "." << slot );
     me()->get___metarecs_in()++;
 
     inc_count_get();
@@ -3205,7 +3352,14 @@ tape_t::prime_record(
     memcpy(_meta, rec->hdr(), rec->hdr_size());
     w_assert3(rec->hdr_size() == _meta->persistent_size());
 
-    DBG(<<"prime_record: got metadata for ordinal=" << _meta->ordinal());
+    DBGTHRD(<<"prime_record: got metadata for "
+            << metafp().pid()<<"."<<slot
+            << " ordinal " << _meta->ordinal()
+            << " orig header size " << rec->hdr_size()
+            << " orig body size " << rec->body_size()
+            << " meta hdrsize " << _meta->hdrsize()
+            << " meta bodysize " << _meta->bodysize()
+            );
 
     INC_STAT_SORT(sort_memcpy_cnt);
     ADD_TSTAT_SORT(sort_memcpy_bytes, _meta->persistent_size());
@@ -3242,15 +3396,17 @@ tape_t::prime_record(
          * header & body that we read from the temp object.
          */
         char *buf = 0;
-        smsize_t whole_len = align(header_length) + align(body_length);
+        smsize_t whole_len = 
+                limited_space::_align(header_length) + 
+                limited_space::_align(body_length);
 
         // See if we can re-use the space already allocated,
         // if any is there.
         factory_t *f = &fact;
         bool must_alloc = true;
         if(object.is_valid() && !object.is_in_buffer_pool()) {
-            if((object.body_size() >= align(body_length))
-             && (object.hdr_size() >= align(header_length)) )
+            if((object.body_size() >= limited_space::_align(body_length))
+             && (object.hdr_size() >= limited_space::_align(header_length)) )
             {
                 // YES we can re-use the space
                 must_alloc = false;
@@ -3260,7 +3416,7 @@ tape_t::prime_record(
             }
         } 
         if(must_alloc) {
-            DBG(<<"allocfunc for ordinal=" << _meta->ordinal() );
+            DBGTHRD(<<"allocfunc for ordinal=" << _meta->ordinal() );
             buf = (char *)f->allocfunc(whole_len);
             if(buf==0) {
                 f = factory_t::cpp_vector;
@@ -3273,7 +3429,7 @@ tape_t::prime_record(
                     // header allocated from f
                     buf, header_length, f,
                     // body is within header so don't deallocate
-                    buf + align(header_length),
+                    buf + limited_space::_align(header_length),
                     body_length, factory_t::none);
                     
         }
@@ -3295,9 +3451,7 @@ tape_t::prime_record(
          * the copies haven't been made.
          */
 
-        DBG(
-            << this
-            <<" :Read in tmp rec " << _rid
+        DBGTHRD( <<" about to read in tmp rec " << _rid
             << " for original record " << _meta->shpid() 
                     << "." << _meta->slotid()
             ); 
@@ -3341,12 +3495,13 @@ tape_t::prime_record(
             // key isn't derived, but is just offset into
             // that object we're writing out.
             // 
+                    DBGTHRD(<< "{ read in key from body of record ");
                     /*
                      * Read in the key from the body of the record
                      */
                     const sm_skey_t &sk = _meta->sort_key(k);
                     klen = sk.size();
-                    DBG(<<"klen=" << klen);
+                    DBGTHRD(<<"klen=" << klen);
                     w_assert3(rec->body_size() >= smsize_t(offset + klen));
                     if(klen > 0) {
                         char *buf = (char *)sk.ptr(0); // already allocated
@@ -3369,16 +3524,31 @@ tape_t::prime_record(
                             kl -= pl1;
                         }
                         offset += klen;
+                        {
+                            vec_t xxx(buf, klen);
+                            DBGTHRD(<< "BUF buf is  " << xxx
+                                    << " located at "
+                                    << ::hex << u_long(buf)
+                                    << ::dec);
+                        }
                     }
+                    DBGTHRD(<< "done reading key from body of record "
+                            << " is_in_obj " <<  sk.is_in_obj()
+                            <<" tmp rec " << _rid
+                            << " orig rec " << _meta->shpid() 
+                            << "." << _meta->slotid()
+                            << "}"
+
+                            );
                 }
-                    // deconstruct fakekey
+                // deconstruct fakekey
             }
         }
     }
 
     if(info.is_for_index()) {
         w_assert3(! info.carry_obj());
-        DBG(<<"ikeysize is " << _meta->ikeysize());
+        DBGTHRD(<<"is_for_index: ikeysize is " << _meta->ikeysize());
         sm_skey_t &ik = _meta->index_key_non_const();
         if(_meta->ikeysize() > 0) {
             /*
@@ -3389,7 +3559,7 @@ tape_t::prime_record(
             w_assert3(rec->body_size() - offset >= length);
             char *buffer = 0;
             factory_t *f = &fact;
-            DBG(<<"allocfunc for ordinal=" << _meta->ordinal() );
+            DBGTHRD(<<"allocfunc for ordinal=" << _meta->ordinal() );
             buffer = (char *)f->allocfunc(length);
             if(buffer==0) {
                 f = factory_t::cpp_vector;
@@ -3432,7 +3602,7 @@ tape_t::prime_record(
                 chars_read += pl1;
                 length -= pl1;
             }
-            DBG(<< chars_read << " chars in index key" );
+            DBGTHRD(<< chars_read << " chars in index key" );
         } else {
             ik.freespace();
             ik.invalidate();
@@ -3444,7 +3614,7 @@ tape_t::prime_record(
          * If apropos, read in large-object metadata
          */
         smsize_t lgmeta_length = _meta->lgmetasize();
-        DBG(<<"lgmeta_length is " << lgmeta_length);
+        DBGTHRD(<<"is_for_file: lgmeta_length is " << lgmeta_length);
         if(lgmeta_length) {
             w_assert3(! info.deep_copy());
             // The record described by the rec is large, not
@@ -3452,7 +3622,7 @@ tape_t::prime_record(
             // w_assert3( rec->is_large() );
             char *buffer = 0;
             factory_t *f = &fact;
-            DBG(<<"allocfunc for ordinal=" << _meta->ordinal() );
+            DBGTHRD(<<"allocfunc for ordinal=" << _meta->ordinal() );
             buffer = (char *)f->allocfunc(lgmeta_length);
             if(buffer==0) {
                 f = factory_t::cpp_vector;
@@ -3462,10 +3632,11 @@ tape_t::prime_record(
                 }
             }
             w_assert3(buffer);
+            DBGTHRD(<<"");
             _meta->lgmetadata_non_const().construct(buffer, 0, 
                     lgmeta_length, f);
             _meta->set_lgmetasize(lgmeta_length);
-            DBG(<<" prime_record: lgmetasize=" << lgmeta_length);
+            DBGTHRD(<<" prime_record: lgmetasize=" << lgmeta_length);
 
             {
                 /*
@@ -3507,16 +3678,22 @@ tape_t::prime_record(
         }
 
         if (info.carry_obj()) {
+            DBGTHRD(<<"carry obj ");
             /* Read in the hdr and whole object from the 
              * body.  Fake out the blob.  Pretend the
              * hdr is key 0, body is key 1.
              */
             sm_object_t   metaobject(metafp(), slot);
+            DBGTHRD(<<"fakekey1 off " << offset 
+                    << " header length " << header_length);
             sm_skey_t     fakekey1(metaobject, offset, header_length,
                                                     false/*not in hdr*/);
             offset += header_length;
 
-            sm_skey_t          fakekey2(metaobject, offset, body_length,
+            DBGTHRD(<<"fakekey2 off " << offset 
+                    << " body length " << body_length
+                    );
+            sm_skey_t     fakekey2(metaobject, offset, body_length,
                                                     false/*not in hdr*/);
 
             /*
@@ -3533,6 +3710,7 @@ tape_t::prime_record(
              * Space was allocated above, so object.hdr(0)
              * had better not be null
              */
+            DBGTHRD(<<"fakekey1 priming " );
             w_assert3(object.hdr(0) != 0);
             smsize_t pl1;
             blob.prime(fakekey1);
@@ -3550,6 +3728,7 @@ tape_t::prime_record(
             buf = (const char *)object.body(0);
             w_assert3(buf != 0);
 
+            DBGTHRD(<<"fakekey2 priming " );
             blob.prime(fakekey2);
             while( blob.more()) {
                 blob.next(where, pl1);
@@ -3563,10 +3742,18 @@ tape_t::prime_record(
             //TODO: re-use space in the meta_header_t attached
             // to each tape, if possible
         } else {
+            DBGTHRD(<<" not for index, not carrying ");
             // Not for index & not carrying object along
             w_assert3(object.hdr_size() == 0);
             w_assert3(object.body_size() == 0);
         }
+    }
+    {
+    W_IFTRACE( 
+        w_ostrstream out;
+        _meta->dump(out);
+        DBGTHRD(<<"_meta for this is " << out.c_str());
+    )
     }
 
     /*
@@ -3579,6 +3766,7 @@ tape_t::prime_record(
         rid_t rid(anon, _meta->slotid());
         MOF marshal = info.marshal_func();
         if(marshal != sort_keys_t::noMOF) {
+            DBGTHRD(<<" marshal ");
             // statically allocated. factory_t::none
             sm_object_t newobject;
 
@@ -3595,7 +3783,7 @@ tape_t::prime_record(
             // TODO: carry and !deep copy-->  and
             // !marshaled -> carry along only the metadata
             // Munge the object descriptor ??
-            DBG(<<" ****************** TODO");
+            DBGTHRD(<<" ****************** TODO");
         }
     }
     _primed_for_input = true;
@@ -3606,6 +3794,7 @@ tape_t::prime_record(
 
     _meta->assert_consistent();
 
+    DBGTHRD(<<"end PRIME_RECORD_FOR_INPUT " << *this << " }");
     return RCOK;
 }
 
@@ -3616,7 +3805,7 @@ tape_t::pin_orig_rec(file_p& ifile_page,
     w_assert3(primed_for_input());
 
     r = rid_t(lpid_t(ifid.vol, ifid.store, _meta->shpid()), _meta->slotid());
-    DBG(<<" pin_orig_rec for run with meta_rid " 
+    DBGTHRD(<<" pin_orig_rec for run with meta_rid " 
         << meta_rid()
         << " original rid = " << r
         );
@@ -3642,18 +3831,20 @@ tape_t::pin_orig_rec(file_p& ifile_page,
 
 /*
  * Methods of run_mgr
+ * _KeyCmpND : compare keys described by the two metaheaders,
+ * without resolving duplicates in any way
  */
 
 int    
-run_mgr::_KeyCmp(const meta_header_t *_k1, const meta_header_t* _k2) const
+run_mgr::_KeyCmpND(const meta_header_t *_k1, const meta_header_t* _k2) const
 { 
-    w_rc_t rc;
+#if W_DEBUG_LEVEL > 2
     if(_k1 == _k2) {
-#ifdef PRINT_KEYCMP
-        DBG(<<"KEYCMP: self");
-#endif /* PRINT_KEYCMP */
+        DBGTHRD(<<"KEYCMPND: self");
         return 0;
     }
+#endif
+    w_assert1(_k1 != _k2);
 
     INC_STAT_SORT(sort_keycmp_cnt);
     /* CF CALLBACK */
@@ -3663,18 +3854,22 @@ run_mgr::_KeyCmp(const meta_header_t *_k1, const meta_header_t* _k2) const
     const meta_header_t &k1 = *_k1;
     const meta_header_t &k2 = *_k2;
 
-#ifdef PRINT_KEYCMP
-    DBG(<<"KEYCMP "
-        << " rid " << k1.shrid(_ifid.store)
-        << " with " 
-        << " rid " << k2.shrid(_ifid.store)
-    );
-#endif /* PRINT_KEYCMP */
     w_assert3(
         (k1.shpid() != k2.shpid()) || (k1.slotid() != k2.slotid()) 
         );
 
     int _nkeys = this->nkeys();
+
+#ifdef PRINT_KEYCMP
+    DBGTHRD(<<"KEYCMPND "
+        << " rid " << k1.shrid(_ifid.store)
+        <<  " ord " << k1.ordinal()
+        << " with " 
+        << " rid " << k2.shrid(_ifid.store)
+        <<  " ord " << k2.ordinal()
+        << " #keys " << _nkeys 
+    );
+#endif
 
     for(int k=0; k<_nkeys; k++ ) {
         const sm_skey_t& kd1 = k1.sort_key(k);
@@ -3682,8 +3877,8 @@ run_mgr::_KeyCmp(const meta_header_t *_k1, const meta_header_t* _k2) const
         smsize_t  len1 = kd1.size();
         smsize_t  len2 = kd2.size();
 
-#ifdef PRINT_KEYCMP
-        DBG(<<"KEYCMP "
+#ifdef PRINT_KEYCMP2
+        DBGTHRD(<<"KEYCMPND "
             << " len1 " << len1
             << " len2 " << len2
         );
@@ -3694,40 +3889,88 @@ run_mgr::_KeyCmp(const meta_header_t *_k1, const meta_header_t* _k2) const
             // in which case they are ==
             partial_result = len1 - len2;
             if(partial_result != 0) {
-                DBG(<<"partial_result = " << partial_result);
+#ifdef PRINT_KEYCMP2
+                DBGTHRD(<<" null key ; partial_result = " << partial_result);
+#endif
                 goto done;
             } // else go on to check next key
         } else {
             // neither is null - have to compare keys
             CF cmp = this->_keycmp(k);
-
             
-            rid_t        rid1(lpid_t(_ifid.vol, _ifid.store, 
+            rid_t    rid1(lpid_t(_ifid.vol, _ifid.store, 
                                     k1.shpid()), k1.slotid()); 
-            rid_t        rid2(lpid_t(_ifid.vol, _ifid.store, 
+            rid_t    rid2(lpid_t(_ifid.vol, _ifid.store, 
                                     k2.shpid()),k2.slotid()); 
-            blob        b1(rid1);
-            blob        b2(rid2);
+            blob     b1(rid1);
+            blob     b2(rid2);
 
-            const char *  key1;
-            const char *  key2;
-            smsize_t          pl1;
-            smsize_t          pl2;
+#ifdef PRINT_KEYCMP
+            DBGTHRD(<<"KEYCMPND have to compare keys ");
+            {
+            W_IFTRACE(
+                w_ostrstream out;
+                k1.dump(out);
+                DBGTHRD(<< rid1 <<" meta for k1 is " << out.c_str());
+            )
+            }
+            {
+            W_IFTRACE(
+                w_ostrstream out;
+                k2.dump(out);
+                DBGTHRD(<< rid2 <<" meta for k2 is " << out.c_str());
+            )
+            }
+#endif /* PRINT_KEYCMP */
 
+            const char *key1=NULL;
+            const char *key2=NULL;
+            smsize_t  pl1;
+            smsize_t  pl2;
+
+            // DBGTHRD(<<"b1.prime " );
             b1.prime(k1.sort_key(k));  // tell what key interests us
+            // DBGTHRD(<<"b2.prime " );
             b2.prime(k2.sort_key(k));  // tell what key interests us
 
             while( b1.more()  && b2.more() ) {
+            // DBGTHRD(<<"b1.next " );
                 b1.next(key1, pl1);
+                w_assert1(key1);
+            // DBGTHRD(<<"b2.next " );
                 b2.next(key2, pl2);
+                w_assert1(key2);
                 smsize_t len  = (pl1 < pl2) ? pl1 : pl2; // min
 
-                DBG(<<"*cmp parts of len " << len);
+#ifdef PRINT_KEYCMP2
+                DBGTHRD(<<"for rid1 " << rid1
+                        << " rid 2 " << rid2 
+                        << " *cmp parts of len " << len);
+                {
+                    w_ostrstream out;
+                    out << "k1";
+                    for(unsigned int q=0; q < len; q++) {
+                        out << "." << int(key1[q]);
+                    }
+                    out << endl;
+                    out << "k2";
+                    for(unsigned int q=0; q < len; q++) {
+                        out << "." << int(key2[q]);
+                    }
+                    out << endl;
+                    DBGTHRD(<<" " << endl << out.c_str());
+                }
+#endif
 
+#ifdef PRINT_KEYCMP
+                DBGTHRD(<< "_KeyCmp calling cmp");
+#endif 
                 partial_result = (*cmp) (len, key1, len, key2);
 
                 if(partial_result != 0) {
-                    DBG(<<"partial_result = " << partial_result);
+#ifdef PRINT_KEYCMP2
+                    DBGTHRD(<<"partial_result = " << partial_result);
+#endif
                     goto done;
                 } 
                 b1.consumed(len);
@@ -3736,25 +3979,69 @@ run_mgr::_KeyCmp(const meta_header_t *_k1, const meta_header_t* _k2) const
             if( b1.more()) {
                 // key1 is longer, therefore greater
                 partial_result = 1;
-#ifdef PRINT_KEYCMP
-                DBG(<<"key1 longer" ); 
+#ifdef PRINT_KEYCMP2
+                DBGTHRD(<<"key1 longer" ); 
 #endif /* PRINT_KEYCMP */
                 goto done;
             } else if (b2.more()) {
                 // key2 is longer, therefore greater
                 partial_result = -1;
-#ifdef PRINT_KEYCMP
-                DBG(<<"key2 longer" ); 
+#ifdef PRINT_KEYCMP2
+                DBGTHRD(<<"key2 longer" ); 
 #endif /* PRINT_KEYCMP */
                 goto done;
             } // else go on to next key
         }
     }
 
-    if(partial_result == 0) {
+done:
 #ifdef PRINT_KEYCMP
-         DBG(<<"DUPLICATE " << partial_result );
+    DBGTHRD(<<"KEYCMPND returning " 
+            << partial_result << " is_ascending:" << info().is_ascending() );
 #endif /* PRINT_KEYCMP */
+
+    callback_epilogue();
+
+    if (partial_result > 0) partial_result = 1;
+    else if(partial_result < 0) partial_result = -1;
+    // else partial result is 0;
+    
+    // if descending, reverse the sense.
+    if(!info().is_ascending()) partial_result = 0 - partial_result;
+
+#ifdef PRINT_KEYCMP
+    DBGTHRD(<<"KEYCMPND "
+        << " rid " << k1.shrid(_ifid.store)
+        << " with " 
+        << " rid " << k2.shrid(_ifid.store)
+        << " #keys " << _nkeys 
+        << " ascending " << info().is_ascending()
+        << " returns " << partial_result
+    );
+#endif
+    return partial_result;
+}
+
+/* Key Comparison for stable sort, no duplicate resolution */
+int    
+run_mgr::_KeyCmpSt(const run_mgr *runmgr,
+        const meta_header_t *_k1, const meta_header_t* _k2) 
+{
+    int result = runmgr->_KeyCmpND(_k1, _k2);
+
+    if(result == 0) {
+        const meta_header_t &k1 = *_k1;
+        const meta_header_t &k2 = *_k2;
+#ifdef PRINT_KEYCMP
+         DBGTHRD(<<"_KeyCmpSt: DUPLICATE "
+            << k1.shpid() << "." << k1.slotid() 
+            << " " 
+            << k2.shpid() << "." << k2.slotid() 
+                 << " based on result =" << result );
+#endif
+         w_assert2(_k1 != _k2); // we shouldn't be doing this,
+         // even though _KeyCmpND deals with it.
+         
         /* 
          * Duplicate! Keys match.
          *  if we're eliminating duplicates, mark one as a duplicate.
@@ -3764,97 +4051,116 @@ run_mgr::_KeyCmp(const meta_header_t *_k1, const meta_header_t* _k2) const
          *  not a legit rid_t::operator== comparison (because the
          *  bulk-loaded btrees do that).
          */
+
+        // We should never compare the same two objects.
         w_assert3((k1.shpid() != k2.shpid()) || (k1.slotid() != k2.slotid()));
 
         /* If we've been told this should be a stable sort (e.g.,
-         * used NOT for btree index, but for order-by query)
+         * used NOT for btree index, but for order-by query).
          * let that override.
          * In either case, we must decide which of the 2 duplicates
          * comes first and which (the other one) gets "marked" as a duplicate.
          *
-         * r <-- 1 if k1 "bigger"
-         *      -1 if k2 "bigger"
+         * r <-- 1 if k1 "bigger"  k1 > k2
+         *      -1 if k2 "bigger"  k1 < k2
          */
-        int            r = 0; 
-        bool           sort_by_rid = false;
+       result = (k1.ordinal() > k2.ordinal())? 1 : -1;
 
-        if(this->info.is_unique()  ||
-          (this->info.null_unique() && k1.is_null())) {
-           sort_by_rid = true;
-           DBG(<<" unique or null_unique");
-        } else if(info.is_stable()) {
-           r = (k1.ordinal() > k2.ordinal())? 1 : -1;
-           DBG(<<" stable");
-        } else if(info.is_for_index()) {
-            DBG(<<" for_index");
-            // WHY do we care about this?
-            // Because in the bulk-load code, it's assumed that
-            // the objects appear in rid-order.  But if we're
-            // using the output for bulk-loading, we should
-            // specify for_index or sort on 1 key + value==2nd key,
-            // and eliminate duplicates.
-
-            /* 
-             * Which has the larger rid?  Now, the problem here is
-             * that we don't scramble the rids, so they are compared
-             * (in the btree lookups) with byte-compares.  Thus, we
-             * had better order them the same here.  This pretty-much
-             * hoses any hope at sort-stability in this context.
-             */
-            sort_by_rid = true;
-
-        } // else not stable, not for btree bulk-load
-        // so we don't care. 
-        //
-        DBG(<<" sort_by_rid " << sort_by_rid);
-
-        if(sort_by_rid) {
-            r = umemcmp(&k1.shpid(), &k2.shpid(), sizeof(shpid_t));
-            if(r==0) {
-                w_assert2(k1.slotid() != k2.slotid());
-                r = umemcmp(&k1.slotid(), &k2.slotid(), sizeof(slotid_t));
-            } else {
-                // a place for a gdb breakpoint
-                DBG(<<"");
-            }
-        }
-
-        if(this->info.is_unique() ||
-          (this->info.null_unique() && k1.is_null())) {
-            /* 
-             * If we marked the 2nd one as a duplicate  -- this would work 
-             * for QuickSort, but not for the merge, because the heap
-             * compares things in "random" order, meaning that sometimes
-             * it compares a,b and sometimes b,a; thus, everything 
-             * could be marked duplicate.   
-             * Instead, we mark the one with the larger rid.
-             */
-
-            // Sneak around const-ness
-            meta_header_t *non_const = (meta_header_t *) ((r < 0) ? _k2 : _k1);
+        bool  eliminating = runmgr->info().is_unique()  ||
+                           (runmgr->info().null_unique() && k1.is_null()); 
+        if(eliminating) { 
+            // eliminate the larger (later-processed) for stable sort
+            meta_header_t *non_const = (meta_header_t *) ((result > 0) 
+                    ? _k1 : _k2);
             non_const->mark_dup();
-
-#ifdef PRINT_KEYCMP
-            DBG(<<"MARK " << " orig rid= " << non_const->shrid(_ifid.store));
-#endif /* PRINT_KEYCMP */
-        } else {
-           partial_result = r;
-           DBG(<<"STABLE override, partial result now " << partial_result );
+            DBGTHRD(<<"MARK(_KeyCmpSt) " << " orig rid= " 
+                    << non_const->shrid(runmgr->_ifid.store));
         }
-    }
-done:
+
+       if(!runmgr->info().is_ascending()) result = 0-result;
+    } else {
 #ifdef PRINT_KEYCMP
-    DBG(<<"KEYCMP returning " 
-            << partial_result << " is_ascending:" << info.is_ascending() );
-#endif /* PRINT_KEYCMP */
+         DBGTHRD(<<"_KeyCmpSt: NON-DUP "
+                 << " based on result =" << result );
+#endif
+    }
+    return result;
+}
 
-    callback_epilogue();
+/* Key comparison for index keys; resolve duplicates by comparing rids */
+int    
+run_mgr::_KeyCmpIdx(const run_mgr *runmgr,
+        const meta_header_t *_k1, const meta_header_t* _k2) 
+{ 
+    int result = runmgr->_KeyCmpND(_k1, _k2);
+    if(result == 0) {
+        /* 
+         * Duplicate! Keys match.
+         *  if we're eliminating duplicates, mark one as a duplicate.
+         *  if duplicates are allowed, sort on key,oid pairs. One might
+         *  think this would yield a quasi-stable sort (iff the pages 
+         *  were ordered to begin with), but we must sort with umemcmp,
+         *  not a legit rid_t::operator== comparison (because the
+         *  bulk-loaded btrees do that).
+         */
+        const meta_header_t &k1 = *_k1;
+        const meta_header_t &k2 = *_k2;
+#ifdef PRINT_KEYCMP
+         DBGTHRD(<<"_KeyCmpIdx: DUPLICATE "
+            << k1.shpid() << "." << k1.slotid() 
+            << " " 
+            << k2.shpid() << "." << k2.slotid() 
+                 << " based on result =" << result );
+#endif
+        w_assert3((k1.shpid() != k2.shpid()) || (k1.slotid() != k2.slotid()));
 
-    if (partial_result > 0) partial_result = 1;
-    else if(partial_result < 0) partial_result = -1;
-    // else partial result is 0;
-    if(info.is_ascending()) return partial_result ;
-    else return (0-partial_result);
+        w_assert1(runmgr->info().is_for_index());
+
+        // In the bulk-load code, it's assumed that
+        // the objects appear in rid-order.  But if we're
+        // using the output for bulk-loading, we should
+        // specify for_index or sort on 1 key + value==2nd key,
+        // and eliminate duplicates.
+
+        /* 
+         * Which has the larger rid?  Now, the problem here is
+         * that we don't scramble the rids, so they are compared
+         * (in the btree lookups) with byte-compares.  Thus, we
+         * had better order them the same here.  This pretty-much
+         * hoses any hope at sort-stability in this context.
+         */
+        DBGTHRD(<<"sort_by_rid pids: " << k1.shpid() << " " << k2.shpid() );
+        int r = umemcmp(&k1.shpid(), &k2.shpid(), sizeof(shpid_t));
+        if(r==0) {
+            DBGTHRD(<<"sort_by_rid rids: "<< k1.slotid() << " " << k2.slotid());
+            w_assert2(k1.slotid() != k2.slotid());
+            r = umemcmp(&k1.slotid(), &k2.slotid(), sizeof(slotid_t));
+            DBGTHRD(<<"sort_by_rid on slotid " << r );
+        } else {
+            // a place for a gdb breakpoint
+            DBGTHRD(<<"sort_by_rid on pid " << r);
+        }
+
+        bool  eliminating = (runmgr->info().is_unique()  ||
+                           (runmgr->info().null_unique() && k1.is_null())); 
+        if(eliminating) { 
+            // eliminate the larger (later-processed) for stable sort
+            meta_header_t *non_const = (meta_header_t *) ((r > 0) ? _k1 : _k2);
+            non_const->mark_dup();
+            DBGTHRD(<<"MARK(_KeyCmpIdx) " << " orig rid= " 
+                    << non_const->shrid(runmgr->_ifid.store));
+        }
+
+        return r;
+        if(runmgr->info().is_ascending()) r = 0-r;
+
+    } else {
+#ifdef PRINT_KEYCMP
+         DBGTHRD(<<"_KeyCmpSt: NON-DUP "
+                 << " based on result =" << result );
+#endif
+    }
+    return result;
 }
 
 
@@ -3882,9 +4188,9 @@ run_mgr::_prepare_key(
      * malloc the space and set the key_descriptor's free
      * function accordingly.
      */
-    smsize_t         offset         = kdesc.offset();
-    smsize_t         length         = kdesc.size();
-    bool        in_hdr = info.in_hdr(k);
+    smsize_t     offset         = kdesc.offset();
+    smsize_t     length         = kdesc.size();
+    bool         in_hdr = info().in_hdr(k);
 
     bool         must_copy = false;
     bool         must_malloc = false;
@@ -3896,14 +4202,23 @@ run_mgr::_prepare_key(
         if(rec.is_large()) {
             smsize_t pgoffset=0;
             lpid_t pid1 = rec.pid_containing(offset, pgoffset, fp);
-            lpid_t pid2 = rec.pid_containing(offset+length, pgoffset, fp);
+            lpid_t pid2 = rec.pid_containing(offset+length-1, pgoffset, fp);
             if(pid1!=pid2) {
+                DBGTHRD( << "_prepare_key pid1 " <<  pid1
+                        << " offset " << offset
+                    << " pid2  "<<  pid2
+                        << " +length-1 " << length-1
+                    );
                 all_on_one_page = false;
             }
         }
     }
+    DBGTHRD( << "_prepare_key all_on_one_page " <<  all_on_one_page
+            << "  compare_in_pieces " << compare_in_pieces
+            << " rec.is_large() " << rec.is_large()
+            );
     if (all_on_one_page) {
-        if( !info.is_aligned(k) ) {
+        if( !info().is_aligned(k) ) {
             must_copy = true; // due to alignment (small rec)
         } else if(rec.is_small()) {
             must_copy = false; 
@@ -3918,10 +4233,10 @@ run_mgr::_prepare_key(
     } else {
         /* key is split across 2 or more pages */
         w_assert3(! rec.is_small());
-        if(info.is_lexico(k)) {
+        if(info().is_lexico(k)) {
             must_copy = false;
             compare_in_pieces = true;
-            w_assert1(info.is_aligned(k));
+            w_assert1(info().is_aligned(k));
         } else {
             must_copy = true; // split across two or more pages
             if(length <= _scratch_space.left()) {
@@ -3932,7 +4247,7 @@ run_mgr::_prepare_key(
             }
         }
     }
-    DBG(<<"must_copy=" << must_copy
+    DBGTHRD(<<"must_copy=" << must_copy
         << " compare_in_pieces=" <<  compare_in_pieces);
 
     char *buffer = 0;
@@ -3964,7 +4279,7 @@ run_mgr::_prepare_key(
          */
         w_assert3(kdesc.is_in_obj());
     }
-    DBG(<<"leave _prepare_key, keyloc=" << W_ADDR(buffer));
+    DBGTHRD(<<"leave _prepare_key, keyloc=" << W_ADDR(buffer));
 
     // unpins lgpage TODO does not! it's an argument!!
     return RCOK; // unpins
@@ -3988,7 +4303,7 @@ run_mgr::output_single_run(
     SET_TSTAT_SORT(sort_runs, 1);
 
     sdesc_t* sd=0;
-    W_COERCE( dir->access(ofid, sd, EX) );
+    W_COERCE( dir->access(t_file, ofid, sd, EX) );
 
     vec_t         hdr, data;
     file_p        last_page_written;
@@ -3996,48 +4311,28 @@ run_mgr::output_single_run(
     meta_header_t* last_rec_written_key=0;
 
     int nelements = rec_curr - rec_first;
-    DBG(<<"output single run with " << nelements << " items");
+    DBGTHRD(<<"output single run with " << nelements << " items");
     for(int i=0; i < nelements; i++) {
         meta_header_t *m = rec_list[i];
 
         m->assert_consistent();
-        if( (!m->is_dup()) &&  (info.is_unique() ||
-                             (info.null_unique() && m->is_null())) 
-          ) {
-            // Compare with prior record.  Multiple Qsorts can 
-            // miss duplicates, so we still have to do this
-            // comparison.
-
-            int j = -1;
-            if(last_rec_written_key && (last_rec_written_key->shpid() != 0)) {
-                DBG(<<"keycmp for DUP elimination");
-                j = _KeyCmp(last_rec_written_key, m);
-            }
-            if(j==0) {
-                meta_header_t *non_const = (meta_header_t *) m;
-                non_const->mark_dup();  // NOW it is!
-                DBG(<<"MARK " << m->shrid(_ifid.store));
-                w_assert3(m->is_dup());
-            }
-        } 
-
         if(m->is_dup()) {
-            DBG(<<"eliminating orig rid= " << m->shrid(_ifid.store));
+            DBGTHRD(<<"skip(output single run): ELIM eliminating orig rid= " << m->shrid(_ifid.store));
             INC_STAT_SORT(sort_duplicates);
+            //don't change last rec written
             continue; // skip
         }
-
         rid_t     rid(lpid_t(_ifid.vol, _ifid.store, m->shpid()), m->slotid());
         rec =     _rec_in_run(fplist, fp, m);
 
-        DBG(<<"i " << i << "/" << nelements << ": outputting rid " << rid);
+        DBGTHRD(<<"i " << i << "/" << nelements << ": outputting rid " << rid);
 
-        if(info.is_for_index()) {
-            DBG(<<"outputting to index " << ofid << " rid " << rid );
+        if(info().is_for_index()) {
+            DBGTHRD(<<"outputting to index " << ofid << " rid " << rid );
             W_DO(_output_index_rec(ofid, rid, m, rec, last_page_written, sd));
         } else {
             w_assert2(fp->pid().page == rid.pid.page);
-            DBG(<<"outputting to file " << ofid << " rid " << rid );
+            DBGTHRD(<<"outputting to file " << ofid << " rid " << rid );
             W_DO(_output_pinned_rec(ofid, rid, rec, 
                 *fp, last_page_written, sd,
                 swap));
@@ -4045,7 +4340,7 @@ run_mgr::output_single_run(
         m->assert_consistent();
         last_rec_written_key = m;
     }
-    DBG(<<"");
+    DBGTHRD(<<"");
 
     return RCOK;
 }
@@ -4098,7 +4393,7 @@ run_mgr::_output_index_rec(
 
             while( b1.more()) {
                 b1.next(key1, pl1);
-                DBG(<<"key=" << 0 << " pl1=" << pl1);
+                DBGTHRD(<<"key=" << 0 << " pl1=" << pl1);
                 memcpy((void *)r, key1, pl1);
                 r += pl1;
                 b1.consumed(pl1);
@@ -4125,7 +4420,7 @@ run_mgr::_output_index_rec(
             RC_PUSH(rc, eBADKEY);
         }
         if(!rc.is_error()) {
-            DBG(<<"Created rec OUTPUT INDEX " << newrid
+            DBGTHRD(<<"Created rec OUTPUT INDEX " << newrid
                 << " hdr_size = " << hdr.size()
                 << " body_size = " << data.size()
             );
@@ -4155,11 +4450,11 @@ run_mgr::_output_pinned_rec(
 
 #ifdef W_TRACE
     if(!rec->is_small()) {
-        DBG(<<"rec->tag.flags=" << rec->tag.flags);
+        DBGTHRD(<<"rec->tag.flags=" << rec->tag.flags);
         smsize_t start;
         lpid_t tmp = rec->pid_containing(0, start, 
                 orig_rec_page);
-        DBG(<<"first page of orig object =" << tmp);
+        DBGTHRD(<<"first page of orig object =" << tmp);
     }
 #endif
 
@@ -4169,7 +4464,7 @@ run_mgr::_output_pinned_rec(
 
     smsize_t          reclen;
     smsize_t    size_hint = hdr.size();
-    if( rec->tag.flags & t_small || !info.deep_copy() ) {
+    if( rec->tag.flags & t_small || !info().deep_copy() ) {
         /*
          * NB: large object !deep_copy is done below
          */
@@ -4188,7 +4483,7 @@ run_mgr::_output_pinned_rec(
     W_DO ( fi->create_rec_at_end( last_page_written,
             size_hint, hdr, data, *sd, newrid) );
 
-    DBG(<<"Created OUTPUT PINNED rec " << newrid
+    DBGTHRD(<<"Created OUTPUT PINNED rec " << newrid
         << " hdr_size = " << hdr.size()
         << " body_size = " << data.size()
     );
@@ -4196,7 +4491,7 @@ run_mgr::_output_pinned_rec(
     ADD_TSTAT_SORT(sort_rec_bytes, size_hint);
 
     if( !(rec->tag.flags & t_small)) {
-        if(info.deep_copy()) {
+        if(info().deep_copy()) {
             // TODO: deep copy is implemented in a stupid and inefficient
             // way - it should be done deeply in lgrec without all
             // this appending going on in separate alloc_page and
@@ -4222,7 +4517,7 @@ run_mgr::_output_pinned_rec(
             }
         } else {
             // shallow copy
-            DBG(<<"shallow copy to " << newrid << " real len=" 
+            DBGTHRD(<<"shallow copy to " << newrid << " real len=" 
                 << rec->tag.body_len << " slotted page part len=" << data.size());
 
             // large object: patch rec tag 
@@ -4239,12 +4534,12 @@ run_mgr::_output_pinned_rec(
             }
             W_DO(last_page_written.get_rec(newrid.slot, rec));
             if(rec->is_small()) {
-                DBG(<<"new obj is small");
+                DBGTHRD(<<"new obj is small");
             } else  {
                 smsize_t start;
                 lpid_t tmp = rec->pid_containing(0, start,  
                     last_page_written);
-                DBG(<<"first page of new obj =" << tmp);
+                DBGTHRD(<<"first page of new obj =" << tmp);
             }
             if(didfix) last_page_written.unfix();
         }
@@ -4283,7 +4578,7 @@ run_mgr::_output_rec(
     bool         must_do_deep_copy = false;
 
     const rectag_t*        rectag = 0; 
-    if( is_large && !info.deep_copy() ) {
+    if( is_large && !info().deep_copy() ) {
         /*
          * NB: large object !deep_copy is completed below
          */
@@ -4316,16 +4611,26 @@ run_mgr::_output_rec(
     W_DO ( fi->create_rec_at_end( last_page_written,
             size_hint, hdr, data, *sd, newrid) );
 
-    DBG(<<"Created OUTPUT REC " << newrid
+    // object's header goes into hdr.
+    // object's body goes into the body unless !deep copy and
+    // large object, in which case we are copying the lgobj meta
+    // data only.
+    DBGTHRD(<<"Created OUTPUT REC " << newrid
         << " hdr_size = " << hdr.size()
         << " body_size = " << data.size()
+        << " for meta ordinal " << m->ordinal()
     );
+    W_IFTRACE({
+        w_ostrstream out;
+        m->dump(out);
+        DBGTHRD(<<"meta for this is " << out.c_str());
+    })
     INC_STAT_SORT(sort_recs_created);
     ADD_TSTAT_SORT(sort_rec_bytes, size_hint);
 
     if( is_large) {
         w_assert3(rectag!=0);
-        if(! info.deep_copy()) {
+        if(! info().deep_copy()) {
             // Finish shallow copy: set final body length
             // to the correct value, and stash flags
 
@@ -4342,12 +4647,12 @@ run_mgr::_output_rec(
             }
             W_DO(last_page_written.get_rec(newrid.slot, rec));
             if(!is_large) {
-                DBG(<<"new obj is small");
+                DBGTHRD(<<"new obj is small");
             } else  {
                 smsize_t start;
                 lpid_t tmp = rec->pid_containing(0, start,  
                     last_page_written);
-                DBG(<<"first page of new obj =" << tmp);
+                DBGTHRD(<<"first page of new obj =" << tmp);
             }
             if(didfix) last_page_written.unfix();
         }
@@ -4379,13 +4684,15 @@ ss_m::sort_file(
 {
     SM_PROLOGUE_RC(ss_m::sort_file, in_xct, read_write, 0);
 
+    DBGTHRD(<<"sort_file " << fid << " into " << sorted_fid);
+
     w_rc_t rc = 
     _sort_file(fid,     sorted_fid, nvids, vid, 
                         kl, min_rec_sz, run_size,
                         tmp_space
                         );
 
-    DBG(<<" returning from sort_file " << rc);
+    DBGTHRD(<<" returning from sort_file " << rc);
     return rc;
 }
 
@@ -4406,14 +4713,14 @@ run_mgr::_rec_in_run(
     record_t *rec;
     // Locate a record, given what we have stored in m 
     for(int i=0; i<_M; i++) {
-            DBG(<<"_rec_in_run looking at i=" << i
+            DBGTHRD(<<"_rec_in_run looking at i=" << i
                 << " page " << fp[i].pid().page
                 << " page has " << fp[i].nslots()
                 << " slots"
                 );
         if(fp[i].pid().page == m->shpid()) {
             w_assert3(fp[i].nslots() > m->slotid());
-            DBG(<<" page " << fp[i].pid()
+            DBGTHRD(<<" page " << fp[i].pid()
                 << " slot " << m->slotid());
             w_rc_t rc = fp[i].get_rec(m->slotid(), rec);
             if(rc.is_error()) {
@@ -4447,7 +4754,6 @@ ss_m::_sort_file(
     // Clear out ordinal for this sort.
     meta_header_t::clr_ordinal();
 
-    FUNC(_sort_file);
     /*
      * Two-phase merge sort: we create as few runs as we can (R), with
      * runs of varying sizes (in # objects) - based on input run_size,
@@ -4478,26 +4784,26 @@ ss_m::_sort_file(
     if(info1.is_for_index()) {
         if(info1.nkeys() > 1) {
             // Only support single-key indexes
-            DBG(<<"");
+            DBGTHRD(<<"");
             return RC(eBADARGUMENT);
         }
         if(info1.is_stable())  {
             // stable might violate rid-order 
             // for btree bulk-loading
-            DBG(<<"");
+            DBGTHRD(<<"");
             return RC(eBADARGUMENT);
         }
 
         // Output is not a copy of input.
         // These make no sense.
         if(info1.deep_copy()) {
-            DBG(<<"");
+            DBGTHRD(<<"");
             return RC(eBADARGUMENT);
         }
         //
         // We're indexing the file -have to keep it around
         if(!info1.keep_orig()) {
-            DBG(<<"");
+            DBGTHRD(<<"");
             return RC(eBADARGUMENT);
         }
         // NB: can only have one key for index output
@@ -4516,12 +4822,12 @@ ss_m::_sort_file(
         if(info1.is_for_index()) {
             // stable might violate rid-order 
             // for btree bulk-loading
-            DBG(<<"");
+            DBGTHRD(<<"");
             return RC(eBADARGUMENT);
         }
     }
     if(ofid == ifid) {
-        DBG(<<"");
+        DBGTHRD(<<"");
         return RC(eBADARGUMENT);
     }
     for(int k=0; k<nkeys; k++) {
@@ -4529,7 +4835,7 @@ ss_m::_sort_file(
             // Must supply a CSKF
             if( (!info1.keycreate(k)) ||
                 (info1.keycreate(k) == sort_keys_t::noCSKF)) {
-                DBG(<<"");
+                DBGTHRD(<<" key #" << k << " not fixed but no derive func");
                 return RC(eBADARGUMENT);
             }
         } else {
@@ -4538,7 +4844,7 @@ ss_m::_sort_file(
                 (info1.keycreate(k) != sort_keys_t::noCSKF)) {
                 /*
                  * Why do we have this supplied? it won't be called
-                 * DBG(<<"");
+                 * DBGTHRD(<<"");
                  */
                 return RC(eBADARGUMENT);
             }
@@ -4569,7 +4875,7 @@ ss_m::_sort_file(
          */
         if(info1.is_lexico(k)) {
             if(! info1.is_aligned(k) ) {
-                DBG(<<"");
+                DBGTHRD(<<"");
                 return RC(eBADARGUMENT);
             }
         }
@@ -4586,7 +4892,7 @@ ss_m::_sort_file(
          *        required, period. 
          */
         if(!info1.keycmp(k)) {
-            DBG(<<"");
+            DBGTHRD(<<"");
             return RC(eBADARGUMENT);
         } else {
             smsize_t len=0;
@@ -4607,19 +4913,19 @@ ss_m::_sort_file(
             } else if (info1.keycmp(k) == sort_keys_t::f4_cmp) {
                 len = sizeof(w_base_t::f4_t);
             } else if(info1.keycmp(k) == sort_keys_t::string_cmp) {
-#if 0
+                /*
                 // Not necessarily true. If isn't lexico, we might
                 // lexify and THEN use string_cmp on the result.
                 if(! info1.is_lexico(k)) {
-                    DBG(<<"");
+                    DBGTHRD(<<"");
                     // String comparison should be marked as already
                     // lexicographically ordered
                     return RC(eBADARGUMENT);
                 }
-#endif
+                */
             }
             if(len && info1.is_fixed(k) && (info1.length(k) != len)) {
-                DBG(<<"");
+                DBGTHRD(<<"");
                 return RC(eBADARGUMENT);
             }
         }
@@ -4634,11 +4940,11 @@ ss_m::_sort_file(
     bool once=false;
 
     if(nvids <= 0) {
-        DBG(<<"");
+        DBGTHRD(<<"");
         return RC(eBADARGUMENT);
     }
 
-    DBG(<<"run_size= " << run_size);
+    DBGTHRD(<<"run_size= " << run_size);
 
     int                M;
     int                NRUNS;
@@ -4661,49 +4967,52 @@ ss_m::_sort_file(
             W_DO(io->get_file_meta_stats(ifid.vol, 1, &file_stats));
             pcount = file_stats.small.numAllocPages;
             largepcount = file_stats.large.numAllocPages;
+            DBGTHRD(<<"small page count " << pcount
+                    << " large page count " << largepcount
+                    );
         } // end determine page counts
     
         if(largepcount>0) {
             run_size--;
-                       // steal a page for large objects
+                    // steal a page for large objects
                     // -- at least one is needed for run_mgr::put
                     // We might still use at least 2 more for 
                     // key comparisons, but those are not hogged.
-            DBG(<<"run_size= " << run_size);
+            DBGTHRD(<<"run_size reduced for large pages; is now " << run_size);
         }
         M = run_size - 1; // max # frames minus 1 for output of runs
-                        // either to final file or to tmp files
+                          // either to final file or to tmp files
         once = (int(pcount)<=M);
-        DBG(<<"M= " << M);
+        DBGTHRD(<<" M= " << M);
         if (once) {
-            DBG(<<"ONCE! Fits in one run");
+            DBGTHRD(<<"ONCE! Fits in one run");
             if(M < 1) {
                 // Min run size is 3 if we need to merge
-                DBG(<<"");
+                DBGTHRD(<<"");
                 return RC(eINSUFFICIENTMEM); 
             }
             if(M > int(pcount)) {
                 M = int(pcount);
-                DBG(<<"M= " << M);
+                DBGTHRD(<<"M= " << M);
             }
             nvids = 0;
         } else if(M < 2) {
             // (Need 2-way merge at a minimum)
-            DBG(<<"NOT ONCE! Needs at least 2-way merge");
+            DBGTHRD(<<"NOT ONCE! Needs at least 2-way merge");
             return RC(eINSUFFICIENTMEM); 
         } 
 
         // NRUNS is total # runs we'll create in the quicksort phase
         NRUNS = int(pcount) / M;
 
-        DBG(<<" pcount=" << pcount
+        DBGTHRD(<<" pcount=" << pcount
             <<" M=" << M
             <<" NRUNS=" << NRUNS
                 );
 
         if( (NRUNS * M) < int(pcount)) {
             NRUNS++;
-            DBG(<<"NRUNS= " << NRUNS);
+            DBGTHRD(<<"NRUNS= " << NRUNS);
         }
 
         if(!once) {
@@ -4729,7 +5038,7 @@ ss_m::_sort_file(
         scratch_mem = s;
     }
     limited_space scratch_space(scratch_mem);
-    DBG(<<"scratch_space " << scratch_mem << " bytes");
+    DBGTHRD(<<"scratch_space " << scratch_mem << " bytes");
 
     /*
      * We should allocate these in the run_mgr
@@ -4740,12 +5049,12 @@ ss_m::_sort_file(
      */
     tape_t * tapes =0;
     if(NTAPES > 0) {
-        DBG(<<"new tape_t[" << NTAPES << "] takes " << sizeof(tape_t) * NTAPES
+        DBGTHRD(<<"new tape_t[" << NTAPES << "] takes " << sizeof(tape_t) * NTAPES
                 << " bytes"
                 );
         tapes = new tape_t[NTAPES]; 
         if(!tapes) {
-            DBG(<<"");
+            DBGTHRD(<<"");
             W_FATAL(eOUTOFMEMORY);
         }
         record_malloc(NTAPES * tapes[0].size_in_bytes()); 
@@ -4753,9 +5062,9 @@ ss_m::_sort_file(
         int v = 0;
         for (int j=0; j<NTAPES; j++) {
             v = j % nvids;
-            tapes[j].init_vid(vids[v]);
+            tapes[j].init_vid(vids[v], j);
         }
-        DBG(<<"new" << NTAPES * sizeof(tape_t));
+        DBGTHRD(<<"alloced " << NTAPES * sizeof(tape_t));
     }
 
     {
@@ -4781,10 +5090,10 @@ ss_m::_sort_file(
         lgdata_p lgpage; // for large-object processing
 
         // array of pages that forms a run
-        DBG(<<"new file_ps use " << M << " pages");
+        DBGTHRD(<<"new file_ps use " << M << " pages");
         file_p* fp = new file_p[M]; // auto-del
         if(!fp) {
-            DBG(<<"");
+            DBGTHRD(<<"");
             W_FATAL(eOUTOFMEMORY);
         }
         record_malloc(M * sizeof(file_p));
@@ -4792,16 +5101,16 @@ ss_m::_sort_file(
 
         {
             lpid_t pid, first_pid;
-            W_DO( fi->first_page(ifid, pid, NULL /* allocated only */) );
+            W_DO( fi->first_file_page(ifid, pid, NULL /* allocated only */, NL) );
             first_pid = pid;
             int        run_number = 0;
 
-            DBG(<<"first page is " << pid);
+            DBGTHRD(<<"first page is " << pid);
 
             bool eof;
             int  numrecords=0;
             for (eof = false; ! eof; )  {
-                DBG(<<"{ run prologue"); /*}*/
+                DBGTHRD(<<"{ run prologue"); /*}*/
                 run.prologue();
                 int numelements=0;
                 for (int i=0; i<M && !eof; i++) {
@@ -4812,14 +5121,14 @@ ss_m::_sort_file(
                 
                     W_DO( fp[i].fix(pid, LATCH_SH) );
                     INC_STAT_SORT(sort_page_fixes);
-                    DBG(<<"page " << pid << " contains "
+                    DBGTHRD(<<"page " << pid << " contains "
                         << fp[i].nslots() << " slots (maybe not all full)" );
 #if W_DEBUG_LEVEL > 1
                     { int k=0;
                         for (slotid_t j = fp[i].next_slot(0); 
                             j; 
                             j = fp[i].next_slot(j)) k++;
-                        DBG(<<"page " << pid << " contains "
+                        DBGTHRD(<<"page " << pid << " contains "
                         << k << " full slots" );
                     }
 #endif 
@@ -4839,8 +5148,8 @@ ss_m::_sort_file(
                         numelements++;
                         numrecords++;
                     }
-                    DBG(<<"get next page after pid=" << pid);
-                    W_DO(fi->next_page(pid, eof, NULL /* allocated only*/));
+                    DBGTHRD(<<"get next page after pid=" << pid);
+                    W_DO(fi->next_file_page(pid, eof, NULL /* allocated only*/, NL));
                     INC_STAT_SORT(sort_page_fixes);
                  } // for run
 
@@ -4849,7 +5158,7 @@ ss_m::_sort_file(
                  if(once && (++run_number > 1)) {
                     W_FATAL(eINTERNAL);
                  }
-                 DBG(<<"once=" << once 
+                 DBGTHRD(<<"once=" << once 
                          << " run_number=" << run_number
                          << " numelements=" << numelements
                          << " numrecords(input)=" << numrecords
@@ -4862,11 +5171,11 @@ ss_m::_sort_file(
                  if(!once) {
                      run.epilogue();
                 }
-                /* {  */ DBG(<<"run epilogue }"); 
+                /* {  */ DBGTHRD(<<"run epilogue }"); 
              } // for !eof
         } // sort phase
 
-        DBG(<<"sort phase over ");
+        DBGTHRD(<<"sort phase over ");
 
         UMOF unmarshal = info1.unmarshal_func();
         MOF marshal = info1.marshal_func();
@@ -4923,7 +5232,7 @@ ss_m::_sort_file(
             destroy = true;
         } else {
             if (swap_large_object_store) {
-                DBG(<<"destroy n swap");
+                DBGTHRD(<<"destroy n swap");
                 // ifid is old file, ofid is new file
                 W_DO ( _destroy_n_swap_file(ifid, ofid) );
             } else {
@@ -4938,7 +5247,7 @@ ss_m::_sort_file(
         W_DO ( _destroy_file(ifid) );
     }
 
-    DBG(<<" returning from sort_file");
+    DBGTHRD(<<" returning from sort_file" );
     return RCOK;
 }
 
@@ -4953,38 +5262,47 @@ run_mgr::merge(
     w_assert3(_phase);
     w_assert3( ! _phase->done());
 
-    DBG(<<" { BEGIN run_mgr::merge " << ofid << " swap=" << swap); /*}*/
+    DBGTHRD(<<" { BEGIN run_mgr::merge " << ofid << " swap=" << swap
+            << " _recompute " << _recompute); 
 
     if(_recompute) {
-        // For the moment, see if it works w/o a
-        // space restriction
-        w_assert1(0);
+        // For the moment, we don't support this case:
+        // keys are in the body of the record, spread across pages.
+        // User should put the keys into the header for this sort,
+        // or ensure that they are in small records.
+        return RC(eBRKKEYCMPNOTIMPL);
 
+#if 0 && defined(NOTYETIMPLEMENTED)
 if(0) {  // TODO: implement this
         // There are some records that must be compared
         // in pieces in the buffer pool, so we have to
         // hog more buffer-pool pages.
+        // First, see if we can do it with fewer tapes, so we
+        // can avoid using more bp space. 
         int newntapes=(_NTAPES-1)/2;
         // minimum of 2
         if (newntapes < 2) {
-            DBG(<<"");
+            DBGTHRD(<<"_NTAPES " << _NTAPES << " newntapes " << newntapes);
+            cerr << __LINE__ << ": " 
+                    << "newntapes "<<  newntapes
+                    <<  endl;
             return RC(eINSUFFICIENTMEM);
         }
 
-        DBG(<<"RECOMPUTE new fib_t" << sizeof(fib_t));
+        DBGTHRD(<<"RECOMPUTE new fib_t" << sizeof(fib_t));
         fib_t *fib = new fib_t(newntapes-1); // input only
         // record_malloc is in constructor
         if(!fib) {
-            DBG(<<"");
+            DBGTHRD(<<"");
             W_FATAL(eOUTOFMEMORY);
         }
         fib->compute(newntapes);
         fib->compute_dummies(newntapes);
-        DBG(<<"RECOMPUTE new phase_mgr" << sizeof(phase_mgr));
+        DBGTHRD(<<"RECOMPUTE new phase_mgr" << sizeof(phase_mgr));
         phase_mgr* newmgr = new phase_mgr(fib);
         // record_malloc is in constructor
         if(!newmgr) {
-            DBG(<<"");
+            DBGTHRD(<<"");
             W_FATAL(eOUTOFMEMORY);
         }
 
@@ -4998,6 +5316,7 @@ if(0) {  // TODO: implement this
                 // does record_free
         _phase = newmgr;
 } // end "if(0)"
+#endif
     }
 
     _phase->sort_phase_done(); 
@@ -5009,14 +5328,15 @@ if(0) {  // TODO: implement this
     for(t = 0; t < _phase->order(); t++) {
         tape_t *tp = &_tapes[t];
         int        runs = _phase->num(t) - tp->last_run();
-        DBG(<<"Adding " << runs << " dummies to tape " << t);
+        DBGTHRD(<<"Adding " << runs << " dummies to tape " << t 
+                << " fid " << tp->get_vol() << "." << tp->get_store());
         while( runs-- > 0 ) { tp->add_dummy_run(); }
     }
 
     w_assert3(_next_run > 1);
     SET_TSTAT_SORT(sort_runs, _next_run);
 
-    DBG(<<"new runheap" << sizeof(RunHeap));
+    DBGTHRD(<<"new runheap" << sizeof(RunHeap));
     RunHeap *runheap = new RunHeap(*this, _NTAPES);
     w_auto_delete_t<RunHeap> autodelheap(runheap);
     record_malloc(sizeof(runheap));
@@ -5029,7 +5349,7 @@ if(0) {  // TODO: implement this
      * to need, and the list of ptrs to them, now that
      * we're done with quicksort.  
      */
-    DBG(<<"run_mgr::mid-merge");
+    DBGTHRD(<<"run_mgr::mid-merge");
     _clear_meta_buffers(true);
 
     w_assert3(_phase->order() == _NTAPES-1);
@@ -5049,7 +5369,7 @@ if(0) {  // TODO: implement this
     for(t = 0; t < _NTAPES; t++) {
         tape_t *tp = &_tapes[t];
 
-        m->set_nkey(info.nkeys());
+        m->set_nkey(info().nkeys());
         w_assert3(m > last_rec_written_key);
         tp->prepare_tape_buffer(m);
         m++;
@@ -5063,7 +5383,7 @@ if(0) {  // TODO: implement this
      */
     do{
 
-        DBG( << _phase->way() << "-way merge:  TO " << _phase->target() );
+        DBGTHRD( << _phase->way() << "-way merge:  TO " << _phase->target() );
         tape_t *tp;
         tape_t *tp_limit = _tapes + _NTAPES;
 
@@ -5074,7 +5394,7 @@ if(0) {  // TODO: implement this
         for(tp = _tapes; tp < tp_limit;  tp++) {
             if(tp != output_tape)  {
                 tp->prime_tape_for_input(); 
-                DBG( << " from " << *tp);
+                DBGTHRD( << " from " << *tp);
                 // Can be empty if we eliminated lots of dups
                 // w_assert1(!tp->is_empty());
             }
@@ -5104,8 +5424,8 @@ if(0) {  // TODO: implement this
                     // w_assert1(!tp->is_empty());
                     if(!tp->is_empty() && !tp->is_dummy_run()) {
                         // This assumes that the run is not empty (dummy)
-                        DBG(<<"prime_record on tp " << tp->get_store());
-                        W_DO(tp->prime_record(info, *this, _scratch_space));
+                        DBGTHRD(<<"prime_record on tp " << tp->get_store());
+                        W_DO(tp->prime_record(info(), *this, _scratch_space));
                         w_assert3(tp->real_shrid(_ifid.store).page!= 0);
                         W_DO(insert(runheap, tp, nkeys()));
                     }
@@ -5116,8 +5436,9 @@ if(0) {  // TODO: implement this
             /*
              * Merge first run on each tape
              */
-            DBG(<< "run " << runs <<": _merge first run " 
-                    << int(tp_limit - _tapes) << " tapes, output tape=" << output_tape);
+            DBGTHRD(<< "run " << runs <<": _merge first run " 
+                    << int(tp_limit - _tapes) 
+                    << " tapes, output tape=" << output_tape);
             W_DO( _merge( runheap, last_rec_written_key, 
                         _phase->last(), output_tape, ofid,  swap) );
 
@@ -5127,7 +5448,7 @@ if(0) {  // TODO: implement this
             for(tp = _tapes; tp < tp_limit;  tp++) {
 #if W_DEBUG_LEVEL > 1
                 if(tp == output_tape)  {
-                    DBG(<<" output tape  "  << *tp);
+                    DBGTHRD(<<" output tape  "  << *tp);
                     // Unless this is the last pass,
                     // output tape should not be empty.
                     // If last pass, it's still empty from 
@@ -5143,10 +5464,10 @@ if(0) {  // TODO: implement this
                 if(tp != output_tape)  {
                     // tp->is_empty() could be true earlier,
                     // if we have lots & lots of duplicates
-                    DBG(<<" input tape  "  << *tp);
+                    DBGTHRD(<<" input tape  "  << *tp);
                     if(!tp->is_empty()) {
                         w_assert1(tp->curr_run_empty());
-                        DBG(<< "************* ???? completed run #" << runs);
+                        DBGTHRD(<< "************* ???? completed run #" << runs);
                         tp->completed_run(); // gets next run
                     }
                 }
@@ -5209,7 +5530,7 @@ if(0) {  // TODO: implement this
     } while (!_phase->done());
 
     w_assert3(runheap->NumElements() == 0);
-    /*{*/DBG(<<"END run_mgr::merge " << ofid << " swap=" << swap << "}"
+    DBGTHRD(<<"END run_mgr::merge " << ofid << " swap=" << swap << "}"
             );
     return RCOK;
 }
@@ -5231,7 +5552,8 @@ run_mgr::_merge(
      * Merge: Pluck off the smallest record from the heads
      * of the runs.   Write the output to the target tape if !last_pass,
      * to the file identified by ofid if last_pass
-     *
+     */
+    /*
      * At the beginning of the each pass, we clear the info about the
      * last_rec_written_key - this forces us to write at least one
      * record for each pass, and avoids the problem of eliminating
@@ -5242,14 +5564,14 @@ run_mgr::_merge(
      */
     last_rec_written_key->freespace(); // from prior calls
     last_rec_written_key->clear();
-    last_rec_written_key->set_nkey(info.nkeys());
+    last_rec_written_key->set_nkey(info().nkeys());
     w_assert3(last_rec_written_key->shpid() == 0);
     last_rec_written_key->assert_nobuffers();
     last_rec_written_key->assert_consistent();
 
-    DBG(<<" { _merge: runheap->NumElements()=" << runheap->NumElements()); /*}*/ 
+    DBGTHRD(<<" { _merge: runheap->NumElements()=" << runheap->NumElements()); 
     if(last_rec_written_key) {
-        DBG(<<" last_rec_written_key ordinal is " << last_rec_written_key->ordinal());
+        DBGTHRD(<<" last_rec_written_key ordinal is " << last_rec_written_key->ordinal());
     }
 
     tape_t*        top;
@@ -5260,14 +5582,14 @@ run_mgr::_merge(
 
     sdesc_t*         sd=0;
     if(last_pass) {
-        W_COERCE( dir->access(ofid, sd, EX) );
+        W_COERCE( dir->access(t_file, ofid, sd, EX) );
     }
 
     int nrecords_processed = 0;
 
     while(runheap->NumElements() > 0) {
         // Find smallest item, pluck it off, 
-        DBG( << " nrecords_processed " << nrecords_processed
+        DBGTHRD( << " nrecords_processed " << nrecords_processed
                 <<" runheap->NumElements()=" << runheap->NumElements()
             );
 
@@ -5277,43 +5599,19 @@ run_mgr::_merge(
         const meta_header_t *tm = top->meta();
         w_assert3(tm > last_rec_written_key);
 
-        DBG(<<"top/tm is consistent: " << tm->ordinal());
+        DBGTHRD(<<"top/tm is consistent: " << tm->ordinal());
+        DBGTHRD(<<"_merge inspecting " << tm->shrid(_ifid.store)
+                    << " is_dup " << tm->is_dup()
+                    << " info().is_unique() " << info().is_unique()
+                    << " last_rec_written_key " << 
+                     ::hex << u_long(last_rec_written_key) << ::dec
+                    );
         tm->assert_consistent();
         last_rec_written_key->assert_consistent();
 
-        if( (!tm->is_dup()) && 
-            (info.is_unique() ||
-            (info.null_unique() && tm->is_null()) ) ) {
-            // Compare with prior record.  Heap management misses
-            // a lot of duplicates, so we still have to do this
-            // comparison.
-
-            int j = -1;
-            DBG(<< "last_rec_written_key->shpid() = " << 
-                last_rec_written_key->shpid()
-                << "." << 
-                last_rec_written_key->slot()
-                );
-            if(last_rec_written_key->shpid() != 0) {
-                DBG(<<"keycmp for DUP elimination");
-                j = _KeyCmp(last_rec_written_key, tm);
-            }
-            if(j == 0) {
-                meta_header_t *non_const = (meta_header_t *) tm;
-                non_const->mark_dup();  // NOW it is!
-                DBG(<<"MARK " << tm->shrid(_ifid.store));
-                w_assert3(tm->is_dup());
-            } else {
-                // If this is the first in a new set of runs,
-                // it could be false
-                w_assert3(j<0 || is_first);
-            }
-        } else {
-            DBG(<<"not uniq case " << tm->ordinal());
-        }
 
         if(!tm->is_dup()) {
-            DBG(<<"not duplicate " << tm->ordinal());
+            DBGTHRD(<<"(merge) not duplicate " << tm->ordinal());
 
             meta_header_t *non_const = (meta_header_t *) tm;
             non_const->assert_consistent();
@@ -5325,16 +5623,16 @@ run_mgr::_merge(
                 // Write the record represented by top
                 // to the output file.  
                 // last_page_read is the original file page
-                DBG(<<"LAST PASS ordinal:" << tm->ordinal());
+                DBGTHRD(<<"LAST PASS ordinal:" << tm->ordinal());
 
-                if(info.is_for_index()) {
-                    DBG(<<"OUTPUT INDEX REC orig "  << orig << " ordinal " << tm->ordinal() );
+                if(info().is_for_index()) {
+                    DBGTHRD(<<"OUTPUT INDEX REC orig "  << orig << " ordinal " << tm->ordinal() );
                     W_DO(_output_index_rec(ofid, orig, tm, 
                         0,/* record_t */
                         last_page_written, sd));
 
                 } else {
-                    /* info.is_for_file()
+                    /* info().is_for_file()
                      * Case 1:
                      *  !deep_copy and large object
                      *  write out the meta data, regardless whether
@@ -5349,24 +5647,24 @@ run_mgr::_merge(
                      *  nocarry:
                      *  pin orig object, no marshal - just copy 
                      */
-                    if((tm->lgmetadata().size() > 0) && !info.deep_copy()) {
+                    if((tm->lgmetadata().size() > 0) && !info().deep_copy()) {
                         // Case 1. Object is large.  Whether or not
                         // we are carrying the object along, we are
                         // copying only the metadata, so we don't have
                         // to mess with unmarshal.
                         // 
                         // output_rec handles shallow copy
-                        DBG(<<"OUTPUT REC orig "  << orig << " ordinal " << tm->ordinal() );
+                        DBGTHRD(<<"OUTPUT REC orig "  << orig << " ordinal " << tm->ordinal() );
                         W_DO(_output_rec(ofid, non_const, last_page_written, 
                           sd, swap));
                     } else {
                             // Cases 2, 3: object is small or
                         // it's large and needs a deep copy.
                         // See if we need to unmarshal:
-                        if(info.carry_obj()) {
+                        if(info().carry_obj()) {
                             /* UMOF CALLBACK */
                             /* Prepare the object for writing to disk */
-                            UMOF unmarshal = info.unmarshal_func();
+                            UMOF unmarshal = info().unmarshal_func();
                             if(unmarshal != sort_keys_t::noUMOF) {
                                 sm_object_t&obj = 
                                     non_const-> whole_object_non_const();
@@ -5377,7 +5675,7 @@ run_mgr::_merge(
                                 callback_prologue();
                                 W_DO( (*unmarshal)(orig, 
                                     obj,
-                                    info.marshal_cookie(), 
+                                    info().marshal_cookie(), 
                                     &newobj) );
                                 callback_epilogue();
                                 INC_STAT_SORT(sort_umof_cnt);
@@ -5388,9 +5686,10 @@ run_mgr::_merge(
                                 /* NB: might not be consistent now */
                                 non_const->assert_consistent();
                                 // TODO: what to do about this?
-                                DBG(<<"what to do here???");
+                                DBGTHRD(<<"what to do here???");
                             }
-                            DBG(<<"OUTPUT REC orig "  << orig << " ordinal " << tm->ordinal() );
+                            DBGTHRD(<<"OUTPUT REC orig "  << orig 
+                                    << " ordinal " << tm->ordinal() );
                             W_DO(_output_rec(ofid, non_const, 
                                     last_page_written, sd, swap));
                         } else {
@@ -5402,17 +5701,17 @@ run_mgr::_merge(
                             record_t*        rec;
                             rid_t            _orig;
                             W_DO(top->pin_orig_rec(last_page_read, _ifid, rec, _orig));
-                            DBG(<<"OUTPUT PINNED REC orig "  << orig << " ordinal " << tm->ordinal() );
+                            DBGTHRD(<<"OUTPUT PINNED REC orig "  << orig << " ordinal " << tm->ordinal() );
                             W_DO(_output_pinned_rec(ofid, _orig, rec, 
                                     last_page_read, last_page_written, sd,
                                     swap));
                         } // !carry obj
                     } // case 2, 3
-                } // info.is_for_file
+                } // info().is_for_file
             } else {
-                DBG(<<"OUTPUT METAREC not last pass");
+                DBGTHRD(<<"OUTPUT METAREC not last pass");
                 /*
-                DBG(<<"**** about to output metarec to tape " << target->_tape_number
+                DBGTHRD(<<"**** about to output metarec to tape " << target->_tape_number
                     << " with page-is-fixed=" << target->metafp().is_fixed());
                 */
                 W_DO(_output_metarec(non_const, target, newrid));
@@ -5426,7 +5725,7 @@ run_mgr::_merge(
             non_const->assert_consistent();
 
             last_rec_written_key->move_sort_keys(*non_const);
-            DBG(<<"SAVED rid for dup chk " 
+            DBGTHRD(<<"SAVED rid for dup chk " 
                     << last_rec_written_key->shrid(_ifid.store));
             w_assert3(! tm->is_dup());
 
@@ -5434,8 +5733,9 @@ run_mgr::_merge(
             non_const->assert_consistent(); 
 
         } else {
-            // skip writing the record
-            DBG(<<"skip: ELIM rid= " << tm->shrid(_ifid.store));
+            // is duplicate: skip writing the record
+            DBGTHRD(<<"skip(merge): ELIM eliminating orig rid= " 
+                    << tm->shrid(_ifid.store));
             INC_STAT_SORT(sort_duplicates);
             meta_header_t *non_const = (meta_header_t *) tm;
             non_const->freespace(); // TODO: consider saving the space
@@ -5449,16 +5749,36 @@ run_mgr::_merge(
         } else {
             // there's another record in the run --
             // stuff it into the heap
-            DBG(<<"prime_record on tp " << top->get_store());
-            W_DO(top->prime_record( info, *this, _scratch_space)); 
+            DBGTHRD(<<"prime_record on tp " << top->get_store());
+            W_DO(top->prime_record( info(), *this, _scratch_space)); 
+            // fill in the metadata and bump meta-rid
+            //
+            
+            // Now pull items off the top until we find one that's
+            // not a duplicate.
+            const meta_header_t *tm = top->meta();
+            while(tm->is_dup() && !top->curr_run_empty() &&
+                !top->is_dummy_run()) {
+                INC_STAT_SORT(sort_duplicates);
+                DBGTHRD(<<"skip(merge): ELIM eliminating orig rid= " 
+                    << tm->shrid(_ifid.store));
+                meta_header_t *non_const = (meta_header_t *) tm;
+                non_const->freespace(); // TODO: consider saving the space
+                non_const->assert_consistent(); 
+
+                // get the next
+                DBGTHRD(<<"prime_record on tp " << top->get_store());
+                W_DO(top->prime_record( info(), *this, _scratch_space)); 
                         // fill in the metadata and bump meta-rid
-            DBG(<<"pushing onto heap tp " << top->get_store());
+                tm = top->meta();
+            }
+            DBGTHRD(<<"pushing onto heap tp " << top->get_store());
             W_DO(insert(runheap, top, nkeys()));
             w_assert3(runheap->NumElements() > 0);
         }
-        DBG(<<"end of loop");
+        DBGTHRD(<<"end of loop ");
     }
-    /*{*/DBG(<<"_merge : nrecords_processed =" << nrecords_processed 
+    DBGTHRD(<<"_merge : nrecords_processed =" << nrecords_processed 
             << " metarecs read in " << me()->get___metarecs_in()
             << " metarecs out " << me()->get___metarecs()
             << "}");
@@ -5503,12 +5823,17 @@ run_mgr::gt(const tape_t* a, const tape_t* b) const
         j = 0; 
         w_assert0(0);
     } else {
-        // _KeyCmp marks 1 as duplicate if apropos
-        j = _KeyCmp(a->meta(), b->meta());
+        // This will call either _KeyCmpSt or _KeyCmpIdx
+        j = (*_key_cmpfunc)(this, a->meta(), b->meta()) ;
+        DBGTHRD(<< "(run_mgr::gt)keycmp"
+            << " " << a->meta()->shrid(_ifid.store)
+            << " " << b->meta()->shrid(_ifid.store)
+            << " returned " << j
+            );
         //  j is  ( <0,  ==0,  >0) if
         //        (a<b, a==b, a>b), respectively
     }
-    DBG(<<"gt: reversing: return " << ((j <=0)?"true":"false"));
+    DBGTHRD(<<"gt: reversing: return " << ((j <=0)?"true":"false"));
     // don't return true if == 0 - that causes unnecessary swaps
     // return (j <= 0) ? true : false; 
     return (j < 0)  ? true : false;  
@@ -5714,7 +6039,7 @@ ss_m::_new_sort_file(
             run_size,
             ss_m::page_sz * run_size // essentially unlimited for now
         ));
-    DBG(<<" returning from new_sort_file");
+    DBGTHRD(<<" returning from new_sort_file");
 
     return RCOK;
 }
@@ -5745,108 +6070,73 @@ sort_keys_t::string_cmp(
     return result ? result : klen1 - klen2;
 }
 
+// int    sort_keys_t::cmp(
+        // uint4_t W_IFDEBUG4(klen1), const void *kval1p,
+        // uint4_t W_IFDEBUG4(klen2), const void *kval2p)
+// return -1, 0, or 1 
+// Must work for unsigned or signed T so the
+// code is a little roundabout for signed types.
+// Could avoid memcpy for u1 case but it's not worth the work
+// at the moment.
+// Right now we just have to make this work regardless of alignment.
+// a - b can overflow: use comparison instead
+#define TEMPLATE_CMP(T) \
+{ \
+    w_assert3(klen1 == klen2); \
+    w_assert3(klen1 == sizeof(T)); \
+    T  kval1; \
+    T  kval2; \
+    memcpy(&kval1, kval1p, sizeof(kval1)); \
+    memcpy(&kval2, kval2p, sizeof(kval2)); \
+    DBGTHRD(<<"sort_keys_t::<>_cmp kval1 " <<  kval1 << " kval2 " << kval2); \
+    ADD_TSTAT_SORT(sort_memcpy_cnt, 2); \
+    ADD_TSTAT_SORT(sort_memcpy_bytes, 2*sizeof(T)); \
+    bool less = kval1 < kval2; \
+    if(less) return -1; \
+    return kval2 == kval1 ? 0 : 1;\
+}
 
 //
 // Comparison function for 8-byte unsigned integers
 //
-int sort_keys_t::uint8_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1,
-                           uint4_t W_IFDEBUG3(klen2), const void* kval2)
-{
-    w_assert3(klen1 == klen2);
-    w_assert3(klen1 == sizeof(w_base_t::uint8_t));
-    // a - b can overflow: use comparison instead
-#ifdef STRICT_INT8_ALIGNMENT
-    w_base_t::uint8_t        u1;
-    w_base_t::uint8_t        u2;
-    memcpy(&u1, kval1, sizeof(u1));
-    memcpy(&u2, kval2, sizeof(u2));
-    ADD_TSTAT_SORT(sort_memcpy_cnt, 2);
-    ADD_TSTAT_SORT(sort_memcpy_bytes, 2*sizeof(w_base_t::uint8_t));
-#else
-    w_assert3(((ptrdiff_t)kval1 & ALIGN_MASK_IU8) == 0);
-    w_assert3(((ptrdiff_t)kval2 & ALIGN_MASK_IU8) == 0);
-    const w_base_t::uint8_t        &u1 = *(const w_base_t::uint8_t *) kval1;
-    const w_base_t::uint8_t        &u2 = *(const w_base_t::uint8_t *) kval2;
-#endif
-    bool ret =  u1 < u2;
-    return ret ? -1 : (u1 == u2) ? 0 : 1;
-}
+int sort_keys_t::uint8_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1p,
+                           uint4_t W_IFDEBUG3(klen2), const void* kval2p)
+TEMPLATE_CMP(w_base_t::uint8_t)
 
 //
 // Comparison function for 8-byte integers
 //
-int sort_keys_t::int8_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1,
-                          uint4_t W_IFDEBUG3(klen2), const void* kval2)
-{
-    w_assert3(klen1 == klen2);
-    w_assert3(klen1 == sizeof(w_base_t::int8_t));
-    // a - b can overflow: use comparison instead
-#ifdef STRICT_INT8_ALIGNMENT
-    w_base_t::int8_t        i1;
-    w_base_t::int8_t        i2;
-    memcpy(&i1, kval1, sizeof(i1));
-    memcpy(&i2, kval2, sizeof(i2));
-    ADD_TSTAT_SORT(sort_memcpy_cnt, 2);
-    ADD_TSTAT_SORT(sort_memcpy_bytes, 2*sizeof(w_base_t::int8_t));
-#else
-    w_assert3(((ptrdiff_t)kval1 & ALIGN_MASK_IU8) == 0);
-    w_assert3(((ptrdiff_t)kval2 & ALIGN_MASK_IU8) == 0);
-    const w_base_t::int8_t        &i1 = *(const w_base_t::int8_t *) kval1;
-    const w_base_t::int8_t        &i2 = *(const w_base_t::int8_t *) kval2;
-#endif
-    bool ret =  i1 < i2;
-    return ret ? -1 : (i1 == i2) ? 0 : 1;
-}
+int sort_keys_t::int8_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1p,
+                          uint4_t W_IFDEBUG3(klen2), const void* kval2p)
+TEMPLATE_CMP(w_base_t::int8_t)
 
 //
 // Comparison function for 4-byte unsigned integers
 //
-int sort_keys_t::uint4_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1, 
-                           uint4_t W_IFDEBUG3(klen2), const void* kval2)
-{
-    w_assert3(klen1 == klen2);
-    w_assert3(klen1 == sizeof(w_base_t::uint4_t));
-    bool ret = (* (w_base_t::uint4_t*) kval1) < (* (w_base_t::uint4_t*) kval2);
-    return ret? -1 :
-        ((* (w_base_t::uint4_t*) kval1) == (* (w_base_t::uint4_t*) kval2))? 0:
-        1;
-}
+int sort_keys_t::uint4_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1p, 
+                           uint4_t W_IFDEBUG3(klen2), const void* kval2p)
+TEMPLATE_CMP(w_base_t::uint4_t)
+
 //
 // Comparison function for 4-byte integers
 //
-int sort_keys_t::int4_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1,
-                          uint4_t W_IFDEBUG3(klen2), const void* kval2)
-{
-    w_assert3(klen1 == klen2);
-    w_assert3(klen1 == sizeof(w_base_t::int4_t));
-    // a - b can overflow: use comparison instead
-    // return (* (w_base_t::int4_t*) kval1) - (* (w_base_t::int4_t*) kval2);
+int sort_keys_t::int4_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1p,
+                          uint4_t W_IFDEBUG3(klen2), const void* kval2p)
+TEMPLATE_CMP(w_base_t::int4_t)
 
-    bool ret =  (* (w_base_t::int4_t*) kval1) < (* (w_base_t::int4_t*) kval2);
-    return ret? -1 : 
-    ((* (w_base_t::int4_t*) kval1) == (* (w_base_t::int4_t*) kval2) )? 0 : 1;
-}
 //
 // Comparison function for 2-byte unsigned integers
 //
-int sort_keys_t::uint2_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1,
-                           uint4_t W_IFDEBUG3(klen2), const void* kval2)
-{
-    w_assert3(klen1 == klen2);
-    w_assert3(klen1 == sizeof(w_base_t::uint2_t));
-    return (* (w_base_t::uint2_t*) kval1) - (* (w_base_t::uint2_t*) kval2);
-}
+int sort_keys_t::uint2_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1p,
+                           uint4_t W_IFDEBUG3(klen2), const void* kval2p)
+TEMPLATE_CMP(w_base_t::uint2_t)
 
 //
 // Comparison function for 2-byte integers
 //
-int sort_keys_t::int2_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1,
-                          uint4_t W_IFDEBUG3(klen2), const void* kval2)
-{
-    w_assert3(klen1 == klen2);
-    w_assert3(klen1 == sizeof(w_base_t::int2_t));
-    return (* (w_base_t::int2_t*) kval1) - (* (w_base_t::int2_t*) kval2);
-}
+int sort_keys_t::int2_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1p,
+                          uint4_t W_IFDEBUG3(klen2), const void* kval2p)
+TEMPLATE_CMP(w_base_t::int2_t)
 
 //
 // Comparison function for 1-byte unsigned integers and characters.
@@ -5854,68 +6144,24 @@ int sort_keys_t::int2_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1,
 // native char comparison on some machines is unsigned, some signed,
 // and we want predictable results here.
 //
-int sort_keys_t::uint1_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1,
-                           uint4_t W_IFDEBUG3(klen2), const void* kval2)
-{
-    w_assert3(klen1 == klen2);
-    w_assert3(klen1 == sizeof(w_base_t::uint1_t));
-    return (* (w_base_t::uint1_t*) kval1) - (* (w_base_t::uint1_t*) kval2);
-}
+int sort_keys_t::uint1_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1p,
+                           uint4_t W_IFDEBUG3(klen2), const void* kval2p)
+TEMPLATE_CMP(w_base_t::uint1_t)
 
-int sort_keys_t::int1_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1,
-                          uint4_t W_IFDEBUG3(klen2), const void* kval2)
-{
-    w_assert3(klen1 == klen2);
-    w_assert3(klen1 == sizeof(w_base_t::int1_t));
-    // return (* (w_base_t::int1_t*) kval1) - (* (w_base_t::int1_t*) kval2);
-    //
-    w_base_t::int1_t *k1 = (w_base_t::int1_t*) (kval1);
-    w_base_t::int1_t *k2 = (w_base_t::int1_t*) (kval2);
-    int res = *k1 - *k2;
-    res =  (res < 0) ? -1 : (res == 0) ? 0: 1;
-    DBG(<<"int1_cmp " << int(*k1) << " " << int(*k2) << " res " << res);
-    return res;
-}
+int sort_keys_t::int1_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1p,
+                          uint4_t W_IFDEBUG3(klen2), const void* kval2p)
+TEMPLATE_CMP(w_base_t::int1_t)
 
 //
 // Comparison function for floats
 //
-int sort_keys_t::f4_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1,
-                        uint4_t W_IFDEBUG3(klen2), const void* kval2)
-{
-    w_assert3(klen1 == klen2);
-    w_assert3(klen1 == sizeof(w_base_t::f4_t));
-    // w_base_t::f4_t tmp = (* (w_base_t::f4_t*) kval1) - (* (w_base_t::f4_t*) kval2);
-    // a - b can overflow: use comparison instead
-    bool res = (* (w_base_t::f4_t*) kval1) < (* (w_base_t::f4_t*) kval2);
-    return res ? -1 : (
-        ((* (w_base_t::f4_t*) kval1) == (* (w_base_t::f4_t*) kval2))
-        ) ? 0 : 1;
-}
+int sort_keys_t::f4_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1p,
+                        uint4_t W_IFDEBUG3(klen2), const void* kval2p)
+TEMPLATE_CMP(w_base_t::f4_t)
 
-int sort_keys_t::f8_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1,
-                        uint4_t W_IFDEBUG3(klen2), const void* kval2)
-{
-    w_assert3(klen1 == klen2);
-    w_assert3(klen1 == sizeof(w_base_t::f8_t));
-
-#ifdef STRICT_F8_ALIGNMENT
-    w_base_t::f8_t d1;
-    w_base_t::f8_t d2;
-    memcpy(&d1, kval1, sizeof(w_base_t::f8_t));
-    memcpy(&d2, kval2, sizeof(w_base_t::f8_t));
-    ADD_TSTAT_SORT(sort_memcpy_cnt, 2);
-    ADD_TSTAT_SORT(sort_memcpy_bytes, 2*sizeof(w_base_t::f8_t));
-#else
-    w_assert3(((ptrdiff_t)kval1 & ALIGN_MASK_F8) == 0);
-    w_assert3(((ptrdiff_t)kval2 & ALIGN_MASK_F8) == 0);
-    const w_base_t::f8_t &d1 = *(const w_base_t::f8_t *) kval1;
-    const w_base_t::f8_t &d2 = *(const w_base_t::f8_t *) kval2;
-#endif
-
-    bool ret =  d1 < d2;
-    return ret ? -1 : (d1 == d2) ? 0 : 1;
-}
+int sort_keys_t::f8_cmp(uint4_t W_IFDEBUG3(klen1), const void* kval1p,
+                        uint4_t W_IFDEBUG3(klen2), const void* kval2p)
+TEMPLATE_CMP(w_base_t::f8_t)
 
 /*
  * Default lexify functions - get the help of SortOrder
@@ -6012,10 +6258,11 @@ sort_keys_t::generic_CSKF(
             W_DO((*lex)(out->ptr(0), c->length, buf));
         } else {
             // not all accessible - copy out
-            void *tmp = (void *)new char[c->length];
+            char *tmp = new char[c->length];
             if(!tmp) {
-                    return RC(smlevel_0::eOUTOFMEMORY);
+                return RC(smlevel_0::eOUTOFMEMORY);
             }
+            w_auto_delete_array_t<char> dummy(tmp);
             vec_t v(tmp, c->length);
             W_DO(out->copy_out(v));
             W_DO((*lex)(tmp, c->length, buf));
@@ -6101,7 +6348,7 @@ sort_keys_t::noMOF (
         key_cookie_t        ,  // type info
         object_t*
 )
-{ w_assert3(0); return RCOK; }
+{ w_assert2(0); return RCOK; }
 
 w_rc_t 
 sort_keys_t::noUMOF (
@@ -6285,7 +6532,7 @@ object_t::copy_out(
             // of the offset of interest
 
             w_assert3(pageoffset < pinned_length);
-            DBG(<<"in body(large) pageoffset=" << pageoffset 
+            DBGTHRD(<<"in body(large) pageoffset=" << pageoffset 
                     << " pinned length=" << pinned_length);
 
             lgdata_p lgpage;
@@ -6303,7 +6550,7 @@ object_t::copy_out(
                         ? left : 
                         pinned_length - pageoffset;
 
-                DBG(<<"copy_out " << pageoffset 
+                DBGTHRD(<<"copy_out " << pageoffset 
                         << " offset, " << thispart << " bytes ");
 
                 body = (char *)lgpage.tuple_addr(0);
@@ -6321,13 +6568,13 @@ object_t::copy_out(
                     w_assert3(offset < _rec->body_size()); // because left>0
                     smsize_t junk = smsize_t(lgdata_p::data_sz);
                     pinned_length = MIN( junk, (_rec->body_size()-offset));
-                    DBG(<<"copy_out: offset " << offset );
-                    lpid_t pid;
-                    pid = _rec->pid_containing(offset, pageoffset, *_fp);
-                    DBG(<<"Pinning large page " << pid
+                    DBGTHRD(<<"copy_out: offset " << offset );
+                    lpid_t lgpage_pid;
+                    lgpage_pid = _rec->pid_containing(offset, pageoffset, *_fp);
+                    DBGTHRD(<<"Pinning large page " << lgpage_pid
                         << " for object offset " << offset
                         << " at page offset " << pageoffset);
-                    W_DO(lgpage.fix(pid, LATCH_SH));
+                    W_DO(lgpage.fix(lgpage_pid, LATCH_SH));
                     INC_STAT_SORT(sort_lg_page_fixes);
                     pageoffset = offset - pageoffset;
                     w_assert3(pageoffset == 0);
@@ -6414,14 +6661,14 @@ skey_t::contig_length() const
         } else {
             ol = _obj->contig_body_size();
         }
-        w_assert3((_offset + _length <= ol) || ol==0);
+        // w_assert3((_offset + _length <= ol) || ol==0);
         if(ol >= _offset + _length) {
             // small object
             return _length;
         } else {
-            // large object
-            w_assert3(ol==0); 
-            return ol;
+            // not all of the key is on this page so it must
+            // be a large object, or else it's an error.
+            return ol - _offset;
         }
     }
     return _length;

@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='PROLOGUE_H'>
 
- $Id: prologue.h,v 1.49 2010/06/08 22:28:55 nhall Exp $
+ $Id: prologue.h,v 1.56 2010/12/08 17:37:43 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -76,26 +76,27 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #define SM_PROLOGUE_RC(func_name, is_in_xct, constrnt, pin_cnt_change)         \
     FUNC(func_name);                                                           \
     prologue_rc_t prologue(prologue_rc_t::is_in_xct,                           \
-                           prologue_rc_t::constrnt, (pin_cnt_change));        \
+                           prologue_rc_t::constrnt, (pin_cnt_change));         \
     if (prologue.error_occurred()) return prologue.rc();
 
 // NOTE : these next two make sense only for scan iterators; the 
 // _error_occurred are local to the scan_i.
 // INIT_SCAN_PROLOGUE_RC is for the constructors
+// NOTE: 2nd arg readwrite has to be fully specified by caller
+// so that it can be conditional  (see scan.cpp)
 #define INIT_SCAN_PROLOGUE_RC(func_name, readwrite, pin_cnt_change)            \
     FUNC(func_name);                                                           \
-    prologue_rc_t prologue(prologue_rc_t::in_xct, readwrite,                   \
-                                                            (pin_cnt_change)); \
+    prologue_rc_t prologue(prologue_rc_t::in_xct,                              \
+            readwrite, (pin_cnt_change));                                      \
     if (prologue.error_occurred()) {                                           \
         _error_occurred = prologue.rc();                                       \
-        return;                                                                \
     }
 
 // SCAN_METHOD_PROLOGUE_RC is for the methods, which return an rc 
 #define SCAN_METHOD_PROLOGUE(func_name, constraint, pin_cnt_change)            \
     FUNC(func_name);                                                           \
-    prologue_rc_t prologue(prologue_rc_t::in_xct, prologue_rc_t::constraint,   \
-                                                            (pin_cnt_change)); \
+    prologue_rc_t prologue(prologue_rc_t::in_xct,                              \
+            prologue_rc_t::constraint,   (pin_cnt_change));                    \
     if (prologue.error_occurred()) {                                           \
         _error_occurred = prologue.rc();                                       \
          return w_rc_t(_error_occurred);                                       \
@@ -122,7 +123,9 @@ public:
                         // and so if in xct, must be a single-threaded xct
     };
  
-    prologue_rc_t(xct_state_t is_in_xct, xct_constraint_t, int pin_cnt_change);
+    prologue_rc_t(xct_state_t is_in_xct, 
+                 xct_constraint_t, 
+                 int pin_cnt_change);
     ~prologue_rc_t();
     void no_longer_in_xct();
     bool error_occurred() const {return _rc.is_error();}
@@ -156,16 +159,8 @@ prologue_rc_t::prologue_rc_t(
             _pin_cnt_change(pin_cnt_change),
             _toggle(0), _victim(0)
 {
-    w_assert2(!me()->is_in_sm());
-
+    w_assert1(!me()->is_in_sm()); // avoid nesting prologues
     _the_xct = xct();
-
-    if(_the_xct) {
-        // We should never already hold the mutex upon entering
-        // the storage manager. This could catch some error
-        // in the handling of aborting by callback...
-        w_assert0(! _the_xct->is_1thread_log_mutex_mine());
-    }
 
     bool        check_log = true;
     bool        check_1thread = false;
@@ -258,6 +253,18 @@ prologue_rc_t::prologue_rc_t(
         return;
     }
 
+    // Make sure we don't have multiple update threads attached.
+    // Also, Make note that this is an update thread.
+    if(_the_xct && (_constraint == read_write))  {
+        int num = _the_xct->attach_update_thread(); 
+        if(num > 1) {
+            _rc =  RC(smlevel_0::eTWOUTHREAD);
+            return; //return this error
+        }
+        check_1thread = false;
+    }
+    else check_log = false;
+
     if(check_1thread) 
     {
         _rc = _the_xct->check_one_thread_attached();
@@ -267,19 +274,13 @@ prologue_rc_t::prologue_rc_t(
         }
     }
 
-    // Now make sure we don't have multiple threads attached if
-    // this is an update-method. 
-    if(_the_xct && (_constraint == read_write))  {
-        _the_xct->attach_update_thread(); 
-    }
-    else check_log = false;
 
     if(check_log && !smlevel_0::in_recovery() ) 
     {
         _rc = xct_log_warn_check_t::check(_victim);
-        if(_rc.is_error())  {
-            // TODO What?
-        }
+        // if(_rc.is_error())  {
+            // Caller will check this and return the error.
+        // }
     }
 }
 
@@ -300,10 +301,11 @@ prologue_rc_t::~prologue_rc_t()
     if(_victim) {
         sm_stats_info_t * stats = _victim->is_instrumented() ? 
                 _victim->steal_stats() : 0;
+        // should always be able to abort.
         W_COERCE(_victim->abort());
         INC_TSTAT(log_warn_abort_cnt);
         // delete _victim;
-		xct_t::destroy_xct(_victim);
+        xct_t::destroy_xct(_victim);
         delete stats; 
         _victim = 0;
     }

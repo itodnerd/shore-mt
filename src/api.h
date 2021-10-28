@@ -1,7 +1,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
-/*<std-header orig-src='shore' incl-file-exclusion='STHREAD_H'>
+/*<std-header orig-src='shore' incl-file-exclusion='API_H'>
 
- $Id: api.h,v 1.3 2010/06/15 17:30:20 nhall Exp $
+ $Id: api.h,v 1.9 2012/01/02 17:02:07 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -38,33 +38,182 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  */
 
 /**\defgroup SSMAPI SHORE Storage Manager Application Programming Interface (SSM API)
+ *\section SSMINTRO Introduction
  *
- * Most of the SHORE Storage Manager functionality is presented in 
- * two C++ classes, ss_m and smthread_t.
- * The ss_m is the storage manager, an instance of which must be 
+ * Most of the SHORE Storage Manager functionality is presented to the
+ * user (server-writer) in two C++ classes, ss_m and smthread_t.
+ * The ss_m is the SHORE storage manager, a single instance of which must be 
  * constructed before any storage manager methods may be used.
- * The construction of the single instance performs recovery.
+ * There cannot be more than one ss_m instance extant.  
+ * The construction of the single instance performs recovery.  Deletion
+ * of the single instance shuts down the storage manager.
  *
- * All storage manager methods must be called in the context of a
- * storage manager thread, smthread_t.  This means they must be called
+ * The storage manager stores state information in per-thread variables; for
+ * this reason, storage manager methods must be called in the context
+ * of a storage manager thread, smthread_t.
+ * This means they must be called
  * (directly or indirectly) by the run() method of a class derived from
- * smthread_t.
- * See: smthread_t, \ref SSMINIT.
+ * smthread_t.   As a result, you must write a class to encapsulate
+ * your server functionality, and that class must derive from smthread_t, as
+ * described in the following pseudo-code:
  *
- * The storage manager is paramaterized with options and their associated
- * values, some of which have defaults and others of which must be given
- * values by the server. An options-processing package is provided for this
- * purpose.
+ * \verbatim
+main()
+{
+    // Marshall all the resources needed to get going:
+    // "Open" the sources of work for your server, such as
+    // listening on a network socket, or opening an input
+    // file for reading.
+    //
+    // Start up a storage manager:
+    your_server_thread_t *server = new your_server_thread_t(...);
+    // let the server thread do its thing
+    server->fork();
+    // wait until it's done
+    server->join();
+    // clean up
+    delete server;
+    // un-marshall resources (close files, clean up, etc)
+}
+
+// This class creates and destroys a storage manager,
+// and forks the worker threads that use the storage manager.
+class \em your_server_thread_t : public smthread_t 
+{
+    your_server_thread_t ( ...sources... ) ;
+    ~your_server_thread_t () ;
+    void run(); // this is virtual in smthread_t
+};
+
+// This class performs work given to it by a source.
+// It uses the given storage manager instance to perform that work.
+
+class \em your_worker_thread_t : public smthread_t 
+{
+    your_worker_thread_t (ss_m *ssm, ...source... ) ;
+    ~your_worker_thread_t () ;
+    void run(); // this waits for work from its assigned source
+    // (e.g., from terminal input or from a network connection), and
+    // performs the necessary work
+};
+
+void your_server_thread_t::run() 
+{
+     // marshal resources neeeded for storage manager work
+     // including run-time options (see discussion below).
+     ss_m *ssm = new ss_m(...);
+
+     // Fork off some number of threads 
+     // worker threads that use the instance ssm.
+     // Either pass ssm to these threads' constructors or
+     // make ssm global.
+     for(int i = 0; i < num_threads; i++) {
+         workers[i] = new your_worker_t(ssm, ... source ... );
+     }
+
+     // smthreads' run() method is not called until thread is forked.
+     for(int i = 0; i < NUM_THREADS; i++) {
+         workers[i]->fork();
+     }
+
+     // Await and join worker threads. Join() returns when thread's
+     // run() method returns.
+     for(int i = 0; i < NUM_THREADS; i++) {
+         workers[i]->join();
+     }
+     for(int i = 0; i < NUM_THREADS; i++) {
+         delete workers[i];
+     }
+
+     delete ssm;
+     // un-marshal (clean up) resources neeeded for storage manager work
+} // a join() on this thread now returns.
+
+ * \endverbatim
+ *
+ * The storage manager relies heavily on certain programming idioms 
+ * to make sure return values from all methods are checked.
+ * The idioms are encapsulated in preprocessor macros.
+ * As a user of the storage manager, you
+ * strongly encouraged to use these idioms. 
+ * Although the use of the macros is optional,
+ * perusal of the storage manager source code and examples 
+ * will be easier if you are aware of them. 
+ * They are described in \ref IDIOMS, \ref MACROS, and \ref w_rc.h. Before you
+ * spend much time looking at examples, it would be worthwhile to look at the
+ * macro definitions in \ref w_rc.h. 
+ *
+ * The storage manager is parameterized with options and their associated values.
+ * The options determine such things as the size of the buffer pool
+ * and lock table,
+ * the location of the log,
+ * lock granularity, 
+ * certain caching behavior.
+ * Most of these have default values, but some  options 
+ * (such as a path name indicating the location of the log)
+ * do not have a default value and must be given values at run time.
+ *
+ * An options-processing package is provided for this
+ * purpose.  It handles the parsing of option names and values, which
+ * may be given on the command line, or in a file or input stream.
+ * Because certain options \e must be given a value at run-time, 
+ * the use of this package is \e not optional: every server must at
+ * least create a minimal set of options and give them values.
+ * In the above pseudo-code, invoking the run-time options package would
+ * be inserted in 
+ * \code your_server_thread_t::run() \endcode
+ * or in 
+ * \code main(). \endcode
+ *
+ * The storage manager release comes with small examples illustrating 
+ * how the options are to be used.
  *
  * See
  *   - \ref SSMOPT for an inventory of the storage manager's options, 
  *   - \ref OPTIONS for a discussion of code to initialize the options, 
- *   - \ref SSMINIT for a discussion of how to initialize and start up
+ *   - \ref SSMINIT and \ref smthread_t for discussion of how to initialize and start up
  *   a storage manager,
  *   - \ref startstop.cpp for an example of the minimal required use of
  *   options in a server, and
- *   - the example consisting of \ref create_rec.cpp and \ref init_config_options.cpp for a more complete example
+ *   - the example consisting of \ref create_rec.cpp and \ref init_config_options.cpp for a more complete example.
  *
+ * With few exceptions, the storage manager does work on behalf of a 
+ * \e transaction and the storage manager acquires locks for that transaction,
+ * e.g., to read a record, the storage manager acquires read locks and to update a record it
+ * acquires write locks.  
+ * Rather than expect the transaction of interest to be given as an argument to every storage manager method, the storage manager
+ * assumes an \e attachment between a storage manager thread and a transaction.
+ * The attachment is not fixed and permanent; rather,
+ * a worker thread can choose which transaction it is serving,
+ * and can set aside transaction A and proceed to serve transaction B, while another
+ * thread can pick up transaction B and do work on its behalf.
+ * A thread cannot serve more than one transaction at any time, and, except under
+ * limited circumstances,
+ * a transaction cannot be served by more than one thread at a time.
+ * Through the API, a storage manager thread can :
+ * - start a new transaction (implictly attaching the transaction to the thread)
+ * - detach the attached transaction 
+ * - attach an arbitrary transaction 
+ * - perform work on behalf of the attached transaction
+ * - prepare the attached transaction
+ * - commit or abort the attached transaction (implicitly detaching it)
+ *
+ * See \ref SSMXCT for details.
+ *
+ * Persistent data are contained in a variety of storage structures (files of records, indexes, etc.).
+ * All data structures reside in volumes, which are \e mounted.
+ * Identifiers for data on the volume contain that volume number. The act of mounting a volume
+ * creates the association of the volume number with the path name of a Unix file.
+ * OK, that's a lie. The original design of SHORE called for multiple volumes per Unix file,
+ * and so the file was associated with a \e device, and volumes were contained in a device.
+ * SHORE never supported multiple volumes on a device, but the device-volume distinction remains.
+ * Thus, a server mounts (and formats, if necessary) a device, which is identified by a path name.
+ * Then the server creates a volume (numbered), which resides on the device.
+ *
+ * See \ref SSMSTG for details about storage structures, and see \ref IDS for a description of the
+ * identifiers used for storage structures and transactions. 
+ *
+ * Please refer to the list of modules at the bottom of this page for more information.
  */
 
 /**\defgroup IDIOMS Programming Idioms
@@ -73,6 +222,13 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 /**\defgroup MACROS Significant C Preprocessor Macros 
  * \ingroup SSMAPI
+ *
+ * See the "Defines" sections in the files listed below to see
+ * significant macros used in the storage manager source code.
+ * (This is not a complete list.)
+ * 
+ * The macros that are useful for value-added-server code are
+ * those found in \ref w_rc.h.
  */
 
 /**\defgroup IDS Identifiers
@@ -102,7 +258,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  * Storage manager functions must be called in the context of
  * a run() method of an smthread_t. 
  *
- * See \ref SSMVAS for an example of how this is done.
+ * See \ref create_rec.cpp for an example of how this is done.
  *
  * See also \ref SSMLOGSPACEHANDLING and \ref LOGSPACE for discussions 
  * relating to the constructor and its arguments.
@@ -121,6 +277,8 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  * space.
  * When it detects a potential problem, it can issue a callback to the
  * server, which can then deal with the situation as it sees fit.
+ * The use of such a callback mechanism is entirely optional.
+ *
  * The steps that are necessary are:
  * - The server constructs the storage manager ( ss_m::ss_m() ) with two callback function
  *   pointers,
@@ -392,6 +550,30 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 /**\defgroup MISC Miscellaneous
  * \ingroup SSMAPI
  */
+/**\defgroup HEAPMGMT Memory Management
+ * \ingroup MISC
+ * The storage manager generally uses the malloc-library heap management,
+ * whose implementation is determined by the library chosen at link-time.
+ * Exceptions are made for certain classes whose memory is provided by 
+ * per-thread, per-class heaps.  
+ *
+ * Classes using TLS heaps include:
+ *
+ * - xct_t : DECLARE_TLS(block_alloc<xct_t>, xct_pool);
+ * - xct_t::xct_core : 
+ *    DECLARE_TLS(block_alloc<xct_t::xct_core>, core_pool);
+ * - logrec_t : 
+ *   DECLARE_TLS(block_alloc<logrec_t>, logrec_pool);
+ * - lock_head_t : 
+ *   DECLARE_TLS(block_alloc<lock_head_t>, lockHeadPool);
+ * - lock_request_t : 
+ * typedef object_cache<lock_request_t, object_cache_initializing_factory<lock_request_t> > lock_request_cache_t;
+ * DECLARE_TLS(lock_request_cache_t, lock_request_pool);
+ *
+ * - w_error_t : DECLARE_TLS_SCHWARZ(w_error_alloc);
+ *
+ */ 
+`
 /**\defgroup SSMSYNC Synchronization, Mutual Exclusion, Deadlocks
  * \ingroup MISC
  *
@@ -429,13 +611,10 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
  * B pinned and waits for a pin of A.
  */
 
-/**\defgroup SSMAPIDEBUG Debugging the Storage Manager
- * \ingroup SSMDEBUG
- *
- * The storage manager contains a few methods that are useful for
- * debugging purposes. Some of these should be used for not other
- * purpose, as they are not thread-safe, or might be very expensive.
+/**\defgroup SSMAPIDEBUG Storage Manager API Methods for Debugging
+ * \ingroup SSMAPI
  */
+
 /**\defgroup TLS Thread-Local Variables
  * \ingroup MISC
  */
@@ -445,8 +624,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 
 /**\defgroup OPT Configuring and Building the Storage Manager
- * \to any other build options from shore.def or elsewhere? (api.h)
- *
  */
 
 /**\defgroup IMPLGRP Implementation Notes

@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: lgrec.cpp,v 1.75 2010/06/08 22:28:55 nhall Exp $
+ $Id: lgrec.cpp,v 1.78 2010/10/27 17:04:23 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -180,7 +180,7 @@ lg_tag_chunks_h::truncate(uint4_t num_pages)
           // scope as the int i in the next for loop
         for (smsize_t i = first_dealloc; i <= last_dealloc; i++) {
             DBG(<<"freeing page " << pid(i));
-            W_DO(smlevel_0::io->free_page(pid(i), false/*checkstore*/));
+            W_DO(smlevel_0::io->free_page(pid(i)));
 #if W_DEBUG_LEVEL > 2
             check_dealloc++;
 #endif 
@@ -329,10 +329,10 @@ lg_tag_indirect_h::append(uint4_t num_pages, const lpid_t new_pages[])
     if (pages_on_new) {
         lpid_t new_pid;
         W_DO(_add_new_indirect(new_pid));
-        lgindex_p last_index;
-        W_DO( last_index.fix(new_pid, LATCH_EX) );
-        w_assert1(last_index.is_fixed());
-        W_DO(last_index.append(pages_on_new, page_list+pages_on_last));
+        lgindex_p last_index2;
+        W_DO( last_index2.fix(new_pid, LATCH_EX) );
+        w_assert1(last_index2.is_fixed());
+        W_DO(last_index2.append(pages_on_new, page_list+pages_on_last));
     }
 
     return RCOK;
@@ -352,7 +352,7 @@ lg_tag_indirect_h::truncate(uint4_t num_pages)
     recflags_t  rec_type = indirect_type(_page_cnt);
 
     for (i = first_dealloc; i <= last_dealloc; i++) {
-        W_DO(smlevel_0::io->free_page(pid(i), false/*checkstore*/));
+        W_DO(smlevel_0::io->free_page(pid(i)));
     }
 
     int indirect_rm_count = 0;          // # indirect pages to remove
@@ -382,11 +382,11 @@ lg_tag_indirect_h::truncate(uint4_t num_pages)
         // first deallocate the indirect pages
         w_assert9(root.pid_count() ==
                 _page_cnt/lgindex_p::max_pids + 1);
-        int  first_dealloc = root.pid_count()-indirect_rm_count;
-        int  last_dealloc = root.pid_count()-1;
+        first_dealloc = root.pid_count()-indirect_rm_count;
+        last_dealloc = root.pid_count()-1;
         for (i = first_dealloc; i <= last_dealloc; i++) {
             lpid_t pid_to_free(stid(), root.pids(i));
-            W_DO(smlevel_0::io->free_page(pid_to_free, false/*checkstore*/));
+            W_DO(smlevel_0::io->free_page(pid_to_free));
         }
 
         // if will be only one indirect page left, then remember
@@ -414,7 +414,7 @@ lg_tag_indirect_h::truncate(uint4_t num_pages)
                 _iref.indirect_root = 0;
             }
             root.unfix();
-            W_DO(smlevel_0::io->free_page(root_pid, false/*checkstore*/));
+            W_DO(smlevel_0::io->free_page(root_pid));
         }
     }
 
@@ -438,7 +438,7 @@ lg_tag_indirect_h::truncate(uint4_t num_pages)
         // (assuming it is not 0 meaning it has already been removed)
         if (_iref.indirect_root != 0) {
             lpid_t root_pid(stid(), _iref.indirect_root);
-            W_DO(smlevel_0::io->free_page(root_pid, false/*checkstore*/));
+            W_DO(smlevel_0::io->free_page(root_pid));
             _iref.indirect_root = 0;  // mark that there is no root
         }
     }

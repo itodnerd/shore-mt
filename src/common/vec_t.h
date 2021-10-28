@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='VEC_T_H'>
 
- $Id: vec_t.h,v 1.65 2010/05/26 01:20:12 nhall Exp $
+ $Id: vec_t.h,v 1.68 2012/01/02 17:02:10 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -65,7 +65,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #pragma interface
 #endif
 
-#define CADDR_T const unsigned char *
+typedef const unsigned char * CADDR_T;
 #define MAX_SMALL_VEC_SIZE 8
 
 /*
@@ -96,14 +96,16 @@ struct VEC_t {
  */
 class cvec_t : protected VEC_t {
     friend class vec_t; // so vec_t can look at VEC_t
-    friend class key_ranges_map; // to reach pair
-    friend class data_access_histogram;
-    
 protected:
     static        CADDR_T  zero_location; // see zvec_t, which is supposed
                                     // to be for the server-side only
-public:
+private:
+    typedef w_base_t::uint8_t u64;
+    typedef w_base_t::uint4_t u32;
+
     enum dummy_enumid { max_small = MAX_SMALL_VEC_SIZE };
+    void _calc_kvl(uint4_t seed, uint4_t& h) const;
+    static u32 convert64_32 (u64 num);
 public:
     cvec_t() {
         _cnt = 0;
@@ -180,6 +182,7 @@ public:
 
     int  checksum() const;
     void calc_kvl(uint4_t& h) const;
+    void calc_kvl2(uint4_t& h) const;
     void init()         { _cnt = _size = 0; }  // re-initialize the vector
     // Creator of the vec has responsibility for delete[]ing anything that
     // was dynamically allocated in the array.  These are convenience methods
@@ -272,6 +275,10 @@ public:
     /// Construct a vector from a memory location + offset and a length.
     vec_t(const vec_t& v, size_t offset, size_t limit)
         : cvec_t(v, offset, limit)        {};
+    // shallow copy
+    vec_t(const vec_t&v) : cvec_t()  {
+        reset().put(v);
+    }
 
 
     /**\brief Overwrites the data area to which the vector points.
@@ -325,13 +332,6 @@ public:
     /// A constant vector representing negative infinity. Used for key-value pairs, scans.
     static vec_t& neg_inf;
 
- private:
-    // disabled
-    vec_t(const vec_t&) : cvec_t()  {
-      cerr << "vec_t: disabled member called" << endl;
-      cerr << "failed at \"" << __FILE__ << ":" << __LINE__ << "\"" << endl;
-      W_FATAL (fcINTERNAL);
-    }
  private:
     // disabled
     vec_t& operator=(vec_t);
@@ -390,26 +390,6 @@ private:
     zvec_t(const cvec_t& v1, const cvec_t& v2);/* {} */
     zvec_t(const void* p, size_t l); // {}
     zvec_t(const vec_t& v, size_t offset, size_t limit); // {}
-};
-
-/**\brief Helper struct for create_mr_assoc.
- * \ingroup SSMBTREE
- *
- */
-class lpid_t;
-
-struct el_filler {
-    size_t _el_size; // the size of the element
-    vec_t _el; // to give the element if it's already determined (for the 1st design)
-    
-    /* to be used as a callback function during btree insert (for the 2nd and 3rd designs)
-     * @param[out] el  the element, contents to be determined after leaf page is found
-     * @param[in] leaf  leaf page that the insertion will take place for the el  
-     */
-    virtual w_rc_t fill_el(vec_t& /* el */, const lpid_t& /* leaf */) { return RCOK; }
-	 
-    // destructor
-    virtual ~el_filler() {}
 };
 
 /*<std-footer incl-file-exclusion='VEC_T_H'>  -- do not edit anything below this line -- */

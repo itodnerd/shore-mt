@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: list2.cpp,v 1.24.2.5 2010/03/19 22:17:53 nhall Exp $
+ $Id: list2.cpp,v 1.27 2010/12/08 17:37:38 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -122,12 +122,6 @@ int main()
 
     return 0;
 }
-
-#ifdef __BORLANDC__
-#pragma option -Jgd
-#include <w_list.cpp>
-typedef w_list_t<elem2_t, unsafe_list_dummy_lock_t> w_list_t_elem2_t_dummy;
-#endif /*__BORLANDC__*/
 
 #ifdef EXPLICIT_TEMPLATE
 template class w_list_t<elem2_t, unsafe_list_dummy_lock_t>;

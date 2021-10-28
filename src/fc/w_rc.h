@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='W_RC_H'>
 
- $Id: w_rc.h,v 1.67 2010/06/15 17:24:25 nhall Exp $
+ $Id: w_rc.h,v 1.74 2011/09/08 18:10:55 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -61,47 +61,88 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #pragma interface
 #endif
 
-
 #include "w_error.h"
+
 
 /**\file w_rc.h
  *\ingroup MACROS
  */
 
-/**\addtogroup MACROS 
- *
- * Not all macros are included here.
- * 
- */
 
 /**\addtogroup IDIOMS 
  * \details
  *
- * The storage manager is written with programming idioms that make sure 
- * all return codes are checked, and users of the storage manager are
+ * The storage manager is written with programming idioms to make sure 
+ * all return codes are checked, and as a user of the storage manager, you
  * strongly encouraged to use these idioms.
  *
+ * It is especially important that you understand the storage manager's
+ * \e return \e code type, \ref w_rc_t.
+ * Most of the storage manager methods return this type.  The return code
+ * type is a dynamically-allocated class instance (except when RCOK, the
+ * default, non-error code, is returned: this is a static constant).
+ * Because it is heap-allocated, when the compiler generates code for its 
+ * destruction, certain programming errors are nastier
+ * than in the case of returning an atomic type (e.g., int).  For example,
+ * if you write a function with a w_rc_t return type and neglect to give
+ * it a return value, your program will probably fail catastrophically.
+ * (You can avoid this problem by compiling with compiler warnings enabled.)
  *
- * The macros support writing and reading of methods and functions that
- * return an w_rc_t (return code), which are defined in w_rc.h.  Return
- * codes are described in some detail \ref ERRNUM.  There you may also
- * see how to create your own return codes for server modules.
+ * The return code from a storage manager method should \e always be checked:
+ * \code
+ w_rc_t func(...)
+ {
+     ...
+     w_rc_t rc = ss_m::create_file(...);
+     if(rc.is_error()) {
+        ...
+     }
+     return RCOK;
+ }
+ \endcode
+ * The act of calling \code rc.is_error() \endcode flags the return code as
+ * having been checked. 
+ * The destructor for \ref w_rc_t can be made to issue an error if the
+ * return code was never checked for destruction. The message takes the
+ * form:
+ * \code
+ Error not checked: rc=1. error in j_create_rec.cpp:176 Timed out waiting for resource [0x40000]
+ * \endcode
+ *
+ * (When a return code is sent to an output stream, it prints a 
+ * stack trace. The above message contains a stack trace with one level.)
+ *
+ * The error-not-checked checking happens if 
+ * the storage manager is configured and built with 
+ * \code --enable-checkrc \endcode .
+ * By default this configuration option is off so that it is off
+ * for a "production", that is, optimized build.  When you are 
+ * debugging your code, it is a good idea to configure the storage manager
+ * with it enabled. 
+ *
+ * Several  macros defined in w_rc.h 
+ * support writing and using methods and functions that
+ * return a w_rc_t.
  * \code
  w_rc_t
- method(args...)
+ func(...)
  {
      W_DO(ss_m::create_file(...));
-	 return RCOK;
+     return RCOK;
  }
  \endcode
  *
- * The W_DO macro returns whatever the called function returns if
+ * The \ref W_DO macro returns whatever the called function returns if
  * that return code was an error code, otherwise, it falls through
  * to the code below the macro call. This is the most-often used
  * idiom.
  *
  * The RC_* macros  let you construct a return code for a return value
- * from a function.  The normal, non-error return code is RCOK.
+ * from a function.  The normal, non-error return code is \ref RCOK.
+ *
+ * Return  codes are described in some detail \ref ERRNUM.  
+ * There you may also
+ * see how to create your own return codes for server modules.
  *
  * See the examples as well as \ref MACROS in w_rc.h.
  *
@@ -291,7 +332,11 @@ private:
         verify();
         w_error_t* err = ptr();
         if((const w_error_t *)err != w_error_t::no_error)
+#if USE_BLOCK_ALLOC_FOR_W_ERROR_T
+            w_error_t::operator delete(err); // make sure the right delete is used.
+#else
             delete err;
+#endif
         _err = other;
         return reset();
     }
@@ -588,13 +633,21 @@ w_rc_t::sys_err_num() const
  * Used by \ref #W_DO(x), \ref #W_DO_MSG(x,m), \ref #W_DO_GOTO(rc,x),
  * and \ref #W_COERCE(x)
  */
+#if defined(DEBUG_DESPERATE)
+// This can be useful when you are desperate to see where
+// some sequence of event happened, as it prints the rc at each 
+// augment. 
+#define RC_AUGMENT(rc)                    \
+    (rc.add_trace_info(__FILE__, __LINE__), (cerr << rc << endl), rc)
+#else
 #define RC_AUGMENT(rc)                    \
     rc.add_trace_info(__FILE__, __LINE__)
+#endif
 
 /**\def  RC_PUSH(rc, e)
  * \brief Augment stack trace with another error code.
  *
- * Add stack trace informatin (file, line, error) to a return code.
+ * Add stack trace information (file, line, error) to a return code.
  * This is to return from a method or function upon
  * receiving an error from a method or function that it called, when
  * a what you want to return to your caller is a
@@ -623,7 +676,7 @@ do {                            \
 } while (0)
 
 /**\def  W_RETURN_RC_MSG(e, m)
- * \brief Retrun with a return code that contains the given error code and additional message.
+ * \brief Return with a return code that contains the given error code and additional message.
  */
 #define W_RETURN_RC_MSG(e, m)                \
 do {                            \
@@ -644,7 +697,7 @@ do {                            \
  */
 #define W_EDO(x)                      \
 do {                            \
-    w_rc_t::errcode_t __e(x);                    \
+    w_rc_t::errcode_t __e = (x);                    \
     if (W_EXPECT_NOT(__e)) return RC(__e);        \
 } while (0)
 
@@ -659,8 +712,8 @@ do {                            \
  */
 #define W_DO(x)                      \
 do {                            \
-    w_rc_t __e(x);                    \
-    if (W_EXPECT_NOT(__e.is_error())) return RC_AUGMENT(__e);        \
+    w_rc_t __e = (x);                    \
+    if (W_EXPECT_NOT(__e.is_error())) return RC_AUGMENT(__e); \
 } while (0)
 
 /**\def  W_DO_MSG(x)
@@ -671,7 +724,7 @@ do {                            \
  */
 #define W_DO_MSG(x, m)                    \
 do {                            \
-    w_rc_t __e(x);                    \
+    w_rc_t __e = (x);                    \
     if (W_EXPECT_NOT(__e.is_error())) {                \
         RC_AUGMENT(__e);                \
         RC_APPEND_MSG(__e, m);                \
@@ -708,35 +761,6 @@ do {                            \
     } \
 } while (0)
 
-/**\def  W_DO_PUSH(x, e)
- * \brief Call a function or method \b x, if error, push error code \b e on the stack and return.
- *
- * This macro is like \ref #W_DO(x), but it adds an error code \b e to 
- * the stack trace before returning.
- */
-#define W_DO_PUSH(x, e)                    \
-do {                            \
-    w_rc_t __e(x);                    \
-    if (W_EXPECT_NOT(__e.is_error()))  { return RC_PUSH(__e, e); }    \
-} while (0)
-
-/**\def  W_DO_PUSH_MSG(x, e, m)
- * \brief Call a function or method \b x, if error, push error code \b e on the stack and return.
- *
- * This macro is like \ref #W_DO_PUSH(x, e), but it adds an additional
- * information message \b m to
- * the stack trace before returning.
- */
-#define W_DO_PUSH_MSG(x, e, m)                \
-do {                            \
-    w_rc_t __e(x);                    \
-    if (W_EXPECT_NOT(__e.is_error()))  {                \
-        RC_PUSH(__e, e);                \
-        RC_APPEND_MSG(__e, m);                \
-    return __e;                    \
-    }                            \
-} while (0)
-
 /**\def  W_COERCE(x)
  * \brief Call a function or method \b x, fail catastrophically if error is returned.
  *
@@ -758,7 +782,7 @@ do {                            \
  */
 #define W_COERCE(x)                      \
 do {                            \
-    w_rc_t __e(x);                    \
+    w_rc_t __e = (x);                    \
     if (W_EXPECT_NOT(__e.is_error()))  {                \
     RC_AUGMENT(__e);                \
     __e.fatal();                    \
@@ -770,7 +794,7 @@ do {                            \
  */
 #define W_COERCE_MSG(x, m)                \
 do {                            \
-    w_rc_t __em(x);                    \
+    w_rc_t __em = (x);                    \
     if (W_EXPECT_NOT(__em.is_error()))  {                \
     RC_APPEND_MSG(__em, m);                \
     W_COERCE(__em);                    \

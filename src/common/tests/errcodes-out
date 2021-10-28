@@ -7,11 +7,8 @@ Foundation Classes:65540:Malloc failed : out of memory
 Foundation Classes:65541:Mmap could not map aligned memory
 Foundation Classes:65542:Item not found 
 Foundation Classes:65543:Feature is not implemented
-Foundation Classes:65544:Update operation on read-only object
-Foundation Classes:65545:Attempting to mix static and dynamic containers
-Foundation Classes:65546:Item already found
-Foundation Classes:65547:unknown error code
-Foundation Classes:65548:Assertion Failed
+Foundation Classes:65544:unknown error code
+Foundation Classes:65545:Assertion Failed
 Options Package:131072:Illegal option description line
 Options Package:131073:Illegal option class name
 Options Package:131074:Option class name too long

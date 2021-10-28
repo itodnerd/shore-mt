@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: common_tmpl.cpp,v 1.8.2.2 2009/06/23 01:01:33 nhall Exp $
+ $Id: common_tmpl.cpp,v 1.9 2010/05/26 01:20:21 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

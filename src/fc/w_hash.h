@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore' incl-file-exclusion='W_HASH_H'>
 
- $Id: w_hash.h,v 1.36 2010/06/15 17:24:25 nhall Exp $
+ $Id: w_hash.h,v 1.38 2010/10/27 17:04:22 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -64,35 +64,8 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include <w_base.h>
 #include <w_list.h>
 
-
 template <class T, class LOCK, class K> class w_hash_t;
 template <class T, class LOCK, class K> class w_hash_i;
-
-inline w_base_t::uint4_t w_hash(long l)
-{
-    return (w_base_t::uint4_t) l;
-}
-
-inline w_base_t::uint4_t w_hash(unsigned long l)
-{
-    return (w_base_t::uint4_t) l;
-}
-
-inline w_base_t::uint4_t w_hash(w_base_t::uint4_t i)  {
-    return i;
-}
-
-inline w_base_t::uint4_t w_hash(w_base_t::int4_t i)   {
-    return CAST(w_base_t::uint4_t,i);
-}
-
-inline w_base_t::uint4_t w_hash(w_base_t::uint2_t i)  {
-    return i;
-}
-
-inline w_base_t::uint4_t w_hash(w_base_t::int2_t i)   {
-    return CAST(w_base_t::int2_t, i);
-}
 
 BIND_FRIEND_OPERATOR_PART_1B(T,LOCK,K,w_hash_t<T,LOCK,K>)
 
@@ -102,20 +75,19 @@ BIND_FRIEND_OPERATOR_PART_1B(T,LOCK,K,w_hash_t<T,LOCK,K>)
  * The hash function used here is :
  * - w_hash(key) & _mask
  *
- * Thus, to make this work, you need to define a (static, global, or inlined)
- * function
- * \code
- * w_base_t::uint4_t w_hash(const K &key)
- * \endcode
+ * Thus, to make this work, your key type needs to be a class containing
+ * a public method 
+ * w_base_t::uint4_t hash() const;
+ * (This is somewhat inconvenient if you want the key to be an atomic type,
+ * but it's a lot easier to find locate the hash functions this way and
+ * we don't have to worry about any implicit construction of types by
+ * the compiler this way.)
  *
  * Note that since the hash function uses the _mask to collect the lower
- * bits of the result of w_hash, the w_hash(key) function should be sensitive
- * to the way hash-table uses of the w_hash function, and the hash tables 
+ * bits of the result of w_hash, the key.hash() function should be sensitive
+ * to the way hash-table uses it, and the hash tables 
  * should be aware of the likely bit distribution
- * of the result of w_hash(key).
- *
- * \bug (GNATS 114, non-critical performance issue) improve these hash funcs. 
- * This is used in: histograms, dirty page table for restart.
+ * of the result of key.hash().
  *
  */
 template <class T, class LOCK, class K>
@@ -314,7 +286,7 @@ w_base_t::uint4_t w_hash_t<T,LOCK, K>::bucket_for(T const* t) const {
 
 template<class T, class LOCK, class K>
 w_base_t::uint4_t w_hash_t<T,LOCK, K>::bucket_for(K const &k) const {
-    return w_hash(k) & _mask;
+    return k.hash() & _mask;
 }
 
 template <class T, class LOCK, class K>

@@ -2,29 +2,17 @@
 
 include $(top_srcdir)/Makefile.generic
 
-if HAVE_GCC_ATOMIC_BUILTINS
-OSUBDIRS =
-OSOURCES = empty.cpp
-OHEADERS = atomic_ops_builtin.h
-else
-OSUBDIRS = asm_linkage atomic_ops
-OSOURCES = atomic_ops.S
-OHEADERS = atomic_ops_impl.h
-endif
-
 EXTRA_DIST =  makelinks.sh
-SUBDIRS =  $(OSUBDIRS) 
+SUBDIRS =  asm_linkage atomic_ops
 DIST_SUBDIRS =  $(SUBDIRS)
 
 lib_LIBRARIES     = libatomic_ops.a
 
-include_HEADERS = atomic_ops.h $(OHEADERS)
+include_HEADERS = atomic_ops.h atomic_ops_impl.h
 
-libatomic_ops_a_SOURCES      = $(OSOURCES)
+libatomic_ops_a_SOURCES      = atomic_ops.S
 
 atomic_ops.o:  links
-
-emtpy.o:
 
 links: 
 	chmod +x ./makelinks.sh

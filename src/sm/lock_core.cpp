@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore'>
 
- $Id: lock_core.cpp,v 1.113 2010/06/15 17:30:07 nhall Exp $
+ $Id: lock_core.cpp,v 1.125 2012/01/02 21:52:23 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -64,7 +64,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #pragma implementation "lock_core.h"
 #endif
 
-#define USE_BLOCK_ALLOC_FOR_LOCK_STRUCTS 0
+#define USE_BLOCK_ALLOC_FOR_LOCK_STRUCTS 1
 
 #if USE_BLOCK_ALLOC_FOR_LOCK_STRUCTS 
 #include "block_alloc.h"
@@ -91,22 +91,20 @@ typedef object_cache<lock_request_t, object_cache_initializing_factory<lock_requ
 DECLARE_TLS(lock_request_cache_t, lock_request_pool);
 #endif
 
-#if USE_BLOCK_ALLOC_FOR_LOCK_STRUCTS 
-#define NEW_LOCK_REQUEST lock_request_pool->acquire
-#define DELETE_LOCK_REQUEST(req) lock_request_pool->release(req)
-#else
-#define NEW_LOCK_REQUEST (new lock_request_t())->init
-#define DELETE_LOCK_REQUEST(req) delete req
-#endif
-
-
 /*********************************************************************
  *
  *  parent_mode[i] is the lock mode of parent of i
  *        e.g. parent_mode[EX] is IX.
+ *        e.g. parent_mode[UD] is IX.
+ *        e.g. parent_mode[SIX] is IX.
+ *        e.g. parent_mode[SH] is IS.
+ *        e.g. parent_mode[IX] is IX.
+ *        e.g. parent_mode[IS] is IS.
+ *        e.g. parent_mode[NL] is NL.
  *
  *********************************************************************/
 const lock_base_t::lmode_t lock_m::parent_mode[NUM_MODES] = {
+//  NL, IS, IX, SH, SIX,UD, EX
     NL, IS, IX, IS, IX, IX, IX
 };
 
@@ -133,6 +131,7 @@ const char* const lock_base_t::mode_str[NUM_MODES] = {
  *
  *  compat[r][g] returns bool value if a requested mode r is compatible
  *        with a granted mode g.
+ *  NOTE that this is not symmetric (see SH/UD)
  *
  *********************************************************************/
 const bool lock_base_t::compat
@@ -159,14 +158,13 @@ const bool lock_base_t::compat
  *
  *********************************************************************/
 const lock_base_t::lmode_t lock_base_t::supr[NUM_MODES][NUM_MODES] = {
-         /* NL    IS    IX    SH    SIX   UD    EX */ 
-/*NL*/    { NL,   IS,   IX,   SH,   SIX,  UD,   EX },
-/*IS*/    { IS,   IS,   IX,   SH,   SIX,  UD,   EX },
-/*IX*/    { IX,   IX,   IX,   SIX,  SIX,  EX,   EX },
-/*SH*/    { SH,   SH,   SIX,  SH,   SIX,  UD,   EX },
-/*SIX*/   { SIX,  SIX,  SIX,  SIX,  SIX,  SIX,  EX },
-/*UD*/    { UD,   UD,   EX,   UD,   SIX,  UD,   EX },
-/*EX*/    { EX,   EX,   EX,   EX,   EX,   EX,   EX }
+    { NL,   IS,   IX,   SH,   SIX,  UD,   EX },
+    { IS,   IS,   IX,   SH,   SIX,  UD,   EX },
+    { IX,   IX,   IX,   SIX,  SIX,  EX,   EX },
+    { SH,   SH,   SIX,  SH,   SIX,  UD,   EX },
+    { SIX,  SIX,  SIX,  SIX,  SIX,  SIX,  EX },
+    { UD,   UD,   EX,   UD,   SIX,  UD,   EX },
+    { EX,   EX,   EX,   EX,   EX,   EX,   EX }
 };
 
 LockCoreFunc::~LockCoreFunc()
@@ -199,54 +197,16 @@ public:
     bucket_t&                     operator=(const bucket_t&);
 };
 
-#include <map>
 #include <sstream>
-#include <iostream>
-struct sli_lock_stats_t : std::map<lockid_t, int> {
-    ~sli_lock_stats_t() {
-#if 1
-	if(!empty()) {
-	    std::ostringstream out;
-	    out << "t@" << pthread_self() << ": ";
-	    for(sli_lock_stats_t::iterator it=begin(); it != end(); ++it) {
-		if(it->second < 2)
-		    continue;
-		out << it->first << "(" << it->second << ") ";
-	    }
-	    out << endl << ends;
-	    printf("%s", out.str().c_str());
-	}
-#endif
-    }
-};
-DECLARE_TLS(sli_lock_stats_t, sli_lock_stats);
-
-
 struct pretty_printer {
     ostringstream _out;
     string _tmp;
     operator ostream&() { return _out; }
     operator char const*() { _tmp = _out.str(); _out.str(""); return _tmp.c_str(); }
 };
-void xct_lock_info_t::print_sli_list() {
-    if(sli_list.is_empty()) {
-	fprintf(stderr, "<empty>\n");
-	return;
-    }
-    
-    // backwards to print oldest first
-    static pretty_printer pp;
-    request_list_i it(sli_list, true);
-    while(lock_request_t const* req = it.next()) {
-	pp << req->get_lock_head()->name << " " << *req << "\n";
-    }
-    fprintf(stderr, "%s\n", (char const*) pp);
-}
 
-char const* db_pretty_print(lock_request_t const* req, int i=0, char const* s=0) {
+char const* db_pretty_print(lock_request_t const* req, int, char const*) {
     static pretty_printer pp;
-    (void) i;
-    (void) s;
     lock_head_t* lock = req->get_lock_head();
     if(lock)
         pp << lock->name << " ";
@@ -254,18 +214,14 @@ char const* db_pretty_print(lock_request_t const* req, int i=0, char const* s=0)
     return pp;
 }
     
-char const* db_pretty_print(lockid_t const* lid, int i=0, char const* s=0) {
+char const* db_pretty_print(lockid_t const* lid, int, char const*) {
     static pretty_printer pp;
-    (void) i;
-    (void) s;
     pp << *lid;
     return pp;
 }
-char const* db_pretty_print(lock_head_t const* lock, int i=0, char const* s=0) 
+char const* db_pretty_print(lock_head_t const* lock, int, char const*) 
 {
   static pretty_printer pp;
-    (void) i;
-    (void) s;
   ostream &out = pp;
   pp << lock->name << ":" 
       << lock_base_t::mode_str[lock->granted_mode] << " queue: {";
@@ -289,9 +245,6 @@ char const* db_pretty_print(lock_head_t const* lock, int i=0, char const* s=0)
   return pp;
 }
 
-static bool global_sli_enabled = false;
-void lock_m::set_sli_enabled(bool enable) { global_sli_enabled = enable; }
-
 /*********************************************************************
  *
  *  xct_lock_info_t::xct_lock_info_t()
@@ -300,10 +253,6 @@ void lock_m::set_sli_enabled(bool enable) { global_sli_enabled = enable; }
 xct_lock_info_t::xct_lock_info_t()
 :
     _wait_request(NULL),
-    _blocking(false),
-    _sli_enabled(global_sli_enabled),
-    _sli_purged(false),
-    _sli_sdesc_cache(0),
     _lock_level(lockid_t::t_record),
     _quark_marker(0),
     _noblock(false)
@@ -311,91 +260,20 @@ xct_lock_info_t::xct_lock_info_t()
     for (int i = 0; i < t_num_durations; i++)  {
         my_req_list[i].set_offset(W_LIST_ARG(lock_request_t, xlink));
     }
-    
-    /* Overload the xlink for the sli_list as well. A request is
-       either owned by the trx or the thread, never both, so this
-       lets us avoid adding yet another member to lock_request_t.
-     */
-    sli_list.set_offset(W_LIST_ARG(lock_request_t, xlink));
 }
 
 // allows reuse rather than free/malloc of the structure
-void
-xct_lock_info_t::reset() 
+xct_lock_info_t* xct_lock_info_t::reset_for_reuse() 
 {
     _lock_cache.reset();
-
-    // nothing to do for lock_info_mutex
 
     // make sure the lock lists are empty
     for(int i=0; i < t_num_durations; i++) {
         w_assert1(my_req_list[i].is_empty());
     }
-
-    // put the sli list into the cache and then inactivate its entries    
-    request_list_i it(sli_list);
-    lock_cache_elem_t ignore_me;// don't care...
-    while(lock_request_t* req = it.next()) {
-	if(lock_head_t* lock=req->get_lock_head()) {
-	    lockid_t const &name = lock->name;
-	    req->keep_me = name.lspace() <= lockid_t::t_store;
-	    put_cache(name, req->mode(), req, ignore_me);
-	}
-	else {
-	    // clean up invalid ones
-            // WARNING: might still be invalidating
-            sli_status_t s = req->vthis()->_sli_status;
-            if (s == sli_invalidating)
-                s = req->cas_sli_status(s, sli_abandoned);
-            if (s != sli_invalidating) {
-                // didn't get away...
-                if(s != sli_invalid)
-                    fprintf(stderr, "Yikes! state is %d/%d\n", s, req->vthis()->_sli_status);
-                w_assert0(s == sli_invalid);
-                req->xlink.detach();
-                DELETE_LOCK_REQUEST(req);
-            }
-	}
-    }
-    membar_exit(); // can't let the status change precede the lock name read above!
-    long inherited = 0;
-    for(it.reset(sli_list); lock_request_t* req = it.next(); ++inherited) {
-        if (req->is_reclaimed())
-            req->_sli_status = sli_inactive;
-    }
-    ADD_TSTAT(sli_inherited, inherited);
-
-    // tid set by init()
-
-    w_assert2(!_wait_request);
-    w_assert2(!_blocking);
-
-    /* don't bother with the wait map. It should be empty already, and
-       even if it isn't, the worst that can happen is a false positive
-       deadlock.
-    */
+    new (this) xct_lock_info_t;
     
-    // _sli_enabled set by init()
-
-    _sli_purged = false;
-
-    // let the stats accumulate
-
-    // leave _sli_sdesc_cache alone
-
-    // _lock_level set by init()
-
-    w_assert2(!_quark_marker);
-    _noblock = false;
-}
-
-void
-xct_lock_info_t::init(tid_t const &t,
-		      lockid_t::name_space_t l)
-{
-    set_tid(t);
-    _sli_enabled = global_sli_enabled;
-    set_lock_level(l);
+    return this;
 }
                                                     
 
@@ -436,11 +314,6 @@ void xct_lock_info_t::set_nonblocking()
  *********************************************************************/
 xct_lock_info_t::~xct_lock_info_t()
 {
-    MUTEX_ACQUIRE(lock_info_mutex);
-    if(smlevel_0::lm)
-	smlevel_0::lm->_core->sli_purge_inactive_locks(this, true);
-    MUTEX_RELEASE(lock_info_mutex);
-
 #if W_DEBUG_LEVEL > 2
     for (int i = 0; i < t_num_durations; i++)  {
         if (! my_req_list[i].is_empty() ) {
@@ -448,41 +321,38 @@ xct_lock_info_t::~xct_lock_info_t()
         }
     }
 #endif 
-    if(_sli_sdesc_cache)
-	xct_t::delete_sdesc_cache_t(_sli_sdesc_cache);
 }
 
 
 #define DEBUG_DEADLOCK 0
+
+// fail if "other" entirely contains my wait map, indicating deadlock
 bool xct_lock_info_t::update_wait_map(atomic_thread_map_t const &other) 
 {
     w_assert2(MUTEX_IS_MINE(lock_info_mutex));
+
+    INC_TSTAT(lock_dld_upd_waitmap_cnt);
+
+    // Work on a copy until I am ready to update my map
+    // so that I'm never holding a lock on 2 maps at a time.
+    // I need these R/W locks only to see that the reads
+    // and updates don't overlap.
 
     atomic_thread_map_t _wait_map_copy;
     w_assert1(_wait_map_copy.has_reader() == false); 
     w_assert1(_wait_map_copy.has_writer() == false); 
 
+    // lock my map for reading, copy, unlock it.
     _wait_map.lock_for_read();
     w_assert1(_wait_map.has_reader() == true); 
     _wait_map_copy = _wait_map;
     _wait_map.unlock_reader();
 
-    w_assert1(_wait_map_copy.has_reader() == false); 
-    w_assert1(_wait_map_copy.has_writer() == false); 
-
-    // Work with a copy until I am ready to write it,
-    // so that I'm never holding a lock on 2 maps at a time.
-    // Since no other thread will try to update this,
-    // this is ok.
-    // I need these R/W locks only to see that the reads
-    // and updates don't overlap.
-
     if(_wait_map_copy.is_empty()) {
         // Pick up the thread's fingerprint map
+        // if we recently cleared our wait map.
         _wait_map_copy = me()->get_fingerprint_map();
     }
-    w_assert1(_wait_map_copy.has_reader() == false); 
-    w_assert1(_wait_map_copy.has_writer() == false); 
 
 #if DEBUG_DEADLOCK
     {
@@ -500,24 +370,21 @@ bool xct_lock_info_t::update_wait_map(atomic_thread_map_t const &other)
         fprintf(stderr,  "%s\n", s.c_str());
     }
 
-    // This should be a tautology:
-    w_assert1(_wait_map_copy.overlap(_wait_map_copy, _wait_map_copy));;
-    w_assert1(_wait_map_copy.has_reader() == false); 
-    w_assert1(_wait_map_copy.has_writer() == false); 
+    // This should be a tautology.
+    w_assert3(_wait_map_copy.overlap(_wait_map_copy, _wait_map_copy));;
 #endif
 
     atomic_thread_map_t new_map;
+    
+    // Lock the other map;
+    // new_map <--- _wait_map_copy + other.
+    // unlock.
+    // The return value "matches" is true if the bitmap
+    // _wait_map_copy is contained in "other".
     other.lock_for_read();
     bool matches = _wait_map_copy.overlap(new_map, other);
     other.unlock_reader();
-    w_assert1(new_map.has_reader() == false); 
-    w_assert1(new_map.has_writer() == false); 
-    w_assert1(_wait_map_copy.has_reader() == false); 
-    w_assert1(_wait_map_copy.has_writer() == false); 
-    
-    // matches is the number of words in the other that contain.
-    // If that is the same as the total # words in the map, then
-    // the entire map matches. 
+
     if( !matches)
     {
         _wait_map.lock_for_write();
@@ -531,9 +398,7 @@ bool xct_lock_info_t::update_wait_map(atomic_thread_map_t const &other)
                 << " updated to " ;
             _wait_map.print(s) << endl;
             fprintf(stderr, 
-            "%s ------ matches=%d\n", s.c_str(),
-            matches
-            );
+            "%s ------ \n", s.c_str());
         }
 #endif
         _wait_map.unlock_writer();
@@ -543,6 +408,7 @@ bool xct_lock_info_t::update_wait_map(atomic_thread_map_t const &other)
         w_assert1(new_map.has_writer() == false); 
         w_assert1(_wait_map_copy.has_reader() == false); 
         w_assert1(_wait_map_copy.has_writer() == false); 
+        // ok - no deadlock
         return true;
     }
     else
@@ -577,6 +443,7 @@ bool xct_lock_info_t::update_wait_map(atomic_thread_map_t const &other)
         w_assert1(new_map.has_writer() == false); 
         w_assert1(_wait_map_copy.has_reader() == false); 
         w_assert1(_wait_map_copy.has_writer() == false); 
+        // deadlock
         return false; 
     }
 }
@@ -815,14 +682,25 @@ operator<<(ostream &o, const xct_lock_info_t &x)
 #include "lock_s_inline.h"
 #endif 
 
-void
+// Used for unit tests.
+w_rc_t
+lockid_t::make_parent()
+{
+    int me = lspace();
+    me /= 2;
+    return truncate(name_space_t(me));
+}
+
+w_rc_t
 lockid_t::truncate(name_space_t space)
 {
     DBG(<< "truncating " << this 
     << "=" <<*this 
     << " to " << int(space));
+    // this assert no longer valid b/c lock cache tries to 
+    // truncate different combos.
     w_assert9(lspace() >= space && lspace() != t_extent && lspace() != t_kvl);
-    w_assert9((space >= t_user1 && space <= t_user4) == IsUserLock());
+    w_assert3(lspace() >= space);
 
     switch (space) {
     case t_vol:
@@ -856,10 +734,13 @@ lockid_t::truncate(name_space_t space)
         break;
 
     default:
-        W_FATAL(smlevel_0::eINTERNAL);
+        fprintf(stderr, "Truncating to %d\n", space);
+        // W_FATAL(smlevel_0::eINTERNAL);
+        return RC(smlevel_0::eNOTPARENTLOCK);
     }
     set_lspace(space);
     DBG(<<"truncated to " << *this);
+    return RCOK;
 }
 
 /*********************************************************************
@@ -878,14 +759,15 @@ lock_head_t::granted_mode_other(const lock_request_t* exclude)
 
     lock_base_t::lmode_t gmode = smlevel_0::NL;
     lock_head_t::safe_queue_iterator_t iter(*this); 
-    lock_request_t* f;
+
+    const lock_request_t* f;
     while ((f = iter.next())) {
         if (f->status() == lock_m::t_waiting) break;
+
         // f is granted -- make sure it's got a mode that really
         // should have been granted, i.e., it's compatible with all the other
         // granted modes.  UD cases aren't symmetric, so we do both checks here:
-        w_assert9(lock_m::compat[f->mode][gmode]
-		  || lock_m::compat[gmode][f->mode]);
+        w_assert9(lock_m::compat[f->mode][gmode] || lock_m::compat[gmode][f->mode]);
 
         if (f != exclude) gmode = lock_base_t::supr[f->mode()][gmode];
     }
@@ -893,23 +775,8 @@ lock_head_t::granted_mode_other(const lock_request_t* exclude)
     return gmode;
 }
 
-bool
-lock_head_t::invalidate_sli()
-{
-    // is SLI even possible?
-    if(granted_mode > lock_m::SH)
-        return false;
-    
-    lock_head_t::safe_queue_iterator_t iter(*this); 
-    bool invalidated = false;
-    while (lock_request_t* f=iter.next()) {
-	if (smlevel_0::lm->_core->sli_invalidate_request(f)) 
-            invalidated = true;
-    }
-
-    return invalidated;
-}
-
+// The assumption here is that any xct can have at most one
+// lock request for a given lock (lock_head_t) in the table.
 // does not check whether the request is reclaimed
 lock_request_t*
 lock_head_t::find_lock_request(const xct_lock_info_t* xdli)
@@ -920,18 +787,12 @@ lock_head_t::find_lock_request(const xct_lock_info_t* xdli)
     return request;
 }
 
-
-NORET
-lock_request_t::lock_request_t()
-{
-    reset();
-}
-
 /*********************************************************************
  *
  *  lock_request_t::reset()
  *
  *  Clear a lock request's internal state (marking it not-used).
+ *  This is called by the block allocator; the destructor is not called.
  *
  *********************************************************************/
 inline void
@@ -944,10 +805,22 @@ lock_request_t::reset() {
     _mode = NL;
     _convert_mode = NL;
     _lock_info = 0;
-    _thread = 0;
+    set_thread(NULL);
     _ref_count = 0;
-    _duration = t_long; // have to assign it something...
+    _duration = t_very_long; // have to assign it something...
     _num_children = 0;
+}
+
+inline NORET            
+lock_request_t::~lock_request_t() 
+{
+    reset();
+}
+
+NORET
+lock_request_t::lock_request_t() : _ref_count(0)
+{
+    reset();
 }
 
 /*********************************************************************
@@ -958,15 +831,13 @@ lock_request_t::reset() {
  *  "duration".
  *
  *********************************************************************/
-inline lock_request_t*
+inline void
 lock_request_t::init(xct_t* x, lmode_t m, duration_t d)
 {
     w_assert1(!_lock_info);
     _mode = m;
     _lock_info = x->lock_info();
     _duration = d;
-    _sli_status = sli_not_inherited;
-    _num_children = 0; // from SLI branch... needed?
     
     INC_TSTAT(lock_request_t_cnt);
 
@@ -1009,8 +880,7 @@ lock_request_t::init(xct_t* x, lmode_t m, duration_t d)
                 << " on my_req_list["<<int(_duration)<<"] : " << *this);
         }
     }
-#endif
-    return this;
+#endif 
 }
 
 /*********************************************************************
@@ -1018,7 +888,7 @@ lock_request_t::init(xct_t* x, lmode_t m, duration_t d)
  *  special initializer to make a marker for open quarks
  *
  *********************************************************************/
-lock_request_t*
+void
 lock_request_t::init(xct_t* x, 
         bool W_IFDEBUG2(quark_marker))
 {
@@ -1029,8 +899,7 @@ lock_request_t::init(xct_t* x,
     // marker, is_quark_marker should be true
     w_assert2(is_quark_marker() == quark_marker);
 
-    // a quark marker simply has an empty rlink
-    return this;
+    // a quark marker simply has an empty rlink 
 }
 
 
@@ -1075,6 +944,7 @@ static const uint4_t primes[] = {
         /* 0x800000, 8388608, 2**23   */ 8388593
 };
 
+w_hashing::uhash lockid_t::lockhashfunc;
 
 inline lock_head_t*
 lock_core_m::GetNewLockHeadFromPool(const lockid_t& name, lmode_t mode)
@@ -1117,7 +987,7 @@ lock_core_m::_find_lock_head_in_chain(
 
 #if DEBUG_LOCK_HASH
     if((W_DEBUG_LEVEL>1) && i > 1) {
-        uint4_t idx = _table_hash(w_hash(n));
+        uint4_t idx = _table_bucket(n.hash());
 
         // this junk is just for debugging bad hash functions:
         compute_lock_hash_numbers();
@@ -1141,7 +1011,7 @@ lock_core_m::_find_lock_head_in_chain(
 lock_head_t*
 lock_core_m::find_lock_head(const lockid_t& n, bool create)
 {
-    uint4_t idx = _table_hash(w_hash(n));
+    uint4_t idx = _table_bucket(n.hash());
 
     ACQUIRE_BUCKET_MUTEX(idx);
     lock_head_t* lock = _find_lock_head_in_chain(_htab[idx].chain, n);
@@ -1156,16 +1026,12 @@ lock_core_m::find_lock_head(const lockid_t& n, bool create)
     RELEASE_BUCKET_MUTEX(idx);
     
     if(lock) {
-#if MY_LOCK_DEBUG
-        w_assert2(MUTEX_IS_MINE(lock->head_mutex)==false);
-#endif
-        MUTEX_ACQUIRE(lock->head_mutex);
+        ASSERT_HEAD_MUTEX_NOT_MINE(lock);
+        MUTEX_ACQUIRE(lock->head_mutex); // this is find_lock_head
 
         // unpin now that we hold the mutex
         atomic_dec(lock->pin_cnt);
-#if MY_LOCK_DEBUG
-        w_assert3(MUTEX_IS_MINE(lock->head_mutex));
-#endif
+        ASSERT_HEAD_MUTEX_IS_MINE(lock);
     }
 
 #ifdef W_TRACE
@@ -1223,7 +1089,10 @@ lock_core_m::~lock_core_m()
 //
 // NOTE: if "lock" is not 0, then the lock_head pointed should be protected
 //    (via lock->head_mutex) before calling this function. Before the function
-//    returns, the mutex on the lock is released
+//    returns, the mutex on (lock) is released
+//
+// In any case, the caller has acquired the mutex on lock_info_mutex and
+//    we return with that intact.
 //
 extern "C" void dumpthreads();
 
@@ -1259,11 +1128,9 @@ lock_core_m::acquire_lock(
 #endif /* W_TRACE */
 
     w_assert2(MUTEX_IS_MINE(the_xlinfo->lock_info_mutex));
-#if MY_LOCK_DEBUG
     if (lock) {
-        w_assert2(MUTEX_IS_MINE(lock->head_mutex));
+        ASSERT_HEAD_MUTEX_IS_MINE(lock);
     }
-#endif
     w_assert2(xd == xct());
 
     ret = NL;
@@ -1273,22 +1140,8 @@ lock_core_m::acquire_lock(
         DBGTHRD(<< " find_lock_head returns " << lock <<"=" << *lock);
     }
 
-    bool must_wake_waiters = false;
     if (!req) {
         req = lock->find_lock_request(the_xlinfo);
-	if(req) {
-	    if( !(req=sli_reclaim_request(req, RECLAIM_CHECK_PARENT, &lock->head_mutex))) {
-                // Careful! lock mutex was released by sli_abandon_request
-#if MY_LOCK_DEBUG
-                w_assert1(not MUTEX_IS_MINE(lock->head_mutex));
-#endif
-                MUTEX_ACQUIRE(lock->head_mutex);
-		must_wake_waiters = true;
-            }
-	    else if(req->_sli_status == sli_active
-		    && req->mode() == supr[mode][req->mode()])
-		INC_TSTAT(sli_found_late);
-	}
 
 #ifdef W_TRACE
         if (req)  {
@@ -1299,9 +1152,6 @@ lock_core_m::acquire_lock(
 #endif /* W_TRACE */
     }
 
-    bool upgraded = false;
-    bool acquired = false;
-    
     {
 
         /*
@@ -1334,33 +1184,25 @@ lock_core_m::acquire_lock(
 
                 // first do the cheap test in case our upgrade 
                 // can be granted outright
-                lmode_t granted_mode_other = supr[lock->granted_mode][mode];
+                lmode_t granted_mode_other = supr[lock->granted_mode][req->mode()];
                 if(!compat[mode][granted_mode_other]) {
                     // am I the one that would prevent the upgrade?
                     granted_mode_other = lock->granted_mode_other(req);
-                    w_assert9(lock->granted_mode == supr[granted_mode_other][mode]);
+                    w_assert9(lock->granted_mode == supr[granted_mode_other][req->mode()]);
                 }
 
-                upgraded = true;
-                
                 if (compat[mode][granted_mode_other]) {
                     /* compatible --> no wait */
                     req->set_mode(mode);
-                    lock->granted_mode = supr[granted_mode_other][mode];
+                    lock->granted_mode = supr[mode][granted_mode_other];
                     DBGTHRD(<<"goto success");
                     goto success;
                 }
 
                 // don't bother with all the stuff 
                 // below if we know we failed now...
-                w_assert1(lock->queue_length() > 1);
                 if(!timeout) {
-		if(must_wake_waiters) {
-		    wakeup_waiters(lock); // releases mutex
-		}
-		else {
-		    MUTEX_RELEASE(lock->head_mutex);
-		}
+                    RELEASE_HEAD_MUTEX(lock);//acquired in find_lock_head or in-arg
                     
                     return eLOCKTIMEOUT;
                 }
@@ -1376,7 +1218,6 @@ lock_core_m::acquire_lock(
                     //Another thread, on behalf of this xct, is either
                     //running the deadlock detector (waking up, trying again)
                     //or is blocked waiting for this lock.
-                    w_assert1(the_xlinfo->waiting_request() != req);
                     goto has_waiter;
                 }
 
@@ -1390,18 +1231,11 @@ lock_core_m::acquire_lock(
             // it is a new request
             prev_mode = NL;
 
-	    INC_TSTAT(sli_requested);
             bool compatible = !lock->waiting 
                 && compat[mode][lock->granted_mode];
 
             if(!compatible) {
                 if(name.lspace() == lockid_t::t_extent) {
-                  cerr << 
-                  "--- Trx " << xd->tid().get_hi() << "." << xd->tid().get_lo()
-                  << " (t@" << pthread_self() << ") requested " << mode_str[mode]
-                  << " on " << mode_str[lock->granted_mode]
-                  << "-locked extent " << name.extent() 
-                  << endl;
 
 #if W_DEBUG_LEVEL > 4
     // not safe, but oh well - saved for ad-hoc debugging.
@@ -1414,28 +1248,34 @@ lock_core_m::acquire_lock(
                         }
                     }
 
-    /*
-                  fprintf(stderr, 
-                  "--- Trx %d.%d (t@%d) requested %s on %s-locked extent %d\n",
+#endif
+#if W_DEBUG_LEVEL > 0
+              fprintf(stderr, 
+              "--- Trx %d.%d (t@%lld) requested %s (%s, timeout %d) on %s-locked extent %d\n",
                           xd->tid().get_hi(), 
                           xd->tid().get_lo(), 
-                          pthread_self(),
+                          (long long)(pthread_self()),
                           mode_str[mode], 
+                          duration_str[duration], timeout,
                           mode_str[lock->granted_mode], 
-                          n ame.extent());
+                          name.extent()
+                          );
+
+    /*
+                  cerr << 
+                  "--- Trx " << xd->tid().get_hi() << "." << xd->tid().get_lo()
+                  << " (t@" << pthread_self() << ") requested " << mode_str[mode]
+                  << " on " << mode_str[lock->granted_mode]
+                  << "-locked extent " << name.extent() 
+                  << endl;
     */
 #endif
 
                 }
                 
                 if(!timeout) {
-		    if(must_wake_waiters) {
-			wakeup_waiters(lock); // releases mutex
-		    }
-		    else {
-			MUTEX_RELEASE(lock->head_mutex);
-		    }
-		    return eLOCKTIMEOUT;
+                    RELEASE_HEAD_MUTEX(lock);//acquired in find_lock_head or in-arg
+                    return eLOCKTIMEOUT;
                 }
                 if(the_xlinfo->waiting_request()) {
                     //Another thread, on behalf of this xct, is either
@@ -1448,14 +1288,18 @@ lock_core_m::acquire_lock(
             // now that we know we actually need a request...
             w_assert2(MUTEX_IS_MINE(xd->lock_info()->lock_info_mutex));
 
-	    req = NEW_LOCK_REQUEST(xd, mode, duration);
+#if USE_BLOCK_ALLOC_FOR_LOCK_STRUCTS
+            req = lock_request_pool->acquire(xd, mode, duration);
+            w_assert1(req);
+#else
+            req = new lock_request_t();
+            req->init(xd, mode, duration);
+#endif
 
-            //atomic_inc(_requests_allocated);
+            atomic_inc(_requests_allocated);
             DBG(<< "appending request " << req << " to lock " << lock
                     << " lock name=" << lock->name);
 
-            acquired = true;
-            
             // do this before joining the queue -- we don't want to confuse DLD
             req->set_status(compatible? lock_m::t_granted : lock_m::t_waiting);
 
@@ -1480,12 +1324,6 @@ lock_core_m::acquire_lock(
         w_assert1(timeout && !the_xlinfo->waiting_request());
         lock->waiting = true;
 
-        // make sure SLI isn't the problem
-        if (the_xlinfo->_sli_enabled and lock->invalidate_sli()) {
-            if (wakeup_waiters(lock, req))
-                goto success;
-        }
-        
         switch(name.lspace()) {
         case lockid_t::t_bad:
         default:
@@ -1528,6 +1366,10 @@ lock_core_m::acquire_lock(
 #else
         enum { DREADLOCKS_INTERVAL_MS =10 };
 #endif
+        // NB: timeout has already been converted from the
+        // pseudo-timeouts (specified by xct, etc) to #ms
+        // so now we have max_count is 0 if WAIT_IMMEDIATE
+        // and > 0 if the timeout is > DREADLOCKS_INTERVAL_MS+1.
         int max_count = 
             (timeout+DREADLOCKS_INTERVAL_MS-1)/DREADLOCKS_INTERVAL_MS;
         
@@ -1535,21 +1377,25 @@ lock_core_m::acquire_lock(
 
         w_rc_t::errcode_t  rce(eOK);
         INC_TSTAT(lock_wait_cnt);
-	
      again:
         {
+            w_assert2(req->status() != t_no_status);
             DBGTHRD(<<" again: timeout " << timeout);
-                
+
             w_assert2(MUTEX_IS_MINE(the_xlinfo->lock_info_mutex));
 
             rce = _check_deadlock(xd, count == 0, req);
+
             ++count;
             if (rce == eOK) {
-                // either no deadlock or there is a deadlock but 
-                // some other xact was selected as victim
+                /*
+                  Either no deadlock or there is a deadlock but 
+                  some other xact was selected as victim. We have to
+                  wait until it unblocks and aborts to resolve the deadlock
+                */
 
                 the_xlinfo->set_waiting_request_is_blocking(true);
-                MUTEX_RELEASE(lock->head_mutex);
+                RELEASE_HEAD_MUTEX(lock);//acquired in find_lock_head or in-arg
                 MUTEX_RELEASE(the_xlinfo->lock_info_mutex);
 
                 DBGTHRD(<< "waiting (blocking) for:"
@@ -1582,25 +1428,40 @@ lock_core_m::acquire_lock(
                     the_xlinfo->set_waiting_request_is_blocking(false);
                 }
 
-                DBGTHRD(<< "acquired (unblocked):"
-                        << " xd=" << xd->tid() 
-                        << " name="<< name 
-                        << " mode="<< int(mode)
-                        << " duration=" << int(duration) 
-                            << " timeout=" << timeout );
+                switch(rce) {
+                    case eRETRY:
+                // Convert a RETRY to a stTIMEOUT.
+                // eRETRY comes from another thread releasing the lock
+				// By using eRETRY instead of eOK we can see the activity
+				// in the counters -- that's all.
+                        rce = stTIMEOUT;
+                        INC_TSTAT(lock_dld_retry);
+                        break;
+                    case stTIMEOUT:
+                        INC_TSTAT(lock_dld_timeout);
+                        break;
+                    case eDEADLOCK:
+                        INC_TSTAT(lock_dld_deadlock);
+                        break;
+                    case eOK:
+                        break;
+                    default:
+                        w_assert0(0);
+                };
+
+               DBGTHRD(<< "acquired (unblocked):"
+                << " xd=" << xd->tid() << " name="<< name << " mode="<< int(mode)
+                << " duration=" << int(duration) << " timeout=" << timeout );
 
 #if W_DEBUG_LEVEL > 2
-                if (rce) {
-                    w_assert3(rce == stTIMEOUT 
-                            || rce == eDEADLOCK);
-                }
+                if (rce) { w_assert3(rce == stTIMEOUT || rce == eDEADLOCK); }
 #endif
 
                 // unblock any other thread waiters
                 xd->lockunblock();
 
                 MUTEX_ACQUIRE(the_xlinfo->lock_info_mutex);
-                MUTEX_ACQUIRE(lock->head_mutex);
+                ACQUIRE_HEAD_MUTEX(lock); // this is acquire_lock
 
                 DBGTHRD(<<" LOCK HEAD==" << (long) lock
                         << " lock->name " <<  lock->name << " name " <<  name);
@@ -1612,9 +1473,10 @@ lock_core_m::acquire_lock(
 #if W_DEBUG_LEVEL > 1
                         fprintf(stderr, " possible deadlock : locks \n");
                         MUTEX_RELEASE(the_xlinfo->lock_info_mutex);
-                        MUTEX_RELEASE(lock->head_mutex);
+                        RELEASE_HEAD_MUTEX(lock);//acquired in find_lock_head or HERE
+
                         dump();
-                        MUTEX_ACQUIRE(lock->head_mutex);
+                        ACQUIRE_HEAD_MUTEX(lock); // this is acquire_lock
                         MUTEX_ACQUIRE(the_xlinfo->lock_info_mutex);
                         fprintf(stderr, " possible deadlock: threads \n");
                         dumpthreads();
@@ -1625,7 +1487,7 @@ lock_core_m::acquire_lock(
                     } else 
 #endif
                     if((timeout == WAIT_FOREVER) || (count < max_count)) {
-                        // this is effects a spin.
+                        // this effects a spin.
                         goto again;
                     }
                 }
@@ -1634,6 +1496,9 @@ lock_core_m::acquire_lock(
 
         w_assert9(the_xlinfo->get_cycle() == 0);
         DBGTHRD(<<" request->status()=" << int(req->status()));
+
+        w_assert1(MUTEX_IS_MINE(the_xlinfo->lock_info_mutex));
+        ASSERT_HEAD_MUTEX_IS_MINE(lock);
 
         /* FRJ: The lock release code doesn't do proper locking, so it's
            entirely possible to time out or get axed by DLD and also get
@@ -1663,9 +1528,16 @@ lock_core_m::acquire_lock(
                 w_assert1(req->status() == lock_m::t_waiting);
                 w_assert1(MUTEX_IS_MINE(the_xlinfo->lock_info_mutex));
                 req->xlink.detach();
+                ASSERT_HEAD_MUTEX_IS_MINE(lock);
+                w_assert1(lock == req->get_lock_head());
                 req->rlink.detach();
-		DELETE_LOCK_REQUEST(req);
-                //atomic_dec(_requests_allocated);
+                w_assert1(req->get_count()==0); // count of held
+#if USE_BLOCK_ALLOC_FOR_LOCK_STRUCTS
+                lock_request_pool->release(req);
+#else
+                delete req;
+#endif
+                atomic_dec(_requests_allocated);
                 req = 0;
             }
             if(rce == eDEADLOCK) {
@@ -1694,21 +1566,20 @@ lock_core_m::acquire_lock(
 
         // failed...
         DBGTHRD(<<" waking up waiters");
-        wakeup_waiters(lock);
+        ASSERT_HEAD_MUTEX_IS_MINE(lock);
+        wakeup_waiters(lock); // releases the mutex
+        ASSERT_HEAD_MUTEX_NOT_MINE(lock);
 
         w_assert9(ret == NL);
         ret = NL;
+
+        w_assert2(MUTEX_IS_MINE(the_xlinfo->lock_info_mutex));
 
         return rce;
     }
 
     
   success:
-    ADD_TSTAT(sli_acquired, acquired);
-    ADD_TSTAT(sli_upgrades, upgraded);
-    if(upgraded && req->_sli_status == sli_active)
-	INC_TSTAT(sli_too_weak);
-    
     DBGTHRD(<< " success: check lock again " << lock <<"=" << *lock);
     w_assert9(req->status() == lock_m::t_granted);
     w_assert9(lock);
@@ -1732,12 +1603,7 @@ lock_core_m::acquire_lock(
     if (reqPtr)
         *reqPtr = req;
     req->inc_count();
-    if(must_wake_waiters) {
-	wakeup_waiters(lock);
-    }
-    else {
-	MUTEX_RELEASE(lock->head_mutex);
-    }
+    RELEASE_HEAD_MUTEX(lock);//acquired in find_lock_head or in-arg
     INC_TSTAT(lock_acquire_cnt);
 
     switch(name.lspace()) {
@@ -1775,6 +1641,8 @@ lock_core_m::acquire_lock(
         break;
     }
 
+    ASSERT_HEAD_MUTEX_NOT_MINE(lock);
+    w_assert2(MUTEX_IS_MINE(the_xlinfo->lock_info_mutex));
     return eOK;
 
  has_waiter:
@@ -1789,18 +1657,12 @@ lock_core_m::acquire_lock(
         << " mode=" << int(mode)
         << " duration=" << int(duration) << " timeout=" << timeout );
 
-        // GNATS119. There's a race between the time we
+        // GNATS 119. A race between the time we
         // determine that we have to block and the time we grab
         // the _waiters mutex in xct_impl.cpp.  We need to
         // grab that mutex and then recheck the condition before
         // we block.
-	if(must_wake_waiters) {
-	    must_wake_waiters = false;
-	    wakeup_waiters(lock);
-	}
-	else {
-	    MUTEX_RELEASE(lock->head_mutex);
-	}
+        RELEASE_HEAD_MUTEX(lock);//acquired in find_lock_head or in-arg
         MUTEX_RELEASE(the_xlinfo->lock_info_mutex);
         INC_TSTAT(lock_await_alt_cnt);
         w_rc_t rc = xd->lockblock(timeout);
@@ -1815,238 +1677,10 @@ lock_core_m::acquire_lock(
     }
 }
 
-void lock_core_m::sli_purge_inactive_locks(xct_lock_info_t* theLockInfo, bool force) {
-    if(theLockInfo->_sli_purged)
-	return;
-
-    //    fprintf(stderr, "Throwing away %d unused inherited locks\n", theLockInfo->sli_list.num_members());
-    theLockInfo->_sli_purged = true;
-
-    // iterator forward to get newest first
-    request_list_i it(theLockInfo->sli_list);
-    while(lock_request_t* req=it.next()) {
-	if(force || !req->keep_me) {
-	    INC_TSTAT(sli_purged);
-	    sli_abandon_request(req, NULL);
-	}
-    }
-}
-
-lock_request_t* lock_core_m::sli_reclaim_request(lock_request_t* &req, sli_parent_cmd pcmd, lock_head_t::my_lock* lock_mutex) {
-
-    sli_status_t s = req->vthis()->_sli_status;
-    if (req->is_reclaimed(s))
-	return req; // nothing more to be done
-
-    w_assert2(s == sli_inactive || s == sli_invalid || s == sli_invalidating);
-    if(s == sli_inactive) {
-	// try to reactivate it
-	s = req->cas_sli_status(sli_inactive, sli_active);
-	
-	// double check... may have been invalidated
-	if(s == sli_inactive) {
-	    // we have it now... but can we actually use it?
-	    lock_head_t* lock = req->get_lock_head();
-	    xct_lock_info_t* theLockInfo = req->get_lock_info();
-	    bool failed = false;
-	    if(lock->waiting && pcmd != RECLAIM_NO_PARENT) {
-		// sorry. can't have it
-		failed = true;
-		INC_TSTAT(sli_waited_on);
-	    }
-	    else if(pcmd != RECLAIM_NO_PARENT) {
-		lockid_t pname;
-		if(smlevel_0::lm->get_parent(lock->name, pname)) {
-#ifdef USE_LOCK_HASH
-		    lock_cache_elem_t* pe = theLockInfo->hash.search(pname);
-#else
-		    lock_cache_elem_t* pe = theLockInfo->search_cache(pname);
-#endif
-		    
-		    /* we can only inherit if our parent did -- avoids nasty corner cases
-		       
-		       1. If the parent was inherited we know it has been held
-		       the whole time. Otherwise somebody could have acquired
-		       a coarse-grained lock and modified the object we
-		       assumed this lock protected.
-		       
-		       2. If the parent was inherited we know it's strong
-		       enough for this request.
-		       
-		       Note, however, that the lock manager asks for
-		       the base lock first, followed by its parents,
-		       so we have to be ready to reclaim recursively.
-		    */
-		    if(!pe || pe->mode == NL) {
-			failed = true;
-		    }
-		    else {
-			if(pcmd == RECLAIM_CHECK_PARENT && !pe->req->is_reclaimed()) {
-			    failed = true;
-			}
-			else if(pcmd == RECLAIM_RECLAIM_PARENT) {
-			    if(!sli_reclaim_request(pe->req, RECLAIM_RECLAIM_PARENT, NULL)) {
-				pe->mode = NL;
-				failed = true;
-			    }
-			    else {
-				INC_TSTAT(sli_used);
-			    }
-			}
-		    }
-		}
-		ADD_TSTAT(sli_no_parent, failed);
-	    }
-	    
-	    // was the lock legit? move it to the trx lock list
-	    if(failed) {
-		sli_abandon_request(req, lock_mutex); // does a full release because is_reclaimed()==true
-		req = 0;
-	    }
-	    else {
-		w_assert1(req->xlink.member_of() == &theLockInfo->sli_list);
-		w_assert1(MUTEX_IS_MINE(theLockInfo->lock_info_mutex));
-		req->xlink.detach();
-		theLockInfo->my_req_list[req->get_duration()].push(req);
-		lockid_t const &name = lock->name;
-		if(0) {
-#ifdef USE_LOCK_HASH
-		if(lock_cache_elem_t* e = theLockInfo->hash.search(name)) {
-#else
-		if(lock_cache_elem_t* e = theLockInfo->search_cache(name)) {
-#endif
-		    if(!e->req) {
-			// managed to find one that wasn't cached. update the cache
-			e->req = req;
-			e->mode = req->mode();
-		    }
-		    else {
-			// good.
-			w_assert1(e->mode == req->mode());
-		    }
-		}
-		else {
-		    /* FRJ: NOT safe to put into the cache -- causes
-		       an infinite loop if the cache is full and our
-		       caller is trying to reclaim in order to abandon
-		       it.
-		    */
-		    //put_in_cache(theLockInfo, name, req->mode, req);
-		    //fprintf(stderr, "*** WARNING *** Inherited a lock that was not in cache!\n");
-		}
-#if 0
-		}
-#endif
-		}
-	    }
-
-	    // either way, we don't want to fall out and abandon the node
-	    return req;
-	}
-    }
-
-    w_assert1(req && !req->is_reclaimed());
-    
-    // thwarted! no matter what, unlink from the transaction
-    w_assert1(MUTEX_IS_MINE(req->get_lock_info()->lock_info_mutex));
-    w_assert1(req->xlink.member_of() == &req->get_lock_info()->sli_list);
-    req->xlink.detach();
-    
-    // are we (apparently) not last to leave?
-    if (s == sli_invalidating)
-        s = req->cas_sli_status(s, sli_abandoned);
-
-    // were we actually the last to leave?
-    if(s == sli_invalid) {
-        membar_consumer();
-	w_assert1(!req->xlink.member_of() && !req->rlink.member_of());
-	DELETE_LOCK_REQUEST(req);
-    }
-
-    if (lock_mutex) {
-        MUTEX_RELEASE(*lock_mutex);
-    }
-    
-    // done. give our caller the bad news
-    return req = 0;
-}
-
-bool lock_core_m::sli_invalidate_request(lock_request_t* &req) {
-    sli_status_t s = req->vthis()->_sli_status;
-    if (req->is_reclaimed(s))
-        return false;
-
-    // let the race begin...
-    w_assert1(s == sli_inactive);
-    s = req->cas_sli_status(sli_inactive, sli_invalidating);
-    membar_consumer();
-
-    // double check.. may have just activated or become ineligible
-    if(req->is_reclaimed(s))
-        return false;
-
-    // unlink the request from lock->queue
-    w_assert1(s == sli_inactive);
-#if MY_LOCK_DEBUG
-    w_assert1(MUTEX_IS_MINE(req->get_lock_head()->head_mutex));
-#endif
-    //w_assert1(req->rlink.member_of() == &req->get_lock_head()->_queue);
-    req->rlink.detach();
-
-    // try to leave without getting caught
-    s = req->cas_sli_status(sli_invalidating, sli_invalid);
-    if (s != sli_invalidating) {
-        // caught... have to clean up the mess
-        w_assert1(s == sli_abandoned);
-	membar_consumer();
-	w_assert1(!req->xlink.member_of() && !req->rlink.member_of());	
-	DELETE_LOCK_REQUEST(req);
-    }
-
-    // avoid races - update our stats not theirs
-    INC_TSTAT(sli_invalidated);
-    
-    // no matter what it's not safe to use any more
-    req = 0;
-    return true;
-}
-
-void lock_core_m::sli_abandon_request(lock_request_t* &req, lock_head_t::my_lock* lock_mutex) {
-    W_IFDEBUG1(sli_status_t s = req->vthis()->_sli_status);
-    w_assert1(s != sli_not_inherited);
-
-    // attempt to activate. If it succeeds we must release rather than abandon.
-    if(sli_reclaim_request(req, RECLAIM_NO_PARENT, lock_mutex)) {
-	/* heavyweight release to avoid deadlock risk. As a side
-	   effect we can finish invalidating the request with no more
-	   atomic ops (we will acquire the lock head mutex).
-	*/
-        if (lock_mutex) 
-            w_assert1(lock_mutex == &req->get_lock_head()->head_mutex);
-        else {
-            lock_mutex = &req->get_lock_head()->head_mutex;
-            W_COERCE(lock_mutex->acquire());
-        }
-#if MY_LOCK_DEBUG
-        w_assert1(not lock_mutex or MUTEX_IS_MINE(*lock_mutex));
-#endif
-	W_COERCE(_release_lock(req, true));
-    }
-
-    // should always have been released
-    if (lock_mutex) {
-#if MY_LOCK_DEBUG
-        w_assert1(not MUTEX_IS_MINE(*lock_mutex));
-#endif
-    }
-    
-    req = 0;
-}
-
-void lock_core_m::compact_cache(xct_lock_info_t* theLockInfo, 
+void lock_core_m::compact_cache(xct_lock_info_t* the_xlinfo, 
                                     lockid_t const &name )
 {
-    theLockInfo->compact_cache(name);
+    the_xlinfo->compact_cache(name);
 }
 
 void lock_core_m::put_in_cache(xct_lock_info_t* the_xlinfo,
@@ -2055,81 +1689,36 @@ void lock_core_m::put_in_cache(xct_lock_info_t* the_xlinfo,
                                lock_request_t* req)
 {
     lock_cache_elem_t victim;
+
+    // Try to catch source of assert in search_cache below:
+    w_assert3((void*) req->xlink.member_of() != NULL);
+    w_assert3( req->get_duration() != t_instant);
+    w_assert3( req->mode() != NL);
+    w_assert3(MUTEX_IS_MINE(the_xlinfo->lock_info_mutex));
+    // --------------------------------------------------
+
     if(
         the_xlinfo->put_cache(name, mode, req, victim)
     ) {
         // cache overflowed... 
-	if(victim.req && !victim.req->is_reclaimed()) {
-	    INC_TSTAT(sli_evicted);
-	    sli_abandon_request(victim.req, NULL);
-	}
     }
 }
 
 lock_cache_elem_t* lock_core_m::search_cache(
                 xct_lock_info_t* the_xlinfo,
-                lockid_t const &name, bool reclaim)
+                lockid_t const &name, bool /*reclaim*/)
 {
-#ifndef __GNUC__
-#warning TODO: implement some LRU-ish scheme?
-#endif
-
+    w_assert3(MUTEX_IS_MINE(the_xlinfo->lock_info_mutex));
     lock_cache_elem_t* e = the_xlinfo->search_cache(name);
     if(e) {
         if(e->req) {
             // some sort of corruption here...
+            // If this assertion fails and the values are 0,
+            // it means we have cached a request that's not/no longer valid.
             w_assert1((void*) e->req->xlink.member_of() != (void*) e->req->xlink.prev());
-#warning FIXME: is it always correct to reclaim parents recursively here?
-	    if(reclaim && !sli_reclaim_request(e->req, RECLAIM_RECLAIM_PARENT, NULL)) {
-		e->mode = NL;
-		e = 0;
-	    }
-	    if(!reclaim && !e->req->is_reclaimed()) {
-		e = 0;
-	    }
         }            
     }
     return e;
-}
-
-bool
-lock_core_m::_maybe_inherit(lock_request_t* request, bool is_ancestor) {
-    if(!request->get_lock_info()->_sli_enabled)
-	return false;
-    
-    lock_head_t* lock = request->get_lock_head();
-    if(lock->name.lspace() <= lockid_t::t_page && !lock->waiting) {
-	lock_mode_t m = request->mode();
-	if((m == IS || m == IX || m == SH)) {
-	    //#warning DEBUG: SLI inherits all eligible locks right now (not just hot ones)
-	    INC_TSTAT(sli_eligible);
-	    bool should_inherit = request->_sli_status == sli_not_inherited
-		&& lock->head_mutex.is_contended();
-	    // sdesc cache inheritance needs SLI to work and is
-	    // important even if there's no contention (e.g. 1thr)
-	    should_inherit |= (lock->name.lspace() <= lockid_t::t_store);
-	    if(0 || is_ancestor || should_inherit || request->_sli_status == sli_active) {
-		if(request->_sli_status == sli_inactive)
-		    INC_TSTAT(sli_kept);
-		// clear some fields out
-		request->_num_children = 0;
-		request->_ref_count = 0;
-		
-		// move the lock from the transaction list to the sli list
-		w_assert1(MUTEX_IS_MINE(request->get_lock_info()->lock_info_mutex));
-		w_assert1(request->xlink.member_of() == &request->get_lock_info()->my_req_list[request->get_duration()]);
-		request->xlink.detach();
-		request->get_lock_info()->sli_list.push(request);
-		// not yet... let the lock_info do this.
-		// request->sli_status = sli_inactive;
-		//++(*sli_lock_stats)[request->get_lock_head()->name];
-		return true;
-	    }
-	}
-    }
-
-    // no go
-    return false;
 }
 
 rc_t
@@ -2150,17 +1739,11 @@ lock_core_m::release_lock(
     w_assert3(MUTEX_IS_MINE(the_xlinfo->lock_info_mutex));
 
     
-    // only allow inheritance at end of trx
-    if(request && force && _maybe_inherit(request)) {
-	// don't release -- it's to be inherited
-	return RCOK;
-    }
-    
     if (!lock) {
         lock = find_lock_head(name, false);  // don't create if not found;
         // acquires lock head mutex if found
     } else {
-        MUTEX_ACQUIRE(lock->head_mutex);
+        ACQUIRE_HEAD_MUTEX(lock); // this is release_lock
     }
 
     if (!lock) {
@@ -2168,28 +1751,17 @@ lock_core_m::release_lock(
     }
 
     if (!request) {
-#if MY_LOCK_DEBUG
-        w_assert2(MUTEX_IS_MINE(lock->head_mutex));
-#endif
+        ASSERT_HEAD_MUTEX_IS_MINE(lock);
         request = lock->find_lock_request(the_xlinfo);
-	if(request && !(request=sli_reclaim_request(request, RECLAIM_CHECK_PARENT, &lock->head_mutex)) ) {
-            // Careful! sli_reclaim_request released the mutex!
-#if MY_LOCK_DEBUG
-            w_assert1(not MUTEX_IS_MINE(lock->head_mutex));
-#endif
-            MUTEX_ACQUIRE(lock->head_mutex);
-	    wakeup_waiters(lock); // releases mutex
-	    return RCOK;
-	}
     }
 
     if (! request) {
         // lock does not belong to me --- no need to unlock
-        MUTEX_RELEASE(lock->head_mutex);
+        RELEASE_HEAD_MUTEX(lock);//acquired in find_lock_head or in-arg
         return RCOK;
     }
 
-    w_assert9(lock == request->get_lock_head());
+    w_assert2(lock == request->get_lock_head());
     return _release_lock(request, force);
 }
 
@@ -2204,12 +1776,11 @@ lock_core_m::_release_lock(lock_request_t* request, bool force
     // get these before deleting the request...
     lock_head_t* lock = request->get_lock_head();
     xct_lock_info_t* the_xlinfo = request->get_lock_info();
-    
     if (!force && 
             // Don't unlock t_long or longer. That happens only
             // with unlock_duration
             (request->get_duration() >= t_long 
-            || request->get_count() > 1
+            || request->get_count() > 1  // held-count
             // Also don't release if reference count is > 1 -- in that
             // case just decrement the count.
             // This is regardless of the duration.
@@ -2225,28 +1796,31 @@ lock_core_m::_release_lock(lock_request_t* request, bool force
         }
 #endif
         if (request->get_count() > 1) request->dec_count();
-        MUTEX_RELEASE(lock->head_mutex);
+        RELEASE_HEAD_MUTEX(lock);//acquired in calling method
         DBGTHRD(<<"lock_core_m::_release dec count only " );
         return RCOK;
     }
     // if force, we'll release regardless of the duration
     // or the reference count.
     // This is called at the closing of a quark and at the
-    // end of tx.
+    // end of tx and by io_lock_force.
+    //
     // In the former case, we get here only with explict per-lock
     // release requests, and in that case, we will be looking at locks
     // with t_short duration only.
 
-#if MY_LOCK_DEBUG
-    w_assert2(MUTEX_IS_MINE(lock->head_mutex));
-#endif
+    ASSERT_HEAD_MUTEX_IS_MINE(lock);
     request->rlink.detach();
     w_assert1(MUTEX_IS_MINE(the_xlinfo->lock_info_mutex));
     request->xlink.detach();
-    DELETE_LOCK_REQUEST(request);
+#if USE_BLOCK_ALLOC_FOR_LOCK_STRUCTS
+    lock_request_pool->release(request);
+#else
+    delete request;
+#endif
     DBGTHRD(<<"lock_core_m::_release deleted request" );
 
-    //atomic_dec(_requests_allocated);
+    atomic_dec(_requests_allocated);
     _update_cache(the_xlinfo, lock->name, NL);
 
     lock->granted_mode = lock->granted_mode_other(0);
@@ -2255,8 +1829,8 @@ lock_core_m::_release_lock(lock_request_t* request, bool force
     return RCOK;
 }
 
-bool
-lock_core_m::wakeup_waiters(lock_head_t*& lock, lock_request_t* self)
+void
+lock_core_m::wakeup_waiters(lock_head_t*& lock)
 {
     // The lock was released by someone or else its acquisition failed.
     // Try to free the lock head if it's not in use anymore. 
@@ -2264,32 +1838,44 @@ lock_core_m::wakeup_waiters(lock_head_t*& lock, lock_request_t* self)
     // If we hit any contention, give up -- the
     // lock will probably get used again pretty quickly if it's that
     // hot...
-#if MY_LOCK_DEBUG
-    w_assert2(MUTEX_IS_MINE(lock->head_mutex));
-#endif
+    ASSERT_HEAD_MUTEX_IS_MINE(lock);
 
-    bool woke_self = false;
     if (lock->queue_length() == 0) 
     {
-        uint4_t idx = _table_hash(w_hash(lock->name));
+        uint4_t idx = _table_bucket(lock->name.hash());
         
         // lock out other threads arriving
         ACQUIRE_BUCKET_MUTEX(idx);
         if(!lock->pin_cnt) {
             // empty queue and nobody else is around
-            MUTEX_RELEASE(lock->head_mutex);
+            
+            RELEASE_HEAD_MUTEX(lock);//acquired in calling method
             FreeLockHeadToPool(lock);
             lock = 0;
         }
 
         RELEASE_BUCKET_MUTEX(idx);
 
-        if (!lock) return false;
+        if (!lock) return;
     }
 
     if(lock->waiting) 
     {
         lock_request_t* request = 0;
+
+        {   // **BEFORE** we wake-up *any* waiters, we
+            // immediately invalidate their wait maps so that subsequent
+            // spins will suspect this waiter's bitmap might cause false positives.
+            // this is only to reduce false positives. not required for consistency.
+            // see xct_lock_info_t::_wait_map_obsolete
+            lock_head_t::safe_queue_iterator_t iter(*lock); 
+            while ((request = iter.next()) != NULL) {
+                if (request->status() != lock_m::t_granted) {
+                    xct_lock_info_t *lock_info = request->get_lock_info();
+                    lock_info->clear_wait_map();
+                }
+            }
+        }
 
         lock->waiting = false;
         bool cvt_pending = false;
@@ -2335,28 +1921,22 @@ lock_core_m::wakeup_waiters(lock_head_t*& lock, lock_request_t* self)
                 w_assert2(request == 
                              request->get_lock_info()->waiting_request());
                 request->set_status(lock_m::t_granted);
-                if (request == self) {
-                    woke_self = true;
+                // send eRETRY, which will be converted to eOK
+                rc_t rc = thr->smthread_unblock(eRETRY); 
+                if(rc.is_error() && rc.err_num() == eNOTBLOCKED) {
+                    // We hit a race in which the waiting thread is
+                    // no longer blocked -- perhaps it was running
+                    // deadlock detection. This is a problem because
+                    // it missed its wakeup call.
+                    rc = RCOK;
                 }
-                else {
-                    rc_t rc = thr->smthread_unblock(eOK); 
-                    if(rc.is_error() && rc.err_num() == eNOTBLOCKED) {
-                        // We hit a race in which the waiting thread is
-                        // no longer blocked -- perhaps it was running
-                        // deadlock detection. This is a problem because
-                        // it missed its wakeup call.
-                        rc = RCOK;
-                    }
-                    W_COERCE(rc);
-                }
+                W_COERCE(rc);
             }
         }
 
         if (cvt_pending) lock->waiting = true;
     }
-    if (not self)
-        MUTEX_RELEASE(lock->head_mutex);
-    return woke_self;
+    RELEASE_HEAD_MUTEX(lock);//acquired in calling method
 }
 
 
@@ -2369,10 +1949,11 @@ lock_core_m::wakeup_waiters(lock_head_t*& lock, lock_request_t* self)
 // before freeing the lock on the extent; we can only do this
 // if we have upgraded the lock to EX.
 //
-// Called from lock_core_m::release_duration on extent-locks only.
-// If this method returns true to release_duration, meaning it
-// found an extent that needs to be freed, release_duration extracts
-// the extent# from the lockid and bails immediately with eFOUNDEXTTOFREE.
+// OLD: Called from lock_core_m::release_duration on extent-locks only.
+// NEW: Called from lock_core_m::free_extents on extent-locks only.
+// If this method returns true to release_duration/free_extents, meaning it
+// found an extent that needs to be freed, release_duration/free_extents 
+// extracts the extent# from the lockid and bails immediately with eFOUNDEXTTOFREE.
 // This lets the lock manager (as opposed to the lock_core) release the
 // hold on the lock head and free the extent while holding the lock.
 //
@@ -2380,7 +1961,12 @@ bool
 lock_core_m::upgrade_ext_req_to_EX_if_should_free(lock_request_t* req)
 {
     lock_head_t* lock = req->get_lock_head();
-    w_assert9(lock->name.lspace() == lockid_t::t_extent);
+    w_assert3(lock->name.lspace() == lockid_t::t_extent);
+
+    DBG(<<" granted_mode: "<< lock->granted_mode
+        << " has page alloc: " << lock->name.ext_has_page_alloc() 
+        << " queue length: " << lock->unsafe_queue_length() 
+        );
 
     if (lock->granted_mode == EX || 
         lock->name.ext_has_page_alloc() || lock->unsafe_queue_length() > 1)  
@@ -2391,13 +1977,17 @@ lock_core_m::upgrade_ext_req_to_EX_if_should_free(lock_request_t* req)
         //  allocated pages in it). Note that the bit could have been
         //  set by another xct, not this one.  That's the case
         //  this is supposed to protect against.
+        //  NOTE: the bit in the lock is an optimization that allows us
+        //  to avoid unnecessary latches to determine the free-ability of
+        //  the extent.
+        //
         // or has multiple holders (we're figuring this is an IX lock?)
         //   so we wouldn't want to upgrade to EX and delete the extent 
         //   in this case either.
         return false;
     }  else  {
         // Grab the lock head mutex and check again.
-        MUTEX_ACQUIRE(lock->head_mutex);
+        ACQUIRE_HEAD_MUTEX(lock); // this is upgrade_ext_req_to_EX_if_should_free
         bool success = false;
         if ( !(lock->granted_mode == EX || 
                 lock->name.ext_has_page_alloc() || lock->queue_length() > 1))  
@@ -2406,25 +1996,32 @@ lock_core_m::upgrade_ext_req_to_EX_if_should_free(lock_request_t* req)
             lock->granted_mode = EX;
             req->set_mode(EX);
         }
-        MUTEX_RELEASE(lock->head_mutex);
+        RELEASE_HEAD_MUTEX(lock); // acquired here NOT through find_lock_head
         return success;
     }
 }
 
+/*
+ * co-routine to free the extents while still
+ * holding the locks.
+ * This routine doesn't free any locks; just frees the
+ * extents in coordination with the lock manager.
+ * This routine tells the lock mgr which extents to free.
+ */
 
 rc_t
-lock_core_m::release_duration(
+lock_core_m::free_extents(
     xct_lock_info_t*    the_xlinfo,
     duration_t          duration,
-    bool                all_less_than,
     extid_t*            ext_to_free)
 {
-    FUNC(lock_core_m::release_duration);
-    DBG(<<"%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%");
-    DBGTHRD(<<"lock_core_m::release_duration "
+    FUNC(lock_core_m::free_exts);
+    DBG(<<"%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%" 
+            << "FREE EXTENTS");
+    DBGTHRD(<<"lock_core_m::free_extents "
             << " tid=" << the_xlinfo->tid()
-                << " duration=" << int(duration)
-                << " all_less_than=" << all_less_than  );
+            << " duration=" << int(duration)
+            );
     w_assert2(MUTEX_IS_MINE(the_xlinfo->lock_info_mutex));
 
     lock_head_t* lock = 0;
@@ -2432,65 +2029,90 @@ lock_core_m::release_duration(
     w_assert1((duration == 0 || duration > 0) && duration < t_num_durations);
 
     /*
-     *  If all_less_than is set, then release from 0 to "duration",
-     *          else release only those of "duration"
+     *  Extent locks are long, so don't search the shorter-duration 
+     *  locks lists.
      */
-    for (int i = (all_less_than ? t_instant : duration); i <= duration; i++) 
+    for (int i= duration; i <= duration; i++) 
     {
-	if(i == t_long)
-	    sli_purge_inactive_locks(the_xlinfo);
+        request_list_i   iter(the_xlinfo->my_req_list[i]); 
+        while ((request = iter.next())) 
+        {
+            lock = request->get_lock_head();
+            DBG(<<"request is " << request << "=="
+                    << *request << " lock " << lock << "=" << lock->name );
 
+            if ( lock->name.lspace() != lockid_t::t_extent ) continue;
+            if ( lock->granted_mode == EX)  continue;
+            if ( upgrade_ext_req_to_EX_if_should_free(request) )  
+            {
+                // set return value
+                lock->name.extract_extent(*ext_to_free);
+
+                DBG(<<" found extent to free : "<< *ext_to_free );
+                // lock->name.lspace() == lockid_t::t_extent && 
+                // upgrade_ext_req_to_EX_if_should_free(request) 
+                // returned true
+                //
+                // Co-routine with lock manager:
+                // We return to the lock_m to free the extent while
+                // we hold the EX lock on it; then it
+                // frees the lock and comes back to the lock_core
+                // with another call to release_duration.
+                DBG(<<" upgraded: returning: "<< *ext_to_free );
+                return RC(eFOUNDEXTTOFREE);
+            }
+        }
+    }
+    DBGTHRD(<<"lock_core_m::release_duration DONE");
+
+    return RCOK;
+}
+
+rc_t
+lock_core_m::release_duration(
+    xct_lock_info_t*    the_xlinfo,
+    duration_t          duration
+    )
+{
+    FUNC(lock_core_m::release_duration);
+    DBG(<<"%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%" << "RELEASE DURATION");
+    DBGTHRD(<<"lock_core_m::release_duration "
+            << " tid=" << the_xlinfo->tid()
+                << " duration=" << int(duration)
+                );
+    w_assert2(MUTEX_IS_MINE(the_xlinfo->lock_info_mutex));
+
+    lock_head_t* lock = 0;
+    lock_request_t* request = 0;
+    w_assert1((duration == 0 || duration > 0) && duration < t_num_durations);
+
+    /*
+     *  release from 0 to "duration"
+     */
+    for (int i = t_instant; i <= duration; i++) 
+    {
         //backwards:
         //requests(the_xlinfo->my_req_list[i], true);
         request_list_t &requests =  the_xlinfo->my_req_list[i];
-        if (i < t_long || !ext_to_free)  {
-            while ((request = requests.top()))  {
-                DBG(<<"popped request "  << request << "==" << *request);
-                if (request->is_quark_marker()) {
-                    // quark markers aren't in the lock head's request queue
-		    DELETE_LOCK_REQUEST(request);
-                    //atomic_dec(_requests_allocated);
-                    continue;
-                }
-                lock = request->get_lock_head();
-                W_COERCE(release_lock(the_xlinfo, lock->name, lock, request, true) );
+        DBGTHRD(<<"lock_core_m::release_duration "
+            << " i=" << i << " duration=" << int(duration)
+            << " request list length " << requests.num_members()
+                );
+        while ((request = requests.top()))  {
+            DBG(<<"popped request "  << request << "==" << *request);
+            if (request->is_quark_marker()) {
+                // quark markers aren't in the lock head's request queue
+                w_assert1(request->get_count()==0); // held-count
+#if USE_BLOCK_ALLOC_FOR_LOCK_STRUCTS
+                lock_request_pool->release(request);
+#else
+                delete request;
+#endif
+                atomic_dec(_requests_allocated);
+                continue;
             }
-        }  else  {
-            while ((request = requests.top()))  {
-                DBG(<<"popped request "  << request << "==" << *request);
-                if (request->is_quark_marker()) {
-                    // quark markers aren't in the lock head's request queue
-		    DELETE_LOCK_REQUEST(request);
-                    //atomic_dec(_requests_allocated);
-                    continue;
-                }
-
-                lock = request->get_lock_head();
-                DBG(<<"top request is " << request << "=="
-                        << *request << " lock " << lock << "=" << lock->name );
-
-                if ( !(lock->name.lspace() == lockid_t::t_extent && 
-                        upgrade_ext_req_to_EX_if_should_free(request)) )  
-                {
-                    DBGTHRD(<<"popped lock request " << 
-                                request<< "on my_req_list["<<
-                                i<<"] : " << *request);
-                    W_COERCE(release_lock(the_xlinfo, lock->name, lock, request, true) );
-                }  else  {
-                    // lock->name.lspace() == lockid_t::t_extent && 
-                    // upgrade_ext_req_to_EX_if_should_free(request) 
-                    // returned true
-                    //
-                    // Co-routine with lock manager:
-                    // We return to the lock_m to free the extent while
-                    // we hold the EX lock on it; then it
-                    // frees the lock and comes back to the lock_core
-                    // with another call to release_duration.
-                    lock->name.extract_extent(*ext_to_free);
-                    DBG(<<" found extent to free : "<< *ext_to_free );
-                    return RC(eFOUNDEXTTOFREE);
-                }
-            }
+            lock = request->get_lock_head();
+            W_COERCE(release_lock(the_xlinfo, lock->name, lock, request, true) );
         }
     }
     DBGTHRD(<<"lock_core_m::release_duration DONE");
@@ -2512,11 +2134,18 @@ lock_core_m::open_quark(
         W_FATAL(eINTERNAL);
     }
     MUTEX_ACQUIRE(xd->lock_info()->lock_info_mutex);
-    lock_request_t* marker = NEW_LOCK_REQUEST(xd, true);
+
+#if USE_BLOCK_ALLOC_FOR_LOCK_STRUCTS
+    lock_request_t* marker = lock_request_pool->acquire(xd, true);
+    w_assert1(marker);
+#else
+    lock_request_t* marker = new lock_request_t();
+    marker->init(xd, true/*is marker */);
+#endif
     xd->lock_info()->set_quark_marker (marker);
     MUTEX_RELEASE(xd->lock_info()->lock_info_mutex);
 
-    //atomic_inc(_requests_allocated);
+    atomic_inc(_requests_allocated);
     if (xd->lock_info()->quark_marker() == NULL) return RC(fcOUTOFMEMORY);
     return RCOK;
 }
@@ -2544,17 +2173,21 @@ lock_core_m::close_quark(
 
         w_assert1(MUTEX_IS_MINE(the_xlinfo->lock_info_mutex));
         the_xlinfo->quark_marker()->xlink.detach();
-	DELETE_LOCK_REQUEST(the_xlinfo->quark_marker());
+        w_assert1(the_xlinfo->quark_marker()->get_count()==0); // held-count
+#if USE_BLOCK_ALLOC_FOR_LOCK_STRUCTS
+        lock_request_pool->release(the_xlinfo->quark_marker());
+#else
+        delete the_xlinfo->quark_marker(); // is a lock_request_t
+#endif
         the_xlinfo->set_quark_marker(NULL);
 
-        //atomic_dec(_requests_allocated);
+        atomic_dec(_requests_allocated);
         MUTEX_RELEASE(the_xlinfo->lock_info_mutex);
         return RCOK;
     }
 
     lock_head_t*        lock = 0;
     lock_request_t*     request = 0;
-    bool                MAYBE_UNUSED found_marker = false;
 
     w_assert1(MUTEX_IS_MINE(the_xlinfo->lock_info_mutex));
 
@@ -2567,9 +2200,13 @@ lock_core_m::close_quark(
             request->xlink.detach();
             DBGTHRD(<<"detached lock request in close_quark");
             the_xlinfo->set_quark_marker(NULL);
-	    DELETE_LOCK_REQUEST(request);
-            //atomic_dec(_requests_allocated);
-            found_marker = true;
+            w_assert1(request->get_count()==0); // held-count
+#if USE_BLOCK_ALLOC_FOR_LOCK_STRUCTS
+            lock_request_pool->release(request);
+#else
+            delete request;
+#endif
+            atomic_dec(_requests_allocated);
             break;  // finished
         }
         if (request->mode() == IS || request->mode() == SH || request->mode() == UD) {
@@ -2591,7 +2228,6 @@ lock_core_m::close_quark(
        }
     }
     MUTEX_RELEASE(the_xlinfo->lock_info_mutex);
-    w_assert9(found_marker);
     return RCOK;
 }
 
@@ -2601,14 +2237,12 @@ lock_core_m::_check_deadlock(xct_t* self,
         lock_request_t *myreq
 )
 {
-    
     xct_lock_info_t* myli = self->lock_info();
     w_assert2(MUTEX_IS_MINE(myli->lock_info_mutex));
 
     lock_head_t* lock = myreq->get_lock_head();
-#if MY_LOCK_DEBUG
-    w_assert2(MUTEX_IS_MINE(lock->head_mutex));
-#endif
+
+    ASSERT_HEAD_MUTEX_IS_MINE(lock);
 
     /*************************************************************************
      *
@@ -2691,37 +2325,48 @@ lock_core_m::_check_deadlock(xct_t* self,
     lock_request_t* req = 0;
     if(first_time) {
         INC_TSTAT(lock_dld_first_call_cnt);
-    } else {
-        INC_TSTAT(lock_dld_call_cnt);
-    }
+    } 
+    INC_TSTAT(lock_dld_call_cnt);
 
     if(!deadlock_found) {
+        // tautology
+        
         /* We really have to check for deadlock involving any of the
          * xcts that have requests queued ahead of us.
+         * To do that, we go through the queue of requests hanging off
+         * this lock and, for any request that could possibly be in
+         * a dependency cycle, we "add" its wait_map to ours.
         */
+
         int Qlen = lock->queue_length();
         w_assert2(Qlen> 1);
         // We should not be calling _check_deadlock unless we have
         // to wait for something so the length of the queue had better
-        // not be 1. If we are converting, we have to look beyond
+        // not be 1. 
+        
+        // Avoid excess queue processing:
+        // If we are converting, we have to look beyond
         // our request in the queue, but if not, we can stop when we
         // hit our request.
         bool converting = (myreq->status() == lock_m::t_converting) ;
         lmode_t mymode = converting ? myreq->convert_mode() : myreq->mode();
 
+        // Iterate over the requests (req) in the queue.
         // This iterator is ok because we have the lock's head_mutex
         // and if we block, we'll restart the search anyway.
-        lock_head_t::safe_queue_iterator_t it(*lock);
-	bool so_far_everyone_granted = true;
-	bool ahead_of_us = true;
+        lock_head_t::safe_queue_iterator_t it(*lock); 
+        
+		bool req_is_ahead_of_us = true; /* we have not yet reached myreq in the lock_head_t list */
+
         for(int i=0; i < Qlen; i++)
         {
             req = it.next();
             if(req == myreq) 
             {
-		ahead_of_us = false;
+                req_is_ahead_of_us = false;
                 // If we are not converting, then the only request we
                 // depend on should be ahead of us in the queue.
+                // We can quit searching the queue.
                 if(!converting) {
                     if(DEBUG_DEADLOCK)
                     fprintf(stderr, 
@@ -2730,8 +2375,10 @@ lock_core_m::_check_deadlock(xct_t* self,
                     break;
                 }
 
-                // On the other hand, if we are converting, we could depend
-                // on something anywhere in the queue, so keep looking
+            // On the other hand, if we are converting, we could depend
+            // on something anywhere in the queue (e.g. multiple SH granted, 
+            // and ours is first in the list, and we are upgrading it to EX)
+            // so keep looking for incompatible locks.
                 if(DEBUG_DEADLOCK)
                     fprintf(stderr, 
                     "%p found my req -- skipping, keep looking, i %d len %d\n",
@@ -2739,180 +2386,229 @@ lock_core_m::_check_deadlock(xct_t* self,
                 continue;
             }
 
-	    // compatibility is not just with predecessor's current lock mode.
-	    // Suppose this case.
-	    // Lock head A: T1-S-granted, T2-S-granted-upgrading-to-X, T3-S-waiting
-	    // Lock head B: T3-X-granted, T1-X-waiting
-	    // because T2 has prior upgrade-request, T3 can't get S lock on A.
-	    // We have to detect this as an incompatible case too.
-	    // see acquire_lock() code. see ticket:105
-	    bool predecessor_compatible;
-	    if (ahead_of_us && (req->status() == lock_m::t_waiting || req->status() == lock_m::t_converting)) {
-		if (so_far_everyone_granted) {
-		    // this is the first waiter ahead of us, so we are waiting for him too
-		    // regardless of lock mode
-		    predecessor_compatible = false;
-		    so_far_everyone_granted = false;
-		} else {
-		    // otherwise (2nd, 3rd... waiter ahead us), just check lock mode compatibility.
-		    // alternatively, we can always consider them as incompatible and it might detect deadlock
-		    // earlier (before the first waiter or this thread get victimized), but could
-		    // cause false positives instead (consider this: S, S->X (1st waiter), S(2nd),S,..., S(me) ).
-		    if (req->status() == lock_m::t_converting) {
-			predecessor_compatible = compat[req->mode()][mymode] && compat[req->convert_mode()][mymode];
-		    } else {
-			predecessor_compatible = compat[req->mode()][mymode];
-		    }
-		}
-	    } else {
-		predecessor_compatible = compat[req->mode()][mymode];
-	    }
-	    if(predecessor_compatible) {
-		if(DEBUG_DEADLOCK) 
-                    fprintf(stderr, 
-"%p found compat i %d len %d status %d mode %d req %p (my status %d mode %d)\n",
-                    myreq, i, Qlen,
-                    req->status(), req->mode(), req,
-                myreq->status(), mymode);
-                // We can't be waiting for this guy to go away...
-                continue;
-            }
+                    
+			// A candidate request for deadlocking is one that
+			// 1) is ahead of us in the queue if we're t_waiting, or 
+			// could be anywhere in the queue if we are t_converting
+			// AND 
+			// 2) is itself waiting/converting OR
+			// is granted and has mode incompatible with ours, specifically,
+			//  -- if i'm t_waiting,    my mode is incompat w its mode, or
+			//  -- if i'm t_converting, my convert_mode is incompat w its mode
+			// which translates to mymode is incompatible with its mode.  
+			// Testing "its mode"
+			// compatibility is not just with predecessor's current lock mode.
+			// Take this case:
+			// Lock head A: T1-SH-granted, 
+			//              T2-SH-granted-convert-to-EX, 
+			//              T3-SH-waiting
+			// Lock head B: T3-EX-granted, T1-EX-waiting
+			// because T2 has prior upgrade-request, T3 can't get SH lock on A.
+			// We have to detect this as an incompatible case too 
+			//    (compat[T3-SH with T2-EX] 
+            bool predecessor_compatible;
+
+			{
+				// assert: status of any request in the queue is waiting, converting, 
+				// or granted.  The order of 
+				// items in the queue is the order of their arrival (acquires).
+				w_assert0 (req->status() == lock_m::t_waiting || 
+					req->status() == lock_m::t_converting ||
+					req->status() == lock_m::t_granted);
+
+				// Remember that mymode is alread set to convert mode if 
+				// I'm converting.
+				// test 1: my mode is compat with request mode.
+				bool compat_test_1 = compat[mymode][req->mode()];
+				// test 2: if it's converting, apply test 2: 
+				// my mode compat with request's convert mode
+				bool compat_test_2 = (req->status() == lock_m::t_converting)
+							? compat[mymode][req->convert_mode()] : true;
+
+				predecessor_compatible = compat_test_1 && compat_test_2;
+
+				// NOTE: I sent Hideaki a msg about the code below, which, in 
+				// addition to being a bit
+				// confusing, looks to me like it would generate false 
+				// positives in this so_far_everyone_granted case.
+				// I'm thinking we just need the bug fix: test both 
+				// convert mode and granted mode.
+
+				if(predecessor_compatible) {
+					if(DEBUG_DEADLOCK) 
+						fprintf(stderr, 
+	"%p found compat i %d len %d status %d mode %d req %p (my status %d mode %d)\n",
+						myreq, i, Qlen,
+						req->status(), req->mode(), req,
+					myreq->status(), mymode);
+					// We can't be waiting for this guy to go away...
+					continue;
+				}
 
 
-            // We have a candidate.
-            // thread map update fails if it detects deadlock...
-            xct_lock_info_t* theirli = req->get_lock_info();
-            if(!myli->update_wait_map(theirli->get_wait_map())) {
-                if(DEBUG_DEADLOCK)
-                    fprintf(stderr, 
-"%p Deadlock found@%d i %d len %d their status %d mode %d req %p (my status %d mode %d)\n", 
-                myreq, __LINE__, i, Qlen,
-                req->status(), req->mode(), req,
-                myreq->status(), mymode);
-                deadlock_found = true;
-                break;
-            }
+				// We have a candidate.
+				xct_lock_info_t* theirli = req->get_lock_info();
 
-            if(DEBUG_DEADLOCK)
-                fprintf(stderr, 
-                        "%p N/A i %d len %d status %d mode %d req %p\n", 
-                        myreq, i, Qlen, 
-                        req->status(), req->mode(), req);
+				// thread map update fails if it detects deadlock...
+				if(!myli->update_wait_map(theirli->get_wait_map())) {
+					if(DEBUG_DEADLOCK)
+						fprintf(stderr, 
+		"%p Deadlock found@%d i %d len %d their status %d mode %d req %p (my status %d mode %d)\n", 
+							myreq, __LINE__, i, Qlen,
+						req->status(), req->mode(), req,
+						myreq->status(), mymode);
 
-        }
+					deadlock_found = true;
 
-    }
+					// break; // out of for-loop on request queue.
+					// replaced by below: decide who's the victim
+					// and if I'm not the victim but the other one isn't
+					// a candidate after all, then keep looking
+					// through the list.  So we've moved a bunch of the work
+					// inside the for-loop to enable us to continue looking in the
+					// pathological cases. (In the orig code, we'd just return and let the
+					// next check_deadlock call handle this.)
+					
+					if(deadlock_found) // tautology
+					{
+						w_rc_t::errcode_t e = _deadlock_decide(req, myli);
+						if(e == eRETRY) { deadlock_found = false; continue; }
+						else return e;
+					}
+				}
+
+				if(DEBUG_DEADLOCK)
+					fprintf(stderr, 
+							"%p N/A i %d len %d status %d mode %d req %p\n", 
+							myreq, i, Qlen, 
+							req->status(), req->mode(), req);
+
+			} // check for compatibility
+			w_assert1(req != NULL);
+		} // for loop on request queue 
+	}
 
     if(deadlock_found) {
         INC_TSTAT(lock_deadlock_cnt);
 
-        if(0)
-        {
-            ostringstream os;
-            os << *lock << ends;
-            fprintf(stderr, 
-                "Possible deadlock waiting on %s req %p\n", os.str().c_str(),
-                    req);
-        }
-
-        xct_lock_info_t *their_lock_info = req->get_lock_info();
-
-        // Grab the mutex and check whether this makes sense.  This should
-        // avoid doing this while the other thread is in DLD.  It could
-        // be blocked and just waking up from a timeout though.
-        if(myli->tid() < their_lock_info->tid()) {
-            // NOTE: I hold my lock_info_mutex, but
-            // since I am necessarily acquiring in order (old->young)
-            // this should not cause a mutex-mutex deadlock.
-            // MUTEX_ACQUIRE(their_lock_info->lock_info_mutex);
-            // NEH: The problem  here is that a thread cannot hold 2 of these
-            // mutexes because they use a single TLS qnode for this.
-        // FRJ: Also note that we indirectly have locked their
-        // node (we hold the lock head, so they can't free
-        // it). The critical section is both unnecessary and
-        // deadlock-prone
-            
-            // I'm older -- abort other
-            INC_TSTAT(lock_dld_victim_other_cnt);
-            // We have to unblock the thread that's waiting for this xct,
-            // which might not be the one associated with the req we found.
-            
-            lock_request_t *that_waiting = their_lock_info->waiting_request();
-            if(!that_waiting) {
-                // No longer waiting...
-                INC_TSTAT(lock_false_deadlock_cnt);
-                return eOK;
-            }
-            w_assert2 (myli->tid() != that_waiting->get_lock_info()->tid());
-
-            if(that_waiting->status() != lock_m::t_waiting
-                &&
-               that_waiting->status() != lock_m::t_converting) 
-            {
-                // no longer waiting - might be granted now.
-                INC_TSTAT(lock_false_deadlock_cnt);
-                return eOK;
-            }
-
-
-            // This is still racy, but with this we might reduce the
-            // chance of trying to unblock a thread that's running 
-            // DLD and not blocked yet, or is no longer blocked.  
-            // We can't acquire the
-            // mutex on their_lock_info in order to change any state
-            // and cause the other to go away on its own.  The best
-            // we can do is try to avoid the unblock and go back to sleep,
-            // and try again.   If the deadlock still persists, we
-            // can hope that the younger thread will notice that
-            // it should kill itself.
-            if(their_lock_info->waiting_request_is_blocking()==false) 
-            {
-                // Might be running DLD but not blocked at the moment.
-                // Or no longer waiting - might be granted now.
-                INC_TSTAT(lock_dld_false_victim_cnt);
-                return eOK;
-            }
-
-            DBGTHRD(<<"about to unblock " << *that_waiting);
-            smthread_t *thr = that_waiting->thread();
-            if(!thr) {
-                // No longer has  a waiting thread.
-                // This can happen only if the request got destructed
-                // and hasn't yet been reused.  We should not
-                // encounter such a request in the queue since we hold
-                // the lock head mutex.
-                W_FATAL(eINTERNAL);
-            }
-            // TODO: non-rc-t version of smthread_unblock
-            rc_t rc = thr->smthread_unblock(eDEADLOCK);
-
-            if(rc.is_error()) {
-                if(rc.err_num() != eNOTBLOCKED) {
-                    // programming error 
-                    W_FATAL(rc.err_num());
-                }
-                if(0)
-                {
-                    ostringstream os;
-                    os << req << ends;
-                    fprintf(stderr, 
-        "Unblocked non-waiting deadlock victim while acquiring on %s\n", 
-                        os.str().c_str());
-                }
-                INC_TSTAT(lock_dld_false_victim_cnt);
-                return eOK;
-            }
-            return rc.err_num();
-        } else {
-            // I'm younger -- I'm the victim
-            INC_TSTAT(lock_dld_victim_self_cnt);
-
-            return eDEADLOCK;
-        }
+        return _deadlock_decide(req, myli);
     }
     return eOK;
 }
 
+// Decide what to do with the candidate victim.
+// returns eOK if the victim is no longer waiting -- false deadlock
+// returns eDEADLOCK 
+w_rc_t::errcode_t 
+lock_core_m::_deadlock_decide(
+                    lock_request_t *req, // their lock request
+                    xct_lock_info_t *myli // my lock info
+) {
+    xct_lock_info_t *their_lock_info = req->get_lock_info();
+    // Grab the mutex and check whether this makes sense.  This should
+    // avoid doing this while the other thread is in DLD.  It could
+    // be blocked and just waking up from a timeout though.
+    if(myli->tid() < their_lock_info->tid()) {
+        // I'm older -- abort the other if it's waiting
+    
+        // NOTE: I hold my lock_info_mutex, but
+        // since I am necessarily acquiring in order (old->young)
+        // this should not cause a mutex-mutex deadlock.
+        // MUTEX_ACQUIRE(their_lock_info->lock_info_mutex);
+        // NEH: The problem  here is that a thread cannot hold 2 of these
+        // mutexes because they use a single TLS qnode for this.
+    // FRJ: Also note that we indirectly have locked their
+    // node (we hold the lock head, so they can't free
+    // it). The critical section is both unnecessary and
+    // deadlock-prone
+        
+        // I'm older -- abort other
+        INC_TSTAT(lock_dld_victim_other_cnt);
+        // We have to unblock the thread that's waiting for this xct,
+        // which might not be the one associated with the req we found.
+        
+        lock_request_t *that_waiting = their_lock_info->waiting_request();
+        if(!that_waiting) {
+            // No longer waiting...
+            INC_TSTAT(lock_false_deadlock_cnt);
+            return eOK;
+        }
+        w_assert2 (myli->tid() != that_waiting->get_lock_info()->tid());
+
+        if(that_waiting->status() != lock_m::t_waiting
+            &&
+           that_waiting->status() != lock_m::t_converting) 
+        {
+            // no longer waiting - might be granted now.
+            INC_TSTAT(lock_false_deadlock_cnt);
+            return eOK;
+        }
+
+        // This is still racy, but with this we might reduce the
+        // chance of trying to unblock a thread that's running 
+        // DLD and not blocked yet, or is no longer blocked.  
+        // We can't acquire the
+        // mutex on their_lock_info in order to change any state
+        // and cause the other to go away on its own.  The best
+        // we can do is try to avoid the unblock and go back to sleep,
+        // and try again.   If the deadlock still persists, we
+        // can hope that the younger thread will notice that
+        // it should kill itself.
+        // But if there's a *lot* of contention on this lock, we might
+        // livelock here.  So the best thing to do here might be to choose 
+        // ourselves as a victim.
+        // We'd prefer to do that only if we've tried this victim more than once 
+        // and failed. So we check the first_time argument passed in,
+        // which is a reflection of the # times we've called _check_deadlock.
+        if(their_lock_info->waiting_request_is_blocking()==false) 
+        {
+            // Might be running DLD but not blocked at the moment.
+            // Or no longer waiting - might be granted now.
+            
+            INC_TSTAT(lock_dld_false_victim_cnt);
+            return eOK;
+        }
+
+        DBGTHRD(<<"about to unblock " << *that_waiting);
+        smthread_t *thr = that_waiting->thread();
+        if(!thr) {
+            // No longer has  a waiting thread.
+            // This can happen only if the request got destructed
+            // and hasn't yet been reused.  We should not
+            // encounter such a request in the queue since we hold
+            // the lock head mutex.
+            W_FATAL(eINTERNAL);
+        }
+        
+        INC_TSTAT(lock_dld_victim_other_cnt);
+
+        // TODO: non-rc-t version of smthread_unblock
+        rc_t rc = thr->smthread_unblock(eDEADLOCK);
+
+        if(rc.is_error()) {
+            if(rc.err_num() != eNOTBLOCKED) {
+                // programming error 
+                W_FATAL(rc.err_num());
+            }
+            if(0)
+            {
+                ostringstream os;
+                os << req << ends;
+                fprintf(stderr, 
+    "Unblocked non-waiting deadlock victim while acquiring on %s\n", 
+                    os.str().c_str());
+            }
+            INC_TSTAT(lock_dld_false_victim_cnt);
+            return eOK;
+        }
+        return rc.err_num();
+    } else {
+        // I'm younger -- I'm the victim
+        INC_TSTAT(lock_dld_victim_self_cnt);
+
+        return eDEADLOCK;
+    }
+}
 
 
 /*********************************************************************
@@ -2921,18 +2617,23 @@ lock_core_m::_check_deadlock(xct_t* self,
  *
  *********************************************************************/
 void
-lock_core_m::_update_cache(xct_lock_info_t* the_xlinfo, const lockid_t& name, lmode_t m) 
+lock_core_m::_update_cache(xct_lock_info_t* the_xlinfo, 
+        const lockid_t& name, lmode_t m) 
 {
-    if (name.lspace() <= lockid_t::t_page) 
+    w_assert0(m == NL);
+    // We had better be using _update_cache
+    // ONLY to remove items from the cache, because
+    // if we need to upgrade the mode, we must go through
+    // the lock core for this.
+    
+    if (name.lspace() <= lockid_t::cached_granularity) 
     {
         if (lock_cache_elem_t* e = 
             the_xlinfo->search_cache(name)
         ) {
-            e->mode = m;
-            if (m == NL)
-                // do this because a long lock shouldn't be updated to
-                // NL, but if it is the req might be gone.
-                e->req = 0;
+            e->clear();
+            // do this because a long lock shouldn't be updated to
+            // NL, but if it is the req might be gone.
         }
     }
 }
@@ -2965,7 +2666,7 @@ lock_core_m::dump(ostream & o)
         }
         while (lock)  {
             // First, verify the hash function:
-            unsigned hh = _table_hash(w_hash(lock->name));
+            unsigned hh = _table_bucket(lock->name.hash());
             if(hh != h) {
                 o << "ERROR!  hash table bucket h=" << h 
                     << " contains lock head " << *lock
@@ -2973,7 +2674,7 @@ lock_core_m::dump(ostream & o)
                     << endl;
             }
             
-            MUTEX_ACQUIRE(lock->head_mutex);
+            ACQUIRE_HEAD_MUTEX(lock); // this is dump
             o << "\t " << *lock << endl;
             lock_request_t* request;
             lock_head_t::safe_queue_iterator_t r(*lock);
@@ -2981,7 +2682,7 @@ lock_core_m::dump(ostream & o)
             while ((request = r.next()))  {
                 o << "\t\t" << *request << endl;
             }
-            MUTEX_RELEASE(lock->head_mutex);
+            RELEASE_HEAD_MUTEX(lock); // acquired here NOT through find_lock_head
             lock = i.next();
         }
         RELEASE_BUCKET_MUTEX(h);
@@ -2993,8 +2694,14 @@ void lock_core_m::dump()
 {
     dump(cerr);
     cerr << flushl;
+    lock_request_pool->dump();
+    cerr << flushl;
 }
 
+void  lock_core_m::dump_cache(const xct_lock_info_t *linfo, ostream &out) const 
+{
+    linfo->dump_cache(out);
+}
 
 /*********************************************************************
  *
@@ -3082,11 +2789,13 @@ lock_core_m::_dump(ostream &o)
 ostream& 
 operator<<(ostream& o, const lock_request_t& r)
 {
+    const lock_head_t *h = r.get_lock_head();
     o << "xct:" << r.get_lock_info()->tid()
       << " mode:" << lock_base_t::mode_str[r.mode()]
-      << " cnt:" << r.get_count()
+      << " cnt:" << r.get_count() // held-count
       << " num_children:" << r.num_children()
       << " dur:" << lock_base_t::duration_str[r.get_duration()]
+      << " name:" << h->name
       << " stat:";
 
 
@@ -3104,31 +2813,6 @@ operator<<(ostream& o, const lock_request_t& r)
     default:
         o << "BAD STATE (" << int(r.status()) << ")"  ;
         // W_FATAL(smlevel_0::eINTERNAL);
-    }
-
-    o << " sli:";
-    switch(r._sli_status) {
-    case sli_not_inherited:
-	o << "-";
-	break;
-    case sli_active:
-	o << "A";
-	break;
-    case sli_inactive:
-	o << "I";
-	break;
-    case sli_invalidating:
-	o << "i*";
-	break;
-    case sli_invalid:
-	o << "i";
-	break;
-    case sli_abandoned:
-	o << "a";
-	break;
-    default:
-	o << "<BAD>";
-	break;
     }
 
     return o;
@@ -3300,14 +2984,6 @@ operator>>(istream& i, lockid_t::user4_t& u)
     return i;
 }
 
-
-uint4_t
-lock_core_m::_table_hash(uint4_t id) const
-{
-  return id % _htabsz;
-}
-
-
 /****************************************************************************************************************
  * virtual tables for lock_m, lock_core. I would put this in vtable_lock.cpp but for the
  * fact that the bucket_t is static in scope.
@@ -3380,7 +3056,7 @@ lock_core_m::collect( vtable_t& v, bool names_too)
             chain_list_i i(_htab[h].chain);
             lock = i.next();
             while (lock)  {
-                MUTEX_ACQUIRE(lock->head_mutex);
+                ACQUIRE_HEAD_MUTEX(lock); //collect vtable 
                 lock_request_t* request;
                 lock_head_t::safe_queue_iterator_t r(*lock); 
                 while ((request = r.next()))  {
@@ -3394,7 +3070,7 @@ lock_core_m::collect( vtable_t& v, bool names_too)
                         break;
                     }
                 }
-                MUTEX_RELEASE(lock->head_mutex);
+                RELEASE_HEAD_MUTEX(lock); // acquired here NOT through find_lock_head
                 if(found <= n)  {
                     lock = i.next();
                 } else {

@@ -16,11 +16,14 @@ noop:
 check_PROGRAMS     = thread1$(EXEEXT) thread2$(EXEEXT)\
 		     thread3$(EXEEXT) thread4$(EXEEXT) \
 		     ioperf$(EXEEXT) mmap$(EXEEXT) \
+		     errlogtest$(EXEEXT) \
 		     except$(EXEEXT) pthread_test$(EXEEXT)
 
 TESTS = testall
 
 LDADD = ../libsthread.a ../../fc/libfc.a $(LOCALLDADD)
+
+errlogtest_SOURCES      = errlogtest.cpp
 
 pthread_test_SOURCES  = pthread_test.cpp
 

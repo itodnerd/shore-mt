@@ -24,7 +24,7 @@
 // -*- mode:c++; c-basic-offset:4 -*-
 /*<std-header orig-src='shore' incl-file-exclusion='LOCK_CORE_H'>
 
- $Id: lock_core.h,v 1.43 2010/06/15 17:30:07 nhall Exp $
+ $Id: lock_core.h,v 1.50 2012/01/02 17:02:17 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -122,15 +122,19 @@ public:
                 lock_request_t*   request,
                 bool              force);
 
-    bool        wakeup_waiters(lock_head_t*& lock, lock_request_t* self=NULL);
+    void        wakeup_waiters(lock_head_t*& lock);
 
     bool        upgrade_ext_req_to_EX_if_should_free(
                 lock_request_t*        req);
 
     rc_t        release_duration(
                 xct_lock_info_t*    theLockInfo,
+                duration_t        duration
+                );
+
+    rc_t        free_extents(
+                xct_lock_info_t*    theLockInfo,
                 duration_t        duration,
-                bool            all_less_than,
                 extid_t*        ext_to_free);
 
     rc_t        open_quark(xct_t*        xd);
@@ -143,12 +147,6 @@ public:
                 lmode_t            mode);
     
     void        FreeLockHeadToPool(lock_head_t* theLockHead);
-
-    enum sli_parent_cmd { RECLAIM_NO_PARENT, RECLAIM_CHECK_PARENT, RECLAIM_RECLAIM_PARENT };
-    lock_request_t* sli_reclaim_request(lock_request_t* &req, sli_parent_cmd pcmd, lock_head_t::my_lock* lock_mutex);
-    bool sli_invalidate_request(lock_request_t* &req);
-    void sli_abandon_request(lock_request_t* &req, lock_head_t::my_lock* lock_mutex);
-    void sli_purge_inactive_locks(xct_lock_info_t* theLockInfo, bool force=false);
 
 
     /* search the lock cache. if reclaim=true, attempt to reclaim the
@@ -164,20 +162,30 @@ public:
                      lockid_t const &name,
                      lock_mode_t mode,
                      lock_request_t* req);
+
     void        compact_cache(xct_lock_info_t* theLockInfo, 
-			                        lockid_t const &name );
+                                    lockid_t const &name );
+
+    void        dump_cache(const xct_lock_info_t *theLockInfo, ostream &out) const;
     
 private:
-    uint4_t        _table_hash(uint4_t) const; // mod it to fit table size
-    w_rc_t::errcode_t _check_deadlock(xct_t* xd, bool first_time,
-				      lock_request_t *myreq);
+    uint4_t        _table_bucket(uint4_t id) const { return id % _htabsz; }
+    w_rc_t::errcode_t _check_deadlock(
+                    xct_t* xd, bool first_time, lock_request_t *myreq);
+	// helper for _check_deadlock:
+	w_rc_t::errcode_t _deadlock_decide(
+					lock_request_t *req, // their lock request
+					xct_lock_info_t *myli // my lock info
+					);
     void    _update_cache(xct_lock_info_t *theLockInfo, const lockid_t& name, lmode_t m);
-    bool	_maybe_inherit(lock_request_t* request, bool is_ancestor=false);
     
     // internal version that does the actual release
     rc_t    _release_lock(lock_request_t* request, bool force);
 
 #define DEBUG_LOCK_HASH 0
+// Turning this on will do lots of very expensive stuff with the
+// hash; it's for analyzing the hash function only. Should never be
+// used in production.
 #if DEBUG_LOCK_HASH
     void               compute_lock_hash_numbers() const;
     void               dump_lock_hash_numbers() const;
@@ -192,6 +200,25 @@ private:
 #define ACQUIRE_BUCKET_MUTEX(i) MUTEX_ACQUIRE(_htab[i].mutex);
 #define RELEASE_BUCKET_MUTEX(i) MUTEX_RELEASE(_htab[i].mutex);
 #define BUCKET_MUTEX_IS_MINE(i) w_assert3(MUTEX_IS_MINE(_htab[i].mutex));
+
+#define ACQUIRE_HEAD_MUTEX(l) { \
+    w_assert1(l->chain.member_of()!=0); \
+    MUTEX_ACQUIRE(l->head_mutex); \
+    w_assert1(l->chain.member_of()!=0); \
+    }
+#define RELEASE_HEAD_MUTEX(l) { \
+    w_assert1(l->chain.member_of()!=0); \
+    MUTEX_RELEASE(l->head_mutex); \
+    }
+
+// MY_LOCK_DEBUG is set in lock_x.h
+#if MY_LOCK_DEBUG
+#define ASSERT_HEAD_MUTEX_IS_MINE(l) w_assert2(MUTEX_IS_MINE(l->head_mutex));
+#define ASSERT_HEAD_MUTEX_NOT_MINE(l) w_assert2(MUTEX_IS_MINE(l->head_mutex)==false);
+#else
+#define ASSERT_HEAD_MUTEX_IS_MINE(l) 
+#define ASSERT_HEAD_MUTEX_NOT_MINE(l) 
+#endif
 
 
 /*<std-footer incl-file-exclusion='LOCK_CORE_H'>  -- do not edit anything below this line -- */

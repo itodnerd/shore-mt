@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='SM_S_H'>
 
- $Id: lsn.cpp,v 1.1.2.1 2009/09/14 00:05:11 nhall Exp $
+ $Id: lsn.cpp,v 1.2 2010/05/26 01:20:12 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

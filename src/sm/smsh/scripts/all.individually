@@ -13,6 +13,7 @@
  alloc.8\
  alloc.2 \
  bng.1\
+ bt.1 \
  bt.insert.1\
  bt.insert.2\
  bt.insert.3\
@@ -58,7 +59,6 @@
  \
  multi.1\
  multi.2\
- multi.3\
  deadlock.1\
  deadlock.2\
  deadlock.4\
@@ -91,7 +91,6 @@
  mpw\
  pin.1\
  pin.2\
- pin.3\
  pin.4\
  pin.5\
  record_create_abort.1\
@@ -106,6 +105,7 @@
  sort.2\
  sort.3\
  sort.4\
+ sort.mkey.1 \
  space_recovery\
  thread_fork_example\
  tmpfile.1\
@@ -161,16 +161,12 @@
  ]
 
  set badalone [list \
- sort.mkey.1 \
- bt.1 \
  btree.load.multi \
  btree.31 \
  ]
  # confidence :  : doesn't belong in this list. It's a list by itself.
  # would be good for testall
  # 
- #  sort.mkey.1 probably has to do with key_cookie_t
-#
  # btree.big.1  FC_NOTIMPLEMENTED: always was the case.
  #    so I moved it to bugs/
  # bt.1 : eRECWONTFIT : was the case with 5.0.2 also.

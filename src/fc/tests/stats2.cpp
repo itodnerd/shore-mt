@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore'>
 
- $Id: stats2.cpp,v 1.1.2.5 2010/03/19 22:17:53 nhall Exp $
+ $Id: stats2.cpp,v 1.5 2010/12/08 17:37:38 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -33,7 +33,6 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 #include <w.h>
 #include <w_base.h>
-#include <w_debug.h>
 
 #include "w_stat.h"
 #undef TEST1
@@ -50,7 +49,6 @@ void statstest();
 int main()
 {
 
-    DBG(<<"app_test: main");
     statstest();
     return 0;
 }
@@ -64,16 +62,12 @@ statstest()
 {
     /*********w_statistics_t ***********/
 
-    // DEAD class w_statistics_t ST; // generic stats class
     class test_stat TSTA; // my test class that uses stats
     class test_stat TSTB; // my test class that uses stats
     w_rc_t    e;
     TSTA.compute();
     TSTB.dec();
 
-    // DEAD ST << TSTA;
-    // DEAD ST << TSTA;
-    // DEAD ST << TSTA;
 	cout << TSTA;
 	cout << TSTB;
 

@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='SSH_ERROR_H'>
 
- $Id: smsh_error.h,v 1.1.2.4 2010/03/19 22:20:31 nhall Exp $
+ $Id: smsh_error.h,v 1.2 2010/05/26 01:20:52 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

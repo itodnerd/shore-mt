@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore' incl-file-exclusion='W_AUTODEL_H'>
 
- $Id: w_autodel.h,v 1.18.2.3 2010/03/19 22:17:19 nhall Exp $
+ $Id: w_autodel.h,v 1.19 2010/05/26 01:20:23 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 

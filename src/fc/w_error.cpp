@@ -23,7 +23,7 @@
 
 /*<std-header orig-src='shore'>
 
- $Id: w_error.cpp,v 1.60 2010/06/08 22:27:22 nhall Exp $
+ $Id: w_error.cpp,v 1.65 2012/01/02 17:02:13 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -54,13 +54,12 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 /*  -- do not edit anything above this line --   </std-header>*/
 
-#ifdef __GNUC__
+#if defined(__GNUC__)
 #pragma implementation "w_error.h"
 #endif
 
 #include <cstring>
 
-#define W_SOURCE
 #include <w_base.h>
 const
 #include <fc_einfo_gen.h>
@@ -85,37 +84,18 @@ const char *w_error_t::_range_name[w_error_t::max_range]= {
 };
 w_base_t::uint4_t        w_error_t::_nreg = 1;
 
-
 const w_error_t w_error_t::no_error_instance(__FILE__, __LINE__, 0, 0, 0);
+
 w_error_t* const w_error_t::no_error = const_cast<w_error_t *>(&no_error_instance);
 
 static void w_error_t_no_error_code()
 {
 }
-
-#if W_DEBUG_LEVEL > 3
-#define CHECKIT do {\
-        w_error_t*    my = _next; \
-        w_error_t*    p = my; \
-        while(p) { \
-        if (p == p->_next || my == p->_next) { \
-            cerr << "Recursive error detected:" << endl << *this << endl;\
-            W_FATAL(fcINTERNAL); \
-        } \
-        p = p->_next; \
-        } \
-  } while(0)
-
-#else
-#define CHECKIT
-#endif
-
 w_error_t&
 w_error_t::add_trace_info(
         const char* const    filename,
         uint4_t        line_num)
 {
-    verify_owner();
     if (_trace_cnt < max_trace)  {
         _trace_file[_trace_cnt] = filename;
         _trace_line[_trace_cnt] = line_num;
@@ -143,7 +123,6 @@ w_error_t&
 w_error_t::append_more_info_msg(const char* more_info)
 {
     CHECK_STRING(more_info);
-    verify_owner();
     if (more_info)  
     {
         int more_info_len = strlen(more_info);
@@ -192,8 +171,17 @@ inline w_base_t::uint4_t w_error_t::classify(int er)
 
 #if USE_BLOCK_ALLOC_FOR_W_ERROR_T
 DEFINE_TLS_SCHWARZ(block_alloc<w_error_t>, w_error_alloc);
+// This operator delete doesn't do anything automagic.
+// It's just a little more convenient for the caller than
+// calling block_alloc<w_error_t>::destroy_object.
+// Only a little. 
+// It still has to be called iff USE_BLOCK_ALLOC_FOR_W_ERROR_T
+// because we have to avoid doing any ::delete, which will call
+// the destructor implicitly. Destroy_object calls the destructor
+// explicitly.
 void w_error_t::operator delete(void* p) {
-  block_alloc<w_error_t>::destroy_object((w_error_t*) p);
+    DEBUG_BLOCK_ALLOC_MARK_FOR_DELETION((w_error_t *)p)
+    block_alloc<w_error_t>::destroy_object((w_error_t*) p);
 }
 #endif
 
@@ -213,7 +201,6 @@ w_error_t::w_error_t(const char* const        fi,
   _next(list)
 {
     CHECK_STRING(more_info_msg);
-    claim();
     CHECKIT;
 }
 
@@ -250,7 +237,6 @@ w_error_t::w_error_t(
           _next(list)
 {
     CHECK_STRING(more_info_msg);
-    claim();
     CHECKIT;
 }
 
@@ -349,12 +335,17 @@ w_error_t::module_name(err_num_t err_num)
     return _range_name[i];
 }
 
-void format_unix_error(int err, char *buf, int bufsize)
+void format_unix_error(int 
+#ifdef HAVE_STRERROR
+	err
+#else
+#endif
+		, char *buf, int bufsize)
 {
 #ifdef HAVE_STRERROR
     char    *s = strerror(err);
 #else
-    char    *s = "No strerror function. Cannot format unix error.";
+    const char    *s = "No strerror function. Cannot format unix error.";
 #endif
     strncpy(buf, s, bufsize);
     buf[bufsize-1] = '\0';

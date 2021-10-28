@@ -1,6 +1,6 @@
 /*<std-header orig-src='shore' incl-file-exclusion='SHELL_H'>
 
- $Id: shell.h,v 1.50 2010/05/26 01:20:51 nhall Exp $
+ $Id: shell.h,v 1.55 2010/12/08 17:37:45 nhall Exp $
 
 SHORE -- Scalable Heterogeneous Object REpository
 
@@ -41,11 +41,9 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 
 #include <sm_vas.h>
 #include "smsh.h"
-// DEAD #include "w_random.h"
 #include "rand48.h"
 #include <cstring>
 #include "smsh_error.h"
-#undef EXTERN
 #include <tcl.h>
 #include "tcl_workaround.h"
 #include "tcl_thread.h"
@@ -185,7 +183,6 @@ extern vec_t & parse_vec(const char *c, int len) ;
 extern vid_t make_vid_from_lvid(const char* lv);
 extern ss_m::ndx_t cvt2ndx_t(const char *s);
 extern lockid_t cvt2lockid_t(const char *str);
-extern bool use_logical_id(Tcl_Interp* ip);
 extern const char * check_compress_flag(const char *);
 
 
@@ -222,7 +219,7 @@ cvt2string(scan_index_i::cmp_t i)
     case scan_index_i::lt: return "<";
     case scan_index_i::le: return "<=";
     case scan_index_i::eq: return "==";
-    default: return "BAD";
+    default: break;
     }
     return "BAD";
 }
@@ -325,16 +322,17 @@ check(Tcl_Interp* ip, const char* s, int ac, int n1, int n2 = 0, int n3 = 0,
 }
 
 enum typed_btree_test {
-    test_nosuch, 
+    test_nosuch,  // 0
 
 	// not lexified, typed compare:
-    test_i1, test_i2, test_i4, test_i8,
-    test_u1, test_u2, test_u4, test_u8,
-    test_f4, test_f8, 
+    test_i1, test_i2, test_i4, test_i8, // 1,2,3,4
+    test_u1, test_u2, test_u4, test_u8, // 5,6,7,8
+    test_f4, test_f8,                   // 9, 10
 
     // selected byte lengths v=variable
-    test_b1, test_b23, test_bv, test_blarge,
-    test_spatial
+    test_b1, test_b23,                 // 11, 12
+	test_bv, test_blarge,              // 13, 14
+    test_spatial                       // 15
 };
 
 // Can't use extern "C" because CC finds it not matching the

@@ -14,13 +14,13 @@ FC_ERROR_GENFILES_H  = fc_errmsg_gen.h \
 GENFILES = $(FC_ERROR_GENFILES_H)
 
 include_HEADERS = \
+    atomic_class_pool.h \
     atomic_container.h \
     atomic_templates.h \
     block_alloc.h \
-    cpu_info.h \
     dynarray.h \
     mem_block.h \
-    errlog.h errlog_s.h \
+    errlog_s.h \
     gethrtime.h \
     largefile_aware.h \
     nbox.h \
@@ -30,10 +30,10 @@ include_HEADERS = \
     tls.h \
     vtable.h \
     valgrind_help.h \
-    w.h w_autodel.h w_base.h w_bitmap.h w_bitvector.h \
+    w.h w_autodel.h w_base.h w_bitvector.h \
     w_compat_strstream.h \
     w_hashing.h \
-    w_debug.h w_defines.h \
+    w_defines.h \
     w_error.h \
     w_findprime.h \
     w_getopt.h w_gettimeofday.h \
@@ -47,17 +47,15 @@ include_HEADERS = \
 
 libfc_a_SOURCES      = \
         rand48.cpp \
+        rusage.cpp \
         block_alloc.cpp \
-	w_temp_alloc.cpp \
-	w_rand.cpp \
-	cpu_info.cpp fc-noinline.cpp \
         dynarray.cpp \
         mem_block.cpp \
         gethrtime.cpp \
         w_compat_strstream.cpp \
         w_form.cpp \
-        common_tmpl.cpp w_debug.cpp errlog.cpp w_getopt.cpp nbox.cpp \
-        stime.cpp vtable.cpp w_base.cpp w_bitmap.cpp w_error.cpp \
+        common_tmpl.cpp w_getopt.cpp nbox.cpp \
+        stime.cpp vtable.cpp w_base.cpp w_error.cpp \
         valgrind_help.cpp \
         w_listm.cpp w_rc.cpp \
         w_input.cpp tls.cpp w_findprime.cpp
