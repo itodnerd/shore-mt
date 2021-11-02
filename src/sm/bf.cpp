@@ -997,6 +997,7 @@ bf_m::_fix(
 {
     FUNC(bf_m::fix);
     DBGTHRD( << "about to fix " << pid << " in mode " <<  int(mode)  );
+    cout << "about to fix " << pid << " in mode " <<  int(mode) <<endl;
 
     ret_page = 0;
 
@@ -1520,6 +1521,7 @@ bf_m::unfix(const page_s* buf, bool dirty, int ref_bit)
     // However the only time this is called with dirty==true is
     // after some logging, which should have set the lsns on the pages.
     if (dirty)  {
+        cout << "unfixing page " << buf->pid << " dirty" <<endl;
         if( _set_dirty(b) ) kick_cleaner = true;
         w_assert2( b->dirty() );
     } else {
@@ -3109,6 +3111,7 @@ bf_m::set_dirty(const page_s* buf)
         return RCOK;
     }
     w_assert1(b->frame() == buf);
+    cout << "set page " << buf->pid << " dirty" <<endl;
     if( _set_dirty(b) ) {
         vid_t v = b->pid().vol();
         activate_background_flushing(&v);
