@@ -72,6 +72,8 @@ template class w_list_t<bf_cleaner_thread_t, queue_based_block_lock_t>;
 template class w_list_i<bf_cleaner_thread_t, queue_based_block_lock_t>;
 #endif
 
+ostream& traces = cout;
+
 // These are here because bf_s.h doesn't know structure of *_frame
 void  bfcb_t::set_storeflags(w_base_t::uint4_t f) { 
     _store_flags = _frame->set_page_storeflags(f); 
@@ -997,7 +999,6 @@ bf_m::_fix(
 {
     FUNC(bf_m::fix);
     DBGTHRD( << "about to fix " << pid << " in mode " <<  int(mode)  );
-    cout << "about to fix " << pid << " in mode " <<  int(mode) <<endl;
 
     ret_page = 0;
 
@@ -1015,6 +1016,7 @@ bf_m::_fix(
      * until the cleaner has done its job
      */
     {
+        // check if available
         rc = _core->find(b, pid, mode, timeout);
         if(!rc.is_error()) {
             // latch already acquired
@@ -1022,7 +1024,8 @@ bf_m::_fix(
             w_assert1(b->latch.is_mine() || 
                     (mode == LATCH_SH && b->latch.held_by_me())
                     );
-            easy_find = (found=true); //double assignment
+            easy_find = true;
+            found = true;
         } else if( ! _cleaner_threads->is_empty() ) {
             // We have at least one cleaner thread -- kick it/them
             if(bf_cleaner_thread_t::_ndirty == npages()) {
@@ -1313,7 +1316,7 @@ bf_m::_fix(
     w_assert9(_core->latch_mode(b) >= mode);
 
     w_assert1(b->pin_cnt() > 0);
-
+    traces << "fix " << pid << " in mode " <<  int(mode) <<endl;
     return RCOK;
 }
 
@@ -1521,7 +1524,7 @@ bf_m::unfix(const page_s* buf, bool dirty, int ref_bit)
     // However the only time this is called with dirty==true is
     // after some logging, which should have set the lsns on the pages.
     if (dirty)  {
-        cout << "unfixing page " << buf->pid << " dirty" <<endl;
+        traces << "Mark " << buf->pid << " dirty" <<endl;
         if( _set_dirty(b) ) kick_cleaner = true;
         w_assert2( b->dirty() );
     } else {
@@ -1651,6 +1654,7 @@ bf_m::unfix(const page_s* buf, bool dirty, int ref_bit)
 
     DBGTHRD( << "about to unfix " << b->pid() << " w/lsn " << b->curr_rec_lsn() );
     w_assert1(b->pin_cnt() > 0);
+    traces << "unfix " << buf->pid << " dirty"<<endl;
 
     vid_t        v = b->pid().vol();
     _core->unpin(b, ref_bit);
@@ -1862,6 +1866,7 @@ void  bfcb_t::mark_clean() {
     // that order! Using 'volatile' forces the compiler to do that
     // write first, but on machines with weak consistency we still
     // need a write barrier as well.
+    traces << "Mark " << _pid << " clean" <<endl;
     _dirty =  false;
     membar_producer();
     _rec_lsn = lsn_t::null;
@@ -3049,6 +3054,7 @@ bf_m::_scan(const bf_filter_t& filter, bool write_dirty, bool discard)
 bool
 bf_m::_set_dirty(bfcb_t* b)
 {
+    traces << "Mark " << b->pid() << " dirty" <<endl;
     if( !b->dirty() ) {
         b->set_dirty_bit();
         w_assert2(_core->latch_mode(b) == LATCH_EX ||
@@ -3111,7 +3117,6 @@ bf_m::set_dirty(const page_s* buf)
         return RCOK;
     }
     w_assert1(b->frame() == buf);
-    cout << "set page " << buf->pid << " dirty" <<endl;
     if( _set_dirty(b) ) {
         vid_t v = b->pid().vol();
         activate_background_flushing(&v);
