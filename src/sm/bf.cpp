@@ -72,7 +72,7 @@ template class w_list_t<bf_cleaner_thread_t, queue_based_block_lock_t>;
 template class w_list_i<bf_cleaner_thread_t, queue_based_block_lock_t>;
 #endif
 
-ostream& traces = cout;
+ostream& traces = cerr;
 
 // These are here because bf_s.h doesn't know structure of *_frame
 void  bfcb_t::set_storeflags(w_base_t::uint4_t f) { 
