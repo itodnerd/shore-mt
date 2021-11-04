@@ -230,21 +230,25 @@ void sthread_t::align_bufsize(size_t size, long W_IFDEBUG1(system_page_size),
 void clear(char *buf_start, size_t requested_size)
 {
     // Try reading first: do it in pages
+    /*
     size_t requested_huge_pages = requested_size / (HUGEPAGESIZE*1024);
     size_t requested_pages = requested_size / SM_PAGESIZE;
     for(size_t j=0; j < requested_pages; j++) {
         for(size_t i=0; i < SM_PAGESIZE; i++) {
-            size_t offset = j*SM_PAGESIZE + i;
-            size_t hugepagenum =  offset / (HUGEPAGESIZE*1024);
-            size_t hugepageoffset =  offset - (hugepagenum * 
-					(HUGEPAGESIZE*1024));
-            char x = buf_start[offset];
+            char x = buf_start[j*SM_PAGESIZE + i];
             
             // shut the compiler up:
-            if(int(i) < 0) fprintf(stderr, "0x%d 0x%x, 0x%x, 0x%x", x,
+            if(int(i) < 0){
+                size_t offset = j*SM_PAGESIZE + i;
+                size_t hugepagenum =  offset / (HUGEPAGESIZE*1024);
+                size_t hugepageoffset =  offset - (hugepagenum * 
+					(HUGEPAGESIZE*1024));
+
+                fprintf(stderr, "0x%d 0x%x, 0x%x, 0x%x", x,
                     int(hugepagenum), int(hugepageoffset), int(requested_huge_pages));    
+            }
         }
-    }
+    }*/
     
 #if W_DEBUG_LEVEL > 4
     fprintf(stderr, "clearing %ld bytes starting at %p\n", 
