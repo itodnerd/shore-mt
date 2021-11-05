@@ -73,9 +73,10 @@ template class w_list_t<bf_cleaner_thread_t, queue_based_block_lock_t>;
 template class w_list_i<bf_cleaner_thread_t, queue_based_block_lock_t>;
 #endif
 
-void bf_m::trace_log(const stringstream &message) {
+void bf_m::trace_log(stringstream &message) {
+    message << endl;
     if(bf_m::log_traces){
-        cerr << message.str() <<endl;
+        cerr << message.str();
     }
 }
 

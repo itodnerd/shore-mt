@@ -234,7 +234,7 @@ public:
     static rc_t                 disable_background_flushing(); // all
 
     static void                 activate_background_flushing(vid_t *v=0);
-    static void                 trace_log(const stringstream &message);
+    static void                 trace_log(stringstream &message);
     static void                 enable_traces();
     static void                 disable_traces();
 private:
