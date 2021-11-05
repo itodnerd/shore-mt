@@ -1219,6 +1219,13 @@ ss_m::begin_xct(tid_t& tid, timeout_in_ms timeout)
     return RCOK;
 }
 
+void           enable_tracing(){
+    bf_m::enable_traces();
+}
+void           disable_tracing(){
+    bf_m::disable_traces();
+}
+
 /*--------------------------------------------------------------*
  *  ss_m::commit_xct()                                *
  *--------------------------------------------------------------*/

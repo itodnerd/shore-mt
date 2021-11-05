@@ -99,7 +99,6 @@ public:
     static int                   npages();
 
     static bool                  is_cached(const bfcb_t* e);
-
     static rc_t                  fix(
         page_s*&                           page,
         const lpid_t&                      pid, 
@@ -235,8 +234,11 @@ public:
     static rc_t                 disable_background_flushing(); // all
 
     static void                 activate_background_flushing(vid_t *v=0);
-
+    static void                 trace_log(const stringstream &message);
+    static void                 enable_traces();
+    static void                 disable_traces();
 private:
+    static bool                 log_traces;
     static bf_core_m*           _core;
 
     static rc_t                 _fix(

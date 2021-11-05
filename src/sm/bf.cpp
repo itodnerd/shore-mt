@@ -73,14 +73,21 @@ template class w_list_t<bf_cleaner_thread_t, queue_based_block_lock_t>;
 template class w_list_i<bf_cleaner_thread_t, queue_based_block_lock_t>;
 #endif
 
-ostream& traces = cerr;
-bool log_traces = false;
-
-void trace_log(const stringstream &message) {
-    if(log_traces){
-        traces << message.str() <<endl;
+void bf_m::trace_log(const stringstream &message) {
+    if(bf_m::log_traces){
+        cerr << message.str() <<endl;
     }
 }
+
+bool bf_m::log_traces = false;
+
+void bf_m::enable_traces() {
+     bf_m::log_traces = true;
+}
+void bf_m::disable_traces() {
+     bf_m::log_traces = false;
+}
+
 
 // These are here because bf_s.h doesn't know structure of *_frame
 void  bfcb_t::set_storeflags(w_base_t::uint4_t f) { 
@@ -1883,7 +1890,7 @@ void  bfcb_t::mark_clean() {
     // need a write barrier as well.
     std::stringstream message;
     message << "Mark " << _pid << " clean";
-    trace_log(message);
+    bf_m::trace_log(message);
     _dirty =  false;
     membar_producer();
     _rec_lsn = lsn_t::null;

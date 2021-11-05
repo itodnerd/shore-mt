@@ -1148,6 +1148,9 @@ public:
      */
     static rc_t           query_prepared_xct(int numtids, gtid_t l[]);
 
+    // Tell the bm to enalbe / disable tracing;
+    static void           enable_tracing();
+    static void           disable_tracing();
 
     /**\brief Commit a transaction.
      *\ingroup SSMXCT
