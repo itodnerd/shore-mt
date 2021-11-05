@@ -1351,6 +1351,9 @@ bf_m::refix(const page_s* buf, latch_mode_t mode)
 {
     FUNC(bf_m::refix);
     DBGTHRD(<<"about to refix " << buf->pid << " in mode" << int(mode));
+    std::stringstream message;
+    message << "Refix " << buf->pid;
+    trace_log(message);
 
     bfcb_t* b = get_cb(buf);
     w_assert1(b && b->frame() == buf);
@@ -1395,6 +1398,9 @@ bf_m::upgrade_latch(page_s*& buf, latch_mode_t        m)
     FUNC(bf_m::upgrade_latch);
     DBGTHRD(<<"about to upgrade latch on " << buf->pid << " to mode " 
             <<  int(m));
+    std::stringstream message;
+    message << "Upgrading Latch " << buf->pid;
+    trace_log(message);
 
     bool would_block;
     bfcb_t* b = get_cb(buf);
@@ -1455,6 +1461,9 @@ void
 bf_m::upgrade_latch_if_not_block(const page_s* buf, bool& would_block)
 {
     DBGTHRD(<<"about to upgrade latch on " << buf->pid );
+    std::stringstream message;
+    message << "Upgrading Latch not block " << buf->pid;
+    trace_log(message);
     bfcb_t* b = get_cb(buf);
     w_assert1(b && b->frame() == buf);
     _core->upgrade_latch_if_not_block(b, would_block);
@@ -1597,6 +1606,9 @@ bf_m::unfix(const page_s* buf, bool dirty, int ref_bit)
                 b->mark_clean();
                 INC_TSTAT(bf_unfix_cleaned);
             }
+            std::stringstream message;
+            message << "Page " << buf->pid << " is clean";
+            trace_log(message);
         }
 
         if (b->dirty() && !b->frame()->lsn1.valid()) {
@@ -1660,6 +1672,9 @@ bf_m::unfix(const page_s* buf, bool dirty, int ref_bit)
                 if(log) w_assert9( (b->get_storeflags() & smlevel_0::st_tmp) );
             }
 #endif
+            std::stringstream message;
+            message << "Page " << buf->pid << " seems clean";
+            trace_log(message);
         } // b->dirty() but page not really dirty
 
 
@@ -1675,7 +1690,7 @@ bf_m::unfix(const page_s* buf, bool dirty, int ref_bit)
     DBGTHRD( << "about to unfix " << b->pid() << " w/lsn " << b->curr_rec_lsn() );
     w_assert1(b->pin_cnt() > 0);
     std::stringstream message;
-    message << "unfix " << buf->pid << " dirty";
+    message << "unfix " << buf->pid;
     trace_log(message);
 
     vid_t        v = b->pid().vol();
