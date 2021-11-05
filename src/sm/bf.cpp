@@ -66,6 +66,7 @@ Rome Research Laboratory Contract No. F30602-97-2-0247.
 #include <sm_int_0.h>
 #include "bf_core.h"
 #include "chkpt.h"
+#include <sstream>
 
 #ifdef EXPLICIT_TEMPLATE
 template class w_list_t<bf_cleaner_thread_t, queue_based_block_lock_t>;
