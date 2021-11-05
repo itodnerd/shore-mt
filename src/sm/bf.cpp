@@ -1536,6 +1536,7 @@ void
 bf_m::unfix(const page_s* buf, bool dirty, int ref_bit)
 {
     FUNC(bf_m::unfix);
+    bool is_clean = false;
     bool    kick_cleaner = false;
     bfcb_t* b = get_cb(buf);
     w_assert1(b && b->frame() == buf);
@@ -1562,6 +1563,7 @@ bf_m::unfix(const page_s* buf, bool dirty, int ref_bit)
          * because it was dirtied earlier.
          */
         if (! b->dirty()) {
+            is_clean = true;
             /*
              * Don't clear the lsn if we're not unfixing for the last
              * time. Note that we don't care about pin count so much
@@ -1613,6 +1615,7 @@ bf_m::unfix(const page_s* buf, bool dirty, int ref_bit)
         }
 
         if (b->dirty() && !b->frame()->lsn1.valid()) {
+            is_clean = true;
             /*
             * Control block marked dirty but page isn't
             * really dirty. 
@@ -1691,8 +1694,13 @@ bf_m::unfix(const page_s* buf, bool dirty, int ref_bit)
     DBGTHRD( << "about to unfix " << b->pid() << " w/lsn " << b->curr_rec_lsn() );
     w_assert1(b->pin_cnt() > 0);
     std::stringstream message;
-    message << "unfix " << buf->pid;
-    trace_log(message);
+    if(is_clean) {
+        message << "unfix clean " << buf->pid;
+    }else {
+        message << "unfix dirty " << buf->pid;
+    }
+
+        trace_log(message);
 
     vid_t        v = b->pid().vol();
     _core->unpin(b, ref_bit);
