@@ -73,6 +73,13 @@ template class w_list_i<bf_cleaner_thread_t, queue_based_block_lock_t>;
 #endif
 
 ostream& traces = cerr;
+bool log_traces = false;
+
+void trace_log(const stringstream &message) {
+    if(log_traces){
+        traces << message.str() <<endl;
+    }
+}
 
 // These are here because bf_s.h doesn't know structure of *_frame
 void  bfcb_t::set_storeflags(w_base_t::uint4_t f) { 
@@ -1316,7 +1323,9 @@ bf_m::_fix(
     w_assert9(_core->latch_mode(b) >= mode);
 
     w_assert1(b->pin_cnt() > 0);
-    traces << "fix " << pid << " in mode " <<  int(mode) <<endl;
+    std::stringstream message;
+    message << "fix " << pid << " in mode " <<  int(mode);
+    trace_log(message);
     return RCOK;
 }
 
@@ -1524,7 +1533,10 @@ bf_m::unfix(const page_s* buf, bool dirty, int ref_bit)
     // However the only time this is called with dirty==true is
     // after some logging, which should have set the lsns on the pages.
     if (dirty)  {
-        traces << "Mark " << buf->pid << " dirty" <<endl;
+        std::stringstream message;
+        message << "Mark " << buf->pid << " dirty";
+        trace_log(message);
+
         if( _set_dirty(b) ) kick_cleaner = true;
         w_assert2( b->dirty() );
     } else {
@@ -1654,7 +1666,9 @@ bf_m::unfix(const page_s* buf, bool dirty, int ref_bit)
 
     DBGTHRD( << "about to unfix " << b->pid() << " w/lsn " << b->curr_rec_lsn() );
     w_assert1(b->pin_cnt() > 0);
-    traces << "unfix " << buf->pid << " dirty"<<endl;
+    std::stringstream message;
+    message << "unfix " << buf->pid << " dirty";
+    trace_log(message);
 
     vid_t        v = b->pid().vol();
     _core->unpin(b, ref_bit);
@@ -1866,7 +1880,9 @@ void  bfcb_t::mark_clean() {
     // that order! Using 'volatile' forces the compiler to do that
     // write first, but on machines with weak consistency we still
     // need a write barrier as well.
-    traces << "Mark " << _pid << " clean" <<endl;
+    std::stringstream message;
+    message << "Mark " << _pid << " clean";
+    trace_log(message);
     _dirty =  false;
     membar_producer();
     _rec_lsn = lsn_t::null;
@@ -3054,7 +3070,9 @@ bf_m::_scan(const bf_filter_t& filter, bool write_dirty, bool discard)
 bool
 bf_m::_set_dirty(bfcb_t* b)
 {
-    traces << "Mark " << b->pid() << " dirty" <<endl;
+    std::stringstream message;
+    message << "Mark " <<b->pid() << " dirty";
+    trace_log(message);
     if( !b->dirty() ) {
         b->set_dirty_bit();
         w_assert2(_core->latch_mode(b) == LATCH_EX ||
